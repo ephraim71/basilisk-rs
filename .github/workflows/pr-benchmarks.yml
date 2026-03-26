@@ -36,7 +36,7 @@ jobs:
         run: just fetch-assets
 
       - name: Fetch Rust dependencies
-        run: cargo fetch --locked
+        run: cargo fetch
 
       - name: Measure build and run
         run: |
@@ -44,7 +44,7 @@ jobs:
           marker='<!-- basilisk-rs-pr-benchmarks -->'
 
           /usr/bin/time -f '%e' -o .github/tmp/build-seconds.txt \
-            cargo build --locked --release --example full_satellite_stack
+            cargo build --release --example full_satellite_stack
 
           /usr/bin/time -f '%e' -o .github/tmp/run-seconds.txt \
             ./target/release/examples/full_satellite_stack \

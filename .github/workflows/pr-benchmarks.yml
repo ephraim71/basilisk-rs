@@ -43,14 +43,20 @@ jobs:
           mkdir -p .github/tmp
           marker='<!-- basilisk-rs-pr-benchmarks -->'
 
-          /usr/bin/time -f '%e' -o .github/tmp/build-seconds.txt \
+          /usr/bin/time -f '%e' -o .github/tmp/cold-build-seconds.txt \
+            cargo build --release --example full_satellite_stack
+
+          cargo clean -p basilisk-rs --release
+
+          /usr/bin/time -f '%e' -o .github/tmp/warm-build-seconds.txt \
             cargo build --release --example full_satellite_stack
 
           /usr/bin/time -f '%e' -o .github/tmp/run-seconds.txt \
             ./target/release/examples/full_satellite_stack \
             > .github/tmp/full-satellite-stack-output.txt
 
-          build_seconds="$(tr -d '\n' < .github/tmp/build-seconds.txt)"
+          cold_build_seconds="$(tr -d '\n' < .github/tmp/cold-build-seconds.txt)"
+          warm_build_seconds="$(tr -d '\n' < .github/tmp/warm-build-seconds.txt)"
           run_seconds="$(tr -d '\n' < .github/tmp/run-seconds.txt)"
           simulation_seconds="$(awk '/^simulation_time_s = / { print $3; found=1 } END { if (!found) exit 1 }' .github/tmp/full-satellite-stack-output.txt)"
           binary_size_bytes="$(stat -c '%s' ./target/release/examples/full_satellite_stack)"
@@ -85,8 +91,22 @@ jobs:
             '
           )"
 
-          build_time="$(
-            awk -v seconds="${build_seconds}" '
+          cold_build_time="$(
+            awk -v seconds="${cold_build_seconds}" '
+              BEGIN {
+                if (seconds < 60) {
+                  printf "%.2fs", seconds;
+                } else {
+                  minutes = int(seconds / 60);
+                  remaining = seconds - (minutes * 60);
+                  printf "%dm %.2fs", minutes, remaining;
+                }
+              }
+            '
+          )"
+
+          warm_build_time="$(
+            awk -v seconds="${warm_build_seconds}" '
               BEGIN {
                 if (seconds < 60) {
                   printf "%.2fs", seconds;
@@ -103,7 +123,8 @@ jobs:
             printf '%s\n' "${marker}"
             printf 'Build size: `%s`\n' "${build_size}"
             printf 'full_satellite_stack runtime speedup: `%s`\n' "${speedup}"
-            printf 'Build time: `%s`\n' "${build_time}"
+            printf 'Cold build time: `%s`\n' "${cold_build_time}"
+            printf 'Warm build time: `%s`\n' "${warm_build_time}"
           } > .github/tmp/pr-benchmark-comment.md
 
       - name: Post PR comment

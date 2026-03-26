@@ -1,0 +1,7 @@
+/target
+Cargo.lock
+*.csv
+*.png
+*.pyc
+__pycache__/
+assets/

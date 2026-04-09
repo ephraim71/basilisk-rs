@@ -341,3 +341,104 @@ fn orthogonal_unit_vector_2(spin_axis_body: Vector3<f64>) -> Vector3<f64> {
         Vector3::new(0.0, 0.0, 1.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::Vector3;
+
+    use crate::messages::{Output, ReactionWheelCommandMsg};
+
+    use super::{ReactionWheel, ReactionWheelConfig};
+
+    fn rw_with_command(
+        max_torque_nm: f64,
+        min_torque_nm: f64,
+        max_momentum_nms: f64,
+        max_power_w: f64,
+        initial_omega_radps: f64,
+        command_nm: f64,
+    ) -> ReactionWheel {
+        let mut config = ReactionWheelConfig::balanced(
+            "rw",
+            Vector3::zeros(),
+            Vector3::new(1.0, 0.0, 0.0),
+            max_torque_nm,
+            max_momentum_nms,
+        );
+        config.min_torque_nm = min_torque_nm;
+        config.max_power_w = max_power_w;
+        config.initial_omega_radps = initial_omega_radps;
+        let mut rw = ReactionWheel::new(config);
+        let cmd = Output::new(ReactionWheelCommandMsg { motor_torque_nm: command_nm });
+        rw.command_in.connect(cmd.slot());
+        rw
+    }
+
+    /// Commands [-1.2, 1.5, 2.5] Nm with limits [1, 2, 2] Nm → clamped to [-1.0, 1.5, 2.0].
+    #[test]
+    fn torque_saturation() {
+        let cases = [(-1.2, 1.0, -1.0), (1.5, 2.0, 1.5), (2.5, 2.0, 2.0)];
+        for (cmd, limit, expected) in cases {
+            let mut rw = rw_with_command(limit, 0.0, 0.0, -1.0, 0.0, cmd);
+            rw.prepare_for_step(1.0);
+            assert!(
+                (rw.u_current_nm - expected).abs() < 1e-10,
+                "cmd={cmd} limit={limit}: expected u={expected}, got {}",
+                rw.u_current_nm
+            );
+        }
+    }
+
+    /// cmd=-0.09 with min=0.1 → zeroed; cmd=0.0001 with min=0.0 → passed through.
+    #[test]
+    fn minimum_torque_threshold() {
+        let mut rw0 = rw_with_command(10.0, 0.1, 0.0, -1.0, 0.0, -0.09);
+        rw0.prepare_for_step(1.0);
+        assert!(
+            rw0.u_current_nm.abs() < 1e-10,
+            "expected zero (below min), got {}",
+            rw0.u_current_nm
+        );
+
+        let mut rw1 = rw_with_command(10.0, 0.0, 0.0, -1.0, 0.0, 0.0001);
+        rw1.prepare_for_step(1.0);
+        assert!(
+            (rw1.u_current_nm - 0.0001).abs() < 1e-10,
+            "expected 0.0001, got {}",
+            rw1.u_current_nm
+        );
+    }
+
+    /// omega=[49, 51, -52] rad/s, limit=50, commands all 1.5 Nm → [1.5, 0.0, 1.5].
+    /// Wheel at 51 rad/s is zeroed (same sign as torque); wheel at -52 is not (opposite sign).
+    #[test]
+    fn speed_saturation() {
+        let limit = 50.0; // max_momentum_nms=50 → max_speed_radps=50 (js=1 kg·m²)
+        let cases = [(49.0, 1.5), (51.0, 0.0), (-52.0, 1.5)];
+        for (omega, expected) in cases {
+            let mut rw = rw_with_command(10.0, 0.0, limit, -1.0, omega, 1.5);
+            rw.prepare_for_step(1.0);
+            assert!(
+                (rw.u_current_nm - expected).abs() < 1e-10,
+                "omega={omega}: expected u={expected}, got {}",
+                rw.u_current_nm
+            );
+        }
+    }
+
+    /// P_max=1 W, omega=50 rad/s → torque limit = P/|omega| = 0.02 Nm.
+    /// Commands [0.01, -0.04, 0.04] → [0.01, -0.02, 0.02].
+    #[test]
+    fn power_saturation() {
+        let cases = [(0.01, 0.01), (-0.04, -0.02), (0.04, 0.02)];
+        for (cmd, expected) in cases {
+            let mut rw = rw_with_command(10.0, 0.0, 0.0, 1.0, 50.0, cmd);
+            rw.prepare_for_step(1.0);
+            assert!(
+                (rw.u_current_nm - expected).abs() < 1e-10,
+                "cmd={cmd}: expected u={expected}, got {}",
+                rw.u_current_nm
+            );
+        }
+    }
+}

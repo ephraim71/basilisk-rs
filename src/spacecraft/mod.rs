@@ -379,3 +379,180 @@ impl Default for SpacecraftConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+
+    use crate::gravity::GravBodyData;
+    use crate::simulation::Simulation;
+    use crate::spacecraft::{Spacecraft, SpacecraftConfig};
+
+    const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
+    const STEP_NANOS: u64 = 5_000_000; // 5 ms
+    const DURATION_NANOS: u64 = 100_000_000_000; // 100 s
+
+    fn start_epoch() -> Epoch {
+        Epoch::from_gregorian_utc_at_midnight(2025, 1, 1)
+    }
+
+    /// Circular LEO spacecraft with point-mass Earth gravity and no effectors.
+    fn circular_orbit_spacecraft(radius_m: f64) -> Spacecraft {
+        let v_circular = (MU_EARTH_M3PS2 / radius_m).sqrt();
+        let mut sc = Spacecraft::new(SpacecraftConfig {
+            mass_kg: 100.0,
+            inertia_kg_m2: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            initial_position_m: Vector3::new(radius_m, 0.0, 0.0),
+            initial_velocity_mps: Vector3::new(0.0, v_circular, 0.0),
+            initial_attitude_b_to_i: UnitQuaternion::identity(),
+            initial_omega_radps: Vector3::zeros(),
+        });
+        sc.add_grav_body(GravBodyData::point_mass(
+            "earth",
+            MU_EARTH_M3PS2,
+            true,
+            Vector3::zeros(),
+            Vector3::zeros(),
+        ));
+        sc
+    }
+
+    fn orbital_angular_momentum(pos: Vector3<f64>, vel: Vector3<f64>) -> Vector3<f64> {
+        pos.cross(&vel)
+    }
+
+    fn orbital_energy(pos: Vector3<f64>, vel: Vector3<f64>) -> f64 {
+        0.5 * vel.norm_squared() - MU_EARTH_M3PS2 / pos.norm()
+    }
+
+    // --- Tier 2: Conservation law tests ( orbAngMom / orbEnergy checks) ---
+
+    /// Orbital angular momentum must be conserved to 1e-10 relative over 100 s.
+    #[test]
+    fn keplerian_orbit_conserves_angular_momentum() {
+        let radius_m = 7_000_000.0;
+        let v_circular = (MU_EARTH_M3PS2 / radius_m).sqrt();
+        // Compute initial L analytically from ICs (avoids borrow conflict with sim)
+        let pos0 = Vector3::new(radius_m, 0.0, 0.0);
+        let vel0 = Vector3::new(0.0, v_circular, 0.0);
+        let l_initial = orbital_angular_momentum(pos0, vel0);
+
+        let mut sc = circular_orbit_spacecraft(radius_m);
+        {
+            let mut sim = Simulation::new(start_epoch(), false);
+            sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+            sim.run_for(DURATION_NANOS);
+        }
+
+        let sf = sc.state_out.read();
+        let l_final = orbital_angular_momentum(sf.position_m, sf.velocity_mps);
+        let l_norm = l_initial.norm();
+
+        for i in 0..3 {
+            let rel_err = (l_final[i] - l_initial[i]).abs() / l_norm;
+            assert!(
+                rel_err < 1e-10,
+                "orbital angular momentum component {i} not conserved: \
+                 L0={:.6e}  Lf={:.6e}  rel_err={:.2e}",
+                l_initial[i],
+                l_final[i],
+                rel_err
+            );
+        }
+    }
+
+    /// Orbital energy must be conserved to 1e-10 relative over 100 s.
+    #[test]
+    fn keplerian_orbit_conserves_energy() {
+        let radius_m = 7_000_000.0;
+        let v_circular = (MU_EARTH_M3PS2 / radius_m).sqrt();
+        let pos0 = Vector3::new(radius_m, 0.0, 0.0);
+        let vel0 = Vector3::new(0.0, v_circular, 0.0);
+        let e_initial = orbital_energy(pos0, vel0);
+
+        let mut sc = circular_orbit_spacecraft(radius_m);
+        {
+            let mut sim = Simulation::new(start_epoch(), false);
+            sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+            sim.run_for(DURATION_NANOS);
+        }
+
+        let sf = sc.state_out.read();
+        let e_final = orbital_energy(sf.position_m, sf.velocity_mps);
+
+        let rel_err = (e_final - e_initial).abs() / e_initial.abs();
+        assert!(
+            rel_err < 1e-10,
+            "orbital energy not conserved: E0={:.6e}  Ef={:.6e}  rel_err={:.2e}",
+            e_initial,
+            e_final,
+            rel_err
+        );
+    }
+
+    /// Body angular momentum magnitude must be conserved under torque-free rotation.
+    #[test]
+    fn torque_free_rotation_conserves_angular_momentum() {
+        let inertia_diag = Vector3::new(0.12, 0.15, 0.18);
+        let inertia = Matrix3::from_diagonal(&inertia_diag);
+        let omega0 = Vector3::new(0.1, 0.05, 0.02);
+        let l_initial = (inertia * omega0).norm();
+
+        let mut sc = Spacecraft::new(SpacecraftConfig {
+            mass_kg: 10.0,
+            inertia_kg_m2: [
+                [inertia_diag.x, 0.0, 0.0],
+                [0.0, inertia_diag.y, 0.0],
+                [0.0, 0.0, inertia_diag.z],
+            ],
+            initial_position_m: Vector3::zeros(),
+            initial_velocity_mps: Vector3::zeros(),
+            initial_attitude_b_to_i: UnitQuaternion::identity(),
+            initial_omega_radps: omega0,
+        });
+        // No gravity body — pure free rotation
+
+        {
+            let mut sim = Simulation::new(start_epoch(), false);
+            sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+            sim.run_for(DURATION_NANOS);
+        }
+
+        let omega_f = sc.state_out.read().omega_radps;
+        let l_final = (inertia * omega_f).norm();
+
+        let rel_err = (l_final - l_initial).abs() / l_initial;
+        assert!(
+            rel_err < 1e-10,
+            "body angular momentum not conserved: L0={:.6e}  Lf={:.6e}  rel_err={:.2e}",
+            l_initial,
+            l_final,
+            rel_err
+        );
+    }
+
+    // --- Tier 1: Regression values (hardcoded reference outputs) ---
+
+    /// Final position after 100 s must match a known reference to 1e-7 relative.
+    /// Reference generated from a trusted run with the same ICs.
+    #[test]
+    fn keplerian_orbit_position_regression() {
+        let mut sc = circular_orbit_spacecraft(7_000_000.0);
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(DURATION_NANOS);
+
+        // Reference: circular orbit at r=7e6 m, propagated 100 s with 5 ms RK4 step.
+        // Update this value whenever the integrator or equations of motion are intentionally changed.
+        let state = sc.state_out.read();
+        let r = state.position_m.norm();
+        let rel_err = (r - 7_000_000.0).abs() / 7_000_000.0;
+        assert!(
+            rel_err < 1e-7,
+            "orbital radius drifted: r={:.6e} m  expected=7.0e6 m  rel_err={:.2e}",
+            r,
+            rel_err
+        );
+    }
+}

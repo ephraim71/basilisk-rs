@@ -132,3 +132,127 @@ fn seed_from_name(name: &str) -> u64 {
     name.hash(&mut hasher);
     hasher.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+    use nalgebra::{SMatrix, SVector, UnitQuaternion, Vector3};
+
+    use crate::messages::{Output, SpacecraftStateMsg};
+    use crate::{Module, SimulationContext};
+
+    use super::{Gps, GpsConfig};
+
+    fn zero_noise_config() -> GpsConfig {
+        GpsConfig {
+            name: "gps".to_string(),
+            p_matrix_sqrt: SMatrix::<f64, 6, 6>::zeros(),
+            a_matrix: SMatrix::<f64, 6, 6>::zeros(),
+            walk_bounds: SVector::<f64, 6>::zeros(),
+            cross_trans: false,
+        }
+    }
+
+    fn make_context(epoch: Epoch, nanos: u64) -> SimulationContext {
+        SimulationContext {
+            start_epoch: epoch,
+            current_sim_nanos: nanos,
+            current_epoch: epoch,
+        }
+    }
+
+    fn run_gps(
+        gps: &mut Gps,
+        position: Vector3<f64>,
+        velocity: Vector3<f64>,
+        context: &SimulationContext,
+    ) {
+        let state_out = Output::new(SpacecraftStateMsg {
+            position_m: position,
+            velocity_mps: velocity,
+            attitude_b_to_i: UnitQuaternion::identity(),
+            omega_radps: Vector3::zeros(),
+        });
+        gps.input_state_msg.connect(state_out.slot());
+        gps.init();
+        gps.update(context);
+    }
+
+    /// Zero noise: output position and velocity equal input exactly.
+    #[test]
+    fn zero_noise_passes_through_position_and_velocity() {
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        let ctx = make_context(epoch, 0);
+        let pos = Vector3::new(6_778_000.0, 0.0, 0.0);
+        let vel = Vector3::new(0.0, 7784.0, 0.0);
+
+        let mut gps = Gps::new(zero_noise_config());
+        run_gps(&mut gps, pos, vel, &ctx);
+        let out = gps.output_gps_msg.read();
+
+        assert!(
+            (out.position_m - pos).norm() < 1e-12,
+            "position: expected {pos:?}, got {:?}",
+            out.position_m
+        );
+        assert!(
+            (out.velocity_mps - vel).norm() < 1e-12,
+            "velocity: expected {vel:?}, got {:?}",
+            out.velocity_mps
+        );
+    }
+
+    /// GPS week is positive and seconds_of_week is in [0, 604800).
+    #[test]
+    fn gps_time_fields_are_valid() {
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        let ctx = make_context(epoch, 0);
+
+        let mut gps = Gps::new(zero_noise_config());
+        run_gps(&mut gps, Vector3::zeros(), Vector3::zeros(), &ctx);
+        let out = gps.output_gps_msg.read();
+
+        assert!(
+            out.gps_week > 0,
+            "gps_week should be > 0 for 2025, got {}",
+            out.gps_week
+        );
+        assert!(
+            out.gps_seconds_of_week >= 0.0 && out.gps_seconds_of_week < 604800.0,
+            "gps_seconds_of_week out of range: {}",
+            out.gps_seconds_of_week
+        );
+    }
+
+    /// Two GPS units with different names get different seeds → different noise sequences.
+    /// With nonzero noise, their outputs diverge after first update.
+    #[test]
+    fn different_names_produce_different_noise() {
+        use nalgebra::SMatrix;
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        let ctx = make_context(epoch, 1_000_000_000); // 1 second (non-zero dt)
+
+        let noisy_config = |name: &str| GpsConfig {
+            name: name.to_string(),
+            p_matrix_sqrt: SMatrix::<f64, 6, 6>::identity() * 1.0,
+            a_matrix: SMatrix::<f64, 6, 6>::zeros(),
+            walk_bounds: SVector::<f64, 6>::zeros(),
+            cross_trans: false,
+        };
+
+        let pos = Vector3::new(6_778_000.0, 0.0, 0.0);
+        let vel = Vector3::zeros();
+
+        let mut gps_a = Gps::new(noisy_config("gps_a"));
+        let mut gps_b = Gps::new(noisy_config("gps_b"));
+        run_gps(&mut gps_a, pos, vel, &ctx);
+        run_gps(&mut gps_b, pos, vel, &ctx);
+
+        let out_a = gps_a.output_gps_msg.read();
+        let out_b = gps_b.output_gps_msg.read();
+        assert_ne!(
+            out_a.position_m, out_b.position_m,
+            "different seeds should produce different noise"
+        );
+    }
+}

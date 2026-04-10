@@ -44,7 +44,6 @@ fn main() {
         initial_omega_radps: Vector3::new(0.01, 0.02, 0.015),
     });
 
-
     spacecraft.add_grav_body(
         GravBodyData::spherical_harmonics_from_file(
             "earth",
@@ -363,22 +362,77 @@ fn main() {
     }
 
     let _ = PRIORITY_ACTUATORS;
-    sim.add_module("sun_ephemeris", &mut sun_ephemeris, 5_000_000, PRIORITY_ENVIRONMENT);
-    sim.add_module("moon_ephemeris", &mut moon_ephemeris, 5_000_000, PRIORITY_ENVIRONMENT);
-    sim.add_module("atmosphere", &mut atmosphere, 5_000_000, PRIORITY_ENVIRONMENT);
+    sim.add_module(
+        "sun_ephemeris",
+        &mut sun_ephemeris,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
+    sim.add_module(
+        "moon_ephemeris",
+        &mut moon_ephemeris,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
+    sim.add_module(
+        "atmosphere",
+        &mut atmosphere,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
     sim.add_module("eclipse", &mut eclipse, 5_000_000, PRIORITY_ENVIRONMENT);
-    sim.add_module("spacecraft", &mut spacecraft, 5_000_000, PRIORITY_ENVIRONMENT);
-    sim.add_module("magnetic_field", &mut magnetic_field, 5_000_000, PRIORITY_ENVIRONMENT);
+    sim.add_module(
+        "spacecraft",
+        &mut spacecraft,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
+    sim.add_module(
+        "magnetic_field",
+        &mut magnetic_field,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
     sim.add_module("imu_1", &mut imu_1, 5_000_000, PRIORITY_SENSORS);
     sim.add_module("imu_2", &mut imu_2, 5_000_000, PRIORITY_SENSORS);
     sim.add_module("tam_1", &mut tam_1, 5_000_000, PRIORITY_SENSORS);
     sim.add_module("tam_2", &mut tam_2, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_px", &mut sun_sensor_px, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_mx", &mut sun_sensor_mx, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_py", &mut sun_sensor_py, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_my", &mut sun_sensor_my, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_pz", &mut sun_sensor_pz, 5_000_000, PRIORITY_SENSORS);
-    sim.add_module("sun_sensor_mz", &mut sun_sensor_mz, 5_000_000, PRIORITY_SENSORS);
+    sim.add_module(
+        "sun_sensor_px",
+        &mut sun_sensor_px,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
+    sim.add_module(
+        "sun_sensor_mx",
+        &mut sun_sensor_mx,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
+    sim.add_module(
+        "sun_sensor_py",
+        &mut sun_sensor_py,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
+    sim.add_module(
+        "sun_sensor_my",
+        &mut sun_sensor_my,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
+    sim.add_module(
+        "sun_sensor_pz",
+        &mut sun_sensor_pz,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
+    sim.add_module(
+        "sun_sensor_mz",
+        &mut sun_sensor_mz,
+        5_000_000,
+        PRIORITY_SENSORS,
+    );
     sim.add_module("gps", &mut gps, 5_000_000, PRIORITY_SENSORS);
     sim.add_module("st_1", &mut star_tracker_1, 5_000_000, PRIORITY_SENSORS);
     sim.add_module("st_2", &mut star_tracker_2, 5_000_000, PRIORITY_SENSORS);
@@ -420,13 +474,48 @@ fn main() {
             5_000_000,
             PRIORITY_RECORDERS,
         );
-        sim.add_module("imu_1_recorder", &mut imu_1_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("imu_2_recorder", &mut imu_2_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("tam_1_recorder", &mut tam_1_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("tam_2_recorder", &mut tam_2_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("gps_recorder", &mut gps_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("st_1_recorder", &mut st_1_recorder, 5_000_000, PRIORITY_RECORDERS);
-        sim.add_module("st_2_recorder", &mut st_2_recorder, 5_000_000, PRIORITY_RECORDERS);
+        sim.add_module(
+            "imu_1_recorder",
+            &mut imu_1_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "imu_2_recorder",
+            &mut imu_2_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "tam_1_recorder",
+            &mut tam_1_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "tam_2_recorder",
+            &mut tam_2_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "gps_recorder",
+            &mut gps_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "st_1_recorder",
+            &mut st_1_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
+        sim.add_module(
+            "st_2_recorder",
+            &mut st_2_recorder,
+            5_000_000,
+            PRIORITY_RECORDERS,
+        );
         sim.add_module(
             "sun_sensor_px_recorder",
             &mut sun_sensor_px_recorder,

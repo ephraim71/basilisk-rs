@@ -81,3 +81,75 @@ impl Imu {
             .sample(&mut self.rng)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+    use nalgebra::{UnitQuaternion, Vector3};
+
+    use crate::messages::{Output, SpacecraftStateMsg};
+    use crate::{Module, SimulationContext};
+
+    use super::{Imu, ImuConfig};
+
+    fn dummy_context() -> SimulationContext {
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        SimulationContext {
+            start_epoch: epoch,
+            current_sim_nanos: 0,
+            current_epoch: epoch,
+        }
+    }
+
+    fn run_imu(imu: &mut Imu, omega_radps: Vector3<f64>) -> Vector3<f64> {
+        let state_out = Output::new(SpacecraftStateMsg {
+            position_m: Vector3::zeros(),
+            velocity_mps: Vector3::zeros(),
+            attitude_b_to_i: UnitQuaternion::identity(),
+            omega_radps,
+        });
+        imu.input_state_msg.connect(state_out.slot());
+        imu.init();
+        imu.update(&dummy_context());
+        imu.output_imu_msg.read().angular_rate_sensor_radps
+    }
+
+    /// omega_body = [0.0, 0.15, 0.1] rad/s, zero noise → sensor output = input unchanged.
+    #[test]
+    fn identity_rotation_passes_through_omega() {
+        let omega = Vector3::new(0.0, 0.15, 0.1);
+        let mut imu = Imu::new(ImuConfig {
+            name: "imu".to_string(),
+            position_m: Vector3::zeros(),
+            body_to_sensor_quaternion: UnitQuaternion::identity(),
+            rate_noise_std_radps: Vector3::zeros(),
+        });
+        let out = run_imu(&mut imu, omega);
+        assert!(
+            (out - omega).norm() < 1e-12,
+            "expected {omega:?}, got {out:?}"
+        );
+    }
+
+    /// yaw=0.7854 rad, pitch=1.0 rad, roll=0.1 rad; omega_body = [0.0, 0.15, 0.1] rad/s, zero noise.
+    /// Expected: sensor output = q.transform(omega_body).
+    #[test]
+    fn known_rotation_transforms_omega() {
+        let omega_body = Vector3::new(0.0, 0.15, 0.1);
+        // Euler 3-2-1: yaw=0.7854, pitch=1.0, roll=0.1 — same as Basilisk setBodyToPlatformDCM
+        let q = UnitQuaternion::from_euler_angles(0.1, 1.0, 0.7854);
+        let expected = q.transform_vector(&omega_body);
+
+        let mut imu = Imu::new(ImuConfig {
+            name: "imu".to_string(),
+            position_m: Vector3::zeros(),
+            body_to_sensor_quaternion: q,
+            rate_noise_std_radps: Vector3::zeros(),
+        });
+        let out = run_imu(&mut imu, omega_body);
+        assert!(
+            (out - expected).norm() < 1e-12,
+            "expected {expected:?}, got {out:?}"
+        );
+    }
+}

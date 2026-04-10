@@ -63,8 +63,10 @@ impl Eclipse {
         let apparent_sun_radius_rad = safe_asin(SUN_RADIUS_M / sun_to_spacecraft.norm());
         let apparent_planet_radius_rad =
             safe_asin(self.config.occulting_body_radius_m / planet_to_spacecraft.norm());
+        // Basilisk cpp: acos((-s_BP_N · r_HB_N) / ...) where r_HB_N = sun - sc = -sun_to_spacecraft
+        // Expanding: -s_BP_N · (-sun_to_spacecraft) = planet_to_spacecraft · sun_to_spacecraft
         let separation_rad = safe_acos(
-            (-planet_to_spacecraft.dot(&sun_to_spacecraft))
+            planet_to_spacecraft.dot(&sun_to_spacecraft)
                 / (planet_to_spacecraft.norm() * sun_to_spacecraft.norm()),
         );
 
@@ -104,4 +106,81 @@ fn safe_asin(value: f64) -> f64 {
 
 fn safe_acos(value: f64) -> f64 {
     value.clamp(-1.0, 1.0).acos()
+}
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+    use nalgebra::{UnitQuaternion, Vector3};
+
+    use crate::messages::{Output, SpacecraftStateMsg, SunEphemerisMsg};
+    use crate::{Module, SimulationContext};
+
+    use super::{Eclipse, EclipseConfig};
+
+    const AU: f64 = 149_597_870_693.0; // m
+    const R_EARTH: f64 = 6_371_000.0; // m
+
+    fn dummy_context() -> SimulationContext {
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        SimulationContext {
+            start_epoch: epoch,
+            current_sim_nanos: 0,
+            current_epoch: epoch,
+        }
+    }
+
+    fn run_eclipse(sc_position: Vector3<f64>, sun_position: Vector3<f64>, body_radius: f64) -> f64 {
+        let mut eclipse = Eclipse::new(EclipseConfig {
+            name: "eclipse".to_string(),
+            occulting_body_radius_m: body_radius,
+        });
+
+        let state_out = Output::new(SpacecraftStateMsg {
+            position_m: sc_position,
+            velocity_mps: Vector3::zeros(),
+            attitude_b_to_i: UnitQuaternion::identity(),
+            omega_radps: Vector3::zeros(),
+        });
+        let sun_out = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: sun_position,
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+
+        eclipse.input_state_msg.connect(state_out.slot());
+        eclipse.input_sun_msg.connect(sun_out.slot());
+        eclipse.init();
+        eclipse.update(&dummy_context());
+        eclipse.output_eclipse_msg.read().illumination_factor
+    }
+
+    /// Spacecraft at [-7000 km, 0, 0], sun at [+1AU, 0, 0], planet (Earth radius) at origin.
+    /// Expected: illumination_factor = 0.0.
+    #[test]
+    fn spacecraft_in_umbra_yields_zero_illumination() {
+        let sc_pos = Vector3::new(-7_000_000.0, 0.0, 0.0);
+        let sun_pos = Vector3::new(AU, 0.0, 0.0);
+        let factor = run_eclipse(sc_pos, sun_pos, R_EARTH);
+        assert_eq!(factor, 0.0, "expected full shadow, got {factor}");
+    }
+
+    /// Guard condition: sun_to_sc.norm() < sun_to_planet.norm() → return 1.0 immediately.
+    #[test]
+    fn spacecraft_closer_to_sun_than_planet_yields_full_illumination() {
+        // Spacecraft at [1AU - 1e8, 0, 0] (between Earth and Sun, 1e8 m from Sun)
+        let sc_pos = Vector3::new(AU - 1e8, 0.0, 0.0);
+        let sun_pos = Vector3::new(AU, 0.0, 0.0);
+        let factor = run_eclipse(sc_pos, sun_pos, R_EARTH);
+        assert_eq!(factor, 1.0, "expected full illumination, got {factor}");
+    }
+
+    /// Angular separation >> sum of apparent radii → no eclipse.
+    #[test]
+    fn spacecraft_perpendicular_to_sun_yields_full_illumination() {
+        // Sun along +y, spacecraft along +x — large angular separation, no shadow possible
+        let sc_pos = Vector3::new(7_000_000.0, 0.0, 0.0);
+        let sun_pos = Vector3::new(0.0, AU, 0.0);
+        let factor = run_eclipse(sc_pos, sun_pos, R_EARTH);
+        assert_eq!(factor, 1.0, "expected full illumination, got {factor}");
+    }
 }

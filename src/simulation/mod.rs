@@ -81,7 +81,8 @@ impl<'a> Simulation<'a> {
             return;
         }
 
-        self.modules.sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
+        self.modules
+            .sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
 
         for scheduled in &mut self.modules {
             scheduled.module.init();
@@ -111,11 +112,24 @@ impl<'a> Simulation<'a> {
 
         while self.current_sim_nanos <= stop_nanos {
             let context = self.context();
+            let current = self.current_sim_nanos;
+            // A module fires if it is scheduled at this tick, OR if this is the final
+            // stop time and the module is mid-period (partial final step, matches Basilisk
+            // behaviour when stop time is not a multiple of the task rate).
+            let is_final_tick = current == stop_nanos;
+            let should_fire = move |s: &&mut ScheduledModule| {
+                s.next_run_nanos == current
+                    || (is_final_tick
+                        && s.next_run_nanos > current
+                        && s.next_run_nanos - s.period_nanos < current)
+            };
+
             let mut group_start = 0;
             while group_start < self.modules.len() {
                 let priority = self.modules[group_start].priority;
                 let mut group_end = group_start + 1;
-                while group_end < self.modules.len() && self.modules[group_end].priority == priority {
+                while group_end < self.modules.len() && self.modules[group_end].priority == priority
+                {
                     group_end += 1;
                 }
 
@@ -123,7 +137,7 @@ impl<'a> Simulation<'a> {
                 if self.collect_timings {
                     group
                         .par_iter_mut()
-                        .filter(|scheduled| scheduled.next_run_nanos == self.current_sim_nanos)
+                        .filter(should_fire)
                         .for_each(|scheduled| {
                             let started_at = Instant::now();
                             scheduled.module.update(&context);
@@ -134,7 +148,7 @@ impl<'a> Simulation<'a> {
                 } else {
                     group
                         .par_iter_mut()
-                        .filter(|scheduled| scheduled.next_run_nanos == self.current_sim_nanos)
+                        .filter(should_fire)
                         .for_each(|scheduled| {
                             scheduled.module.update(&context);
                             scheduled.num_updates += 1;
@@ -159,10 +173,11 @@ impl<'a> Simulation<'a> {
                 .min()
                 .expect("simulation has no modules");
             if let Some(progress_bar) = &progress_bar {
-                progress_bar.set_position(next_nanos - start_nanos);
+                progress_bar.set_position(next_nanos.min(stop_nanos) - start_nanos);
             }
 
-            self.current_sim_nanos = next_nanos;
+            // Cap to stop_nanos so the final partial step lands exactly at the target time.
+            self.current_sim_nanos = next_nanos.min(stop_nanos);
         }
 
         if let Some(progress_bar) = progress_bar {

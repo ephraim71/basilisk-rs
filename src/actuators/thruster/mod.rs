@@ -155,8 +155,7 @@ impl Thruster {
             * self.config.max_swirl_torque_nm
             * direction_body;
 
-        let mut torque_body_nm = self.config.position_m.cross(&force_body_n)
-            + swirl_torque_body_nm;
+        let mut torque_body_nm = self.config.position_m.cross(&force_body_n) + swirl_torque_body_nm;
 
         if !self.config.update_only {
             let omega_body = state.omega_radps;
@@ -219,10 +218,8 @@ impl Thruster {
     fn compute_blowdown_decay(&mut self) {
         if let Some(fuel_mass_kg) = self.config.fuel_mass_kg {
             if !self.config.thrust_blow_down_coeff.is_empty() {
-                let thrust_blow_down = evaluate_polynomial(
-                    &self.config.thrust_blow_down_coeff,
-                    fuel_mass_kg,
-                );
+                let thrust_blow_down =
+                    evaluate_polynomial(&self.config.thrust_blow_down_coeff, fuel_mass_kg);
                 self.operation.thrust_blow_down_factor =
                     (thrust_blow_down / self.config.max_thrust_n).clamp(0.0, 1.0);
             }
@@ -238,14 +235,14 @@ impl Thruster {
 
     fn compute_thruster_fire(&mut self, current_time_s: f64) {
         if self.operation.thrust_on_ramp_time_s == 0.0 && !self.config.thrust_on_ramp.is_empty() {
-            self.operation.thrust_on_ramp_time_s = self.thr_factor_to_time(
-                &self.config.thrust_on_ramp,
-                self.operation.thrust_factor,
-            );
+            self.operation.thrust_on_ramp_time_s =
+                self.thr_factor_to_time(&self.config.thrust_on_ramp, self.operation.thrust_factor);
         }
         let local_on_ramp = (current_time_s - self.operation.previous_iter_time_s)
             + self.operation.thrust_on_ramp_time_s;
-        if let Some((thrust_factor, isp_factor)) = interpolate_ramp(&self.config.thrust_on_ramp, local_on_ramp, 0.0, 0.0) {
+        if let Some((thrust_factor, isp_factor)) =
+            interpolate_ramp(&self.config.thrust_on_ramp, local_on_ramp, 0.0, 0.0)
+        {
             self.operation.thrust_factor = thrust_factor;
             self.operation.isp_factor = isp_factor;
             self.operation.thrust_on_ramp_time_s = local_on_ramp.max(0.0);
@@ -254,7 +251,8 @@ impl Thruster {
             return;
         }
 
-        self.operation.thrust_on_steady_time_s += current_time_s - self.operation.previous_iter_time_s;
+        self.operation.thrust_on_steady_time_s +=
+            current_time_s - self.operation.previous_iter_time_s;
         self.operation.total_on_time_s += current_time_s - self.operation.previous_iter_time_s;
         self.operation.previous_iter_time_s = current_time_s;
         self.operation.thrust_factor = 1.0;
@@ -264,10 +262,8 @@ impl Thruster {
 
     fn compute_thruster_shut(&mut self, current_time_s: f64) {
         if self.operation.thrust_off_ramp_time_s == 0.0 && !self.config.thrust_off_ramp.is_empty() {
-            self.operation.thrust_off_ramp_time_s = self.thr_factor_to_time(
-                &self.config.thrust_off_ramp,
-                self.operation.thrust_factor,
-            );
+            self.operation.thrust_off_ramp_time_s =
+                self.thr_factor_to_time(&self.config.thrust_off_ramp, self.operation.thrust_factor);
         }
         let local_off_ramp = (current_time_s - self.operation.previous_iter_time_s)
             + self.operation.thrust_off_ramp_time_s;
@@ -292,7 +288,8 @@ impl Thruster {
             return 0.0;
         }
 
-        let ramp_direction = (ramp.last().expect("nonempty ramp").thrust_factor - thrust_factor).signum();
+        let ramp_direction =
+            (ramp.last().expect("nonempty ramp").thrust_factor - thrust_factor).signum();
         let mut prev_valid_thr_factor = if ramp_direction < 0.0 { 1.0 } else { 0.0 };
         let mut prev_valid_delta = 0.0;
 
@@ -381,20 +378,106 @@ fn nozzle_mass_depletion_torque(
     let thrust_tilde = tilde(thrust_direction_body);
 
     (thrust_tilde * thrust_tilde.transpose()
-        + area_nozzle_m2 / (4.0 * std::f64::consts::PI) * b_mj * axes_weight_matrix * b_mj.transpose())
+        + area_nozzle_m2 / (4.0 * std::f64::consts::PI)
+            * b_mj
+            * axes_weight_matrix
+            * b_mj.transpose())
         * omega_body_radps
 }
 
 fn tilde(vector: Vector3<f64>) -> nalgebra::Matrix3<f64> {
     nalgebra::Matrix3::new(
-        0.0,
-        -vector.z,
-        vector.y,
-        vector.z,
-        0.0,
-        -vector.x,
-        -vector.y,
-        vector.x,
-        0.0,
+        0.0, -vector.z, vector.y, vector.z, 0.0, -vector.x, -vector.y, vector.x, 0.0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{UnitQuaternion, Vector3};
+
+    use crate::messages::{Output, SpacecraftStateMsg, ThrusterCommandMsg};
+
+    use super::{Thruster, ThrusterConfig};
+
+    /// Fire a simple thruster (no ramp) for 5 s starting at t=0 and return it ready for output.
+    /// Config: max_thrust=1 N, Isp=226.7 s, position=[1.125, 0.5, 2.0] m, angles long=30° lat=15°.
+    fn fired_thruster() -> Thruster {
+        let long_rad = 30.0_f64.to_radians();
+        let lat_rad = 15.0_f64.to_radians();
+        let direction = Vector3::new(
+            long_rad.cos() * lat_rad.cos(),
+            long_rad.sin() * lat_rad.cos(),
+            lat_rad.sin(),
+        );
+        let mut config =
+            ThrusterConfig::simple("thr", Vector3::new(1.125, 0.5, 2.0), direction, 1.0);
+        config.steady_isp_s = 226.7;
+
+        let mut thr = Thruster::new(config);
+        let cmd = Output::new(ThrusterCommandMsg { on_time_s: 5.0 });
+        thr.command_in.connect(cmd.slot());
+        thr.prepare_for_step(0); // fires immediately at t=0
+        thr
+    }
+
+    fn identity_state() -> SpacecraftStateMsg {
+        SpacecraftStateMsg {
+            position_m: Vector3::zeros(),
+            velocity_mps: Vector3::zeros(),
+            attitude_b_to_i: UnitQuaternion::identity(),
+            omega_radps: Vector3::zeros(),
+        }
+    }
+
+    #[test]
+    fn full_thrust_force() {
+        let thr = fired_thruster();
+        let long_rad = 30.0_f64.to_radians();
+        let lat_rad = 15.0_f64.to_radians();
+        let expected_force = Vector3::new(
+            long_rad.cos() * lat_rad.cos(),
+            long_rad.sin() * lat_rad.cos(),
+            lat_rad.sin(),
+        ); // 1.0 N * normalised direction, identity attitude → inertial = body
+
+        let out = thr.compute_output(&identity_state());
+        assert!(
+            (out.force_inertial_n - expected_force).norm() < 1e-3,
+            "force mismatch: expected {expected_force:?}, got {:?}",
+            out.force_inertial_n
+        );
+    }
+
+    #[test]
+    fn full_thrust_torque_from_moment_arm() {
+        let thr = fired_thruster();
+        let long_rad = 30.0_f64.to_radians();
+        let lat_rad = 15.0_f64.to_radians();
+        let force = Vector3::new(
+            long_rad.cos() * lat_rad.cos(),
+            long_rad.sin() * lat_rad.cos(),
+            lat_rad.sin(),
+        );
+        let position = Vector3::new(1.125, 0.5, 2.0);
+        let expected_torque = position.cross(&force);
+
+        let out = thr.compute_output(&identity_state());
+        assert!(
+            (out.torque_body_nm - expected_torque).norm() < 1e-3,
+            "torque mismatch: expected {expected_torque:?}, got {:?}",
+            out.torque_body_nm
+        );
+    }
+
+    #[test]
+    fn mass_flow_rate_formula() {
+        let thr = fired_thruster();
+        let expected_mdot = 1.0 / (9.80665 * 226.7);
+
+        let mdot = thr.mass_flow_rate_kgps();
+        assert!(
+            (mdot - expected_mdot).abs() < 1e-6,
+            "mdot mismatch: expected {expected_mdot:.6e}, got {mdot:.6e}"
+        );
+    }
 }

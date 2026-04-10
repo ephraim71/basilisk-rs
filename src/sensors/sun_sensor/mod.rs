@@ -72,7 +72,8 @@ impl SunSensor {
         }
 
         let sun_direction_inertial = spacecraft_to_sun_inertial_m.normalize();
-        let sun_direction_body = state.attitude_b_to_i
+        let sun_direction_body = state
+            .attitude_b_to_i
             .inverse()
             .transform_vector(&sun_direction_inertial);
         let sun_direction_sensor = self

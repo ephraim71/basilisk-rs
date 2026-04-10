@@ -61,13 +61,22 @@ mod tests {
     use crate::messages::{EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
 
     use super::{
-        ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS,
-        SolarRadiationPressure, SolarRadiationPressureConfig,
+        ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS, SolarRadiationPressure,
+        SolarRadiationPressureConfig,
     };
 
-    fn make_srp(area: f64, cr: f64) -> (SolarRadiationPressure, Output<SunEphemerisMsg>, Output<EclipseMsg>) {
+    fn make_srp(
+        area: f64,
+        cr: f64,
+    ) -> (
+        SolarRadiationPressure,
+        Output<SunEphemerisMsg>,
+        Output<EclipseMsg>,
+    ) {
         let sun_out = Output::new(SunEphemerisMsg::default());
-        let eclipse_out = Output::new(EclipseMsg { illumination_factor: 1.0 });
+        let eclipse_out = Output::new(EclipseMsg {
+            illumination_factor: 1.0,
+        });
         let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: area,
@@ -79,7 +88,10 @@ mod tests {
     }
 
     fn make_state(position_m: Vector3<f64>) -> SpacecraftStateMsg {
-        SpacecraftStateMsg { position_m, ..Default::default() }
+        SpacecraftStateMsg {
+            position_m,
+            ..Default::default()
+        }
     }
 
     /// Spacecraft at sun position → zero division guard → zero force.
@@ -92,7 +104,9 @@ mod tests {
             sun_position_inertial_m: sc_pos,
             sun_velocity_inertial_mps: Vector3::zeros(),
         });
-        let eclipse_out = Output::new(EclipseMsg { illumination_factor: 1.0 });
+        let eclipse_out = Output::new(EclipseMsg {
+            illumination_factor: 1.0,
+        });
         let mut srp2 = SolarRadiationPressure::new(SolarRadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
@@ -111,7 +125,9 @@ mod tests {
             sun_position_inertial_m: Vector3::new(ASTRONOMICAL_UNIT_M, 0.0, 0.0),
             sun_velocity_inertial_mps: Vector3::zeros(),
         });
-        let eclipse_out = Output::new(EclipseMsg { illumination_factor: 0.0 });
+        let eclipse_out = Output::new(EclipseMsg {
+            illumination_factor: 0.0,
+        });
         let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
@@ -136,7 +152,9 @@ mod tests {
             sun_position_inertial_m: sun_pos,
             sun_velocity_inertial_mps: Vector3::zeros(),
         });
-        let eclipse_out = Output::new(EclipseMsg { illumination_factor: 1.0 });
+        let eclipse_out = Output::new(EclipseMsg {
+            illumination_factor: 1.0,
+        });
         let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
@@ -154,14 +172,19 @@ mod tests {
         let expected = scale * sun_to_sc;
 
         // Basilisk truth: [-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06]
-        let basilisk_truth = Vector3::new(-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06);
+        let basilisk_truth =
+            Vector3::new(-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06);
         assert!(
             (out.force_inertial_n - expected).norm() < 1e-12,
-            "analytic mismatch: {:?} vs {:?}", out.force_inertial_n, expected
+            "analytic mismatch: {:?} vs {:?}",
+            out.force_inertial_n,
+            expected
         );
         assert!(
             (out.force_inertial_n - basilisk_truth).norm() < 1e-12,
-            "basilisk mismatch: {:?} vs {:?}", out.force_inertial_n, basilisk_truth
+            "basilisk mismatch: {:?} vs {:?}",
+            out.force_inertial_n,
+            basilisk_truth
         );
     }
 
@@ -176,7 +199,9 @@ mod tests {
                 sun_position_inertial_m: sun_pos,
                 sun_velocity_inertial_mps: Vector3::zeros(),
             });
-            let eclipse_out = Output::new(EclipseMsg { illumination_factor: factor });
+            let eclipse_out = Output::new(EclipseMsg {
+                illumination_factor: factor,
+            });
             let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
                 name: "srp".to_string(),
                 area_m2: 4.0,
@@ -191,7 +216,9 @@ mod tests {
         let half = make(0.5);
         assert!(
             (half - 0.5 * full).norm() < 1e-20,
-            "half-eclipse force should be 0.5 * full: {:?} vs {:?}", half, 0.5 * full
+            "half-eclipse force should be 0.5 * full: {:?} vs {:?}",
+            half,
+            0.5 * full
         );
     }
 }

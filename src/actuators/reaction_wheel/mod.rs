@@ -126,7 +126,8 @@ impl ReactionWheel {
             config.torque_axis_body,
             normalize_or_zero(orthogonal_unit_vector(config.spin_axis_body)),
         );
-        let gimbal_axis = normalize_or_fallback(config.gimbal_axis_body, spin_axis.cross(&torque_axis));
+        let gimbal_axis =
+            normalize_or_fallback(config.gimbal_axis_body, spin_axis.cross(&torque_axis));
         Self {
             omega_radps: config.initial_omega_radps,
             theta_rad: 0.0,
@@ -155,10 +156,15 @@ impl ReactionWheel {
             self.config.model,
             ReactionWheelModel::JitterSimple | ReactionWheelModel::JitterFullyCoupled
         ) {
-            let static_force_body =
-                self.config.static_imbalance_kg_m * self.omega_radps * self.omega_radps * self.w2_hat_b;
+            let static_force_body = self.config.static_imbalance_kg_m
+                * self.omega_radps
+                * self.omega_radps
+                * self.w2_hat_b;
             let imbalance_torque_body = self.config.position_m.cross(&static_force_body)
-                + self.config.dynamic_imbalance_kg_m2 * self.omega_radps * self.omega_radps * self.w2_hat_b;
+                + self.config.dynamic_imbalance_kg_m2
+                    * self.omega_radps
+                    * self.omega_radps
+                    * self.w2_hat_b;
 
             EffectorOutput {
                 force_inertial_n: static_force_body,
@@ -176,7 +182,8 @@ impl ReactionWheel {
         let mut requested_torque = self.command_in.read().motor_torque_nm;
 
         if self.config.max_torque_nm >= 0.0 {
-            requested_torque = requested_torque.clamp(-self.config.max_torque_nm, self.config.max_torque_nm);
+            requested_torque =
+                requested_torque.clamp(-self.config.max_torque_nm, self.config.max_torque_nm);
         }
 
         if self.config.min_torque_nm > 0.0 && requested_torque.abs() < self.config.min_torque_nm {
@@ -239,7 +246,9 @@ impl ReactionWheel {
                 + self.config.viscous_friction_nms_per_rad * self.omega_radps
         };
 
-        let friction_force_at_limit_cycle = if self.friction_stribeck && self.config.beta_static > 0.0 {
+        let friction_force_at_limit_cycle = if self.friction_stribeck
+            && self.config.beta_static > 0.0
+        {
             let omega_ratio = self.config.omega_limit_cycle_radps / self.config.beta_static;
             (2.0 * std::f64::consts::E).sqrt()
                 * (self.config.static_friction_nm - self.config.coulomb_friction_nm)
@@ -369,7 +378,9 @@ mod tests {
         config.max_power_w = max_power_w;
         config.initial_omega_radps = initial_omega_radps;
         let mut rw = ReactionWheel::new(config);
-        let cmd = Output::new(ReactionWheelCommandMsg { motor_torque_nm: command_nm });
+        let cmd = Output::new(ReactionWheelCommandMsg {
+            motor_torque_nm: command_nm,
+        });
         rw.command_in.connect(cmd.slot());
         rw
     }

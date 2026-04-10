@@ -35,11 +35,14 @@ const R_GEO_M: f64 = 42_000_000.0;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let orbit_case = args.iter().find_map(|a| match a.to_lowercase().as_str() {
-        "geo" => Some(Orbit::Geo),
-        "gto" => Some(Orbit::Gto),
-        _     => None,
-    }).unwrap_or(Orbit::Leo);
+    let orbit_case = args
+        .iter()
+        .find_map(|a| match a.to_lowercase().as_str() {
+            "geo" => Some(Orbit::Geo),
+            "gto" => Some(Orbit::Gto),
+            _ => None,
+        })
+        .unwrap_or(Orbit::Leo);
     let use_sh = args.iter().any(|a| a.eq_ignore_ascii_case("sh"));
 
     let deg = std::f64::consts::PI / 180.0;
@@ -68,12 +71,28 @@ fn main() {
     let duration_nanos = (num_orbits * period * 1e9) as u64;
     let t_sim = duration_nanos as f64 * 1e-9;
 
-    let gravity_label = if use_sh { "J2 spherical harmonics (GGM03S deg-2)" } else { "point-mass" };
+    let gravity_label = if use_sh {
+        "J2 spherical harmonics (GGM03S deg-2)"
+    } else {
+        "point-mass"
+    };
     println!("=== scenario_basic_orbit ===");
     println!("Orbit:   {:?}  gravity: {}", orbit_case, gravity_label);
-    println!("         a = {:.1} km  e = {:.5}  i = {:.1}°", a / 1e3, e, inc / deg);
-    println!("         Ω = {:.1}°  ω = {:.1}°  f₀ = {:.1}°", 48.2, 347.8, 85.3);
-    println!("Period:  {:.2} s  ({:.4} orbits simulated)", period, t_sim / period);
+    println!(
+        "         a = {:.1} km  e = {:.5}  i = {:.1}°",
+        a / 1e3,
+        e,
+        inc / deg
+    );
+    println!(
+        "         Ω = {:.1}°  ω = {:.1}°  f₀ = {:.1}°",
+        48.2, 347.8, 85.3
+    );
+    println!(
+        "Period:  {:.2} s  ({:.4} orbits simulated)",
+        period,
+        t_sim / period
+    );
     println!("Steps:   {} × 10 s", duration_nanos / step_nanos);
     println!();
     println!("  t [s]      |r| [km]    r_x [km]    r_y [km]    r_z [km]");
@@ -142,12 +161,19 @@ fn main() {
         // J2 causes RAAN/AoP precession but SMA should stay approximately constant.
         let a_final = sma_from_rv(MU_EARTH_M3PS2, r_sim, v_sim);
         println!("Initial SMA: {:.3} km", a / 1e3);
-        println!("Final SMA:   {:.3} km  (Δa = {:.3} km)", a_final / 1e3, (a_final - a) / 1e3);
+        println!(
+            "Final SMA:   {:.3} km  (Δa = {:.3} km)",
+            a_final / 1e3,
+            (a_final - a) / 1e3
+        );
     } else {
         // Basilisk point-mass case: position deviation from analytical Keplerian solution.
         let r_kep = kepler_position(MU_EARTH_M3PS2, a, e, inc, raan, aop, ta0, t_sim);
         let final_diff = (r_sim - r_kep).norm();
-        println!("finalDiff = {:.4e} m  (Basilisk reference: < 1 m)", final_diff);
+        println!(
+            "finalDiff = {:.4e} m  (Basilisk reference: < 1 m)",
+            final_diff
+        );
         assert!(
             final_diff < 1.0,
             "trajectory deviated from Keplerian: finalDiff = {:.3e} m",
@@ -161,7 +187,13 @@ fn main() {
 /// Classical orbital elements → inertial position and velocity.
 /// Matches Basilisk `orbitalMotion.elem2rv`.
 fn elem2rv(
-    mu: f64, a: f64, e: f64, inc: f64, raan: f64, aop: f64, ta: f64,
+    mu: f64,
+    a: f64,
+    e: f64,
+    inc: f64,
+    raan: f64,
+    aop: f64,
+    ta: f64,
 ) -> (Vector3<f64>, Vector3<f64>) {
     let p = a * (1.0 - e * e);
     let r_mag = p / (1.0 + e * ta.cos());
@@ -169,16 +201,8 @@ fn elem2rv(
     let (si, ci) = inc.sin_cos();
     let (sr, cr) = raan.sin_cos();
     let (sw, cw) = aop.sin_cos();
-    let p_hat = Vector3::new(
-        cr * cw - sr * sw * ci,
-        sr * cw + cr * sw * ci,
-        sw * si,
-    );
-    let q_hat = Vector3::new(
-        -cr * sw - sr * cw * ci,
-        -sr * sw + cr * cw * ci,
-        cw * si,
-    );
+    let p_hat = Vector3::new(cr * cw - sr * sw * ci, sr * cw + cr * sw * ci, sw * si);
+    let q_hat = Vector3::new(-cr * sw - sr * cw * ci, -sr * sw + cr * cw * ci, cw * si);
 
     let (sf, cf) = ta.sin_cos();
     let r = r_mag * (cf * p_hat + sf * q_hat);
@@ -216,7 +240,14 @@ fn solve_kepler(m: f64, e: f64) -> f64 {
 
 /// Analytical Keplerian position at elapsed time t_sec.
 fn kepler_position(
-    mu: f64, a: f64, e: f64, inc: f64, raan: f64, aop: f64, ta0: f64, t_sec: f64,
+    mu: f64,
+    a: f64,
+    e: f64,
+    inc: f64,
+    raan: f64,
+    aop: f64,
+    ta0: f64,
+    t_sec: f64,
 ) -> Vector3<f64> {
     let n = (mu / a.powi(3)).sqrt();
     let e0 = f_to_e(ta0, e);

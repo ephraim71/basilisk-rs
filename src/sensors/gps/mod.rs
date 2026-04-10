@@ -154,10 +154,19 @@ mod tests {
     }
 
     fn make_context(epoch: Epoch, nanos: u64) -> SimulationContext {
-        SimulationContext { start_epoch: epoch, current_sim_nanos: nanos, current_epoch: epoch }
+        SimulationContext {
+            start_epoch: epoch,
+            current_sim_nanos: nanos,
+            current_epoch: epoch,
+        }
     }
 
-    fn run_gps(gps: &mut Gps, position: Vector3<f64>, velocity: Vector3<f64>, context: &SimulationContext) {
+    fn run_gps(
+        gps: &mut Gps,
+        position: Vector3<f64>,
+        velocity: Vector3<f64>,
+        context: &SimulationContext,
+    ) {
         let state_out = Output::new(SpacecraftStateMsg {
             position_m: position,
             velocity_mps: velocity,
@@ -183,11 +192,13 @@ mod tests {
 
         assert!(
             (out.position_m - pos).norm() < 1e-12,
-            "position: expected {pos:?}, got {:?}", out.position_m
+            "position: expected {pos:?}, got {:?}",
+            out.position_m
         );
         assert!(
             (out.velocity_mps - vel).norm() < 1e-12,
-            "velocity: expected {vel:?}, got {:?}", out.velocity_mps
+            "velocity: expected {vel:?}, got {:?}",
+            out.velocity_mps
         );
     }
 
@@ -201,10 +212,15 @@ mod tests {
         run_gps(&mut gps, Vector3::zeros(), Vector3::zeros(), &ctx);
         let out = gps.output_gps_msg.read();
 
-        assert!(out.gps_week > 0, "gps_week should be > 0 for 2025, got {}", out.gps_week);
+        assert!(
+            out.gps_week > 0,
+            "gps_week should be > 0 for 2025, got {}",
+            out.gps_week
+        );
         assert!(
             out.gps_seconds_of_week >= 0.0 && out.gps_seconds_of_week < 604800.0,
-            "gps_seconds_of_week out of range: {}", out.gps_seconds_of_week
+            "gps_seconds_of_week out of range: {}",
+            out.gps_seconds_of_week
         );
     }
 

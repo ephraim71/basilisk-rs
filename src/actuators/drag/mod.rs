@@ -76,7 +76,10 @@ mod tests {
         area: f64,
         com_offset: Vector3<f64>,
     ) -> (Drag, Output<AtmosphereMsg>) {
-        let atmo_out = Output::new(AtmosphereMsg { neutral_density_kgpm3: density, local_temp_k: 0.0 });
+        let atmo_out = Output::new(AtmosphereMsg {
+            neutral_density_kgpm3: density,
+            local_temp_k: 0.0,
+        });
         let mut drag = Drag::new(DragConfig {
             name: "drag".to_string(),
             projected_area_m2: area,
@@ -88,7 +91,10 @@ mod tests {
         (drag, atmo_out)
     }
 
-    fn make_state(attitude_b_to_i: UnitQuaternion<f64>, velocity_mps: Vector3<f64>) -> SpacecraftStateMsg {
+    fn make_state(
+        attitude_b_to_i: UnitQuaternion<f64>,
+        velocity_mps: Vector3<f64>,
+    ) -> SpacecraftStateMsg {
         SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps,
@@ -124,7 +130,8 @@ mod tests {
         let expected_force = -f_mag * v_inertial.normalize();
         assert!(
             (out.force_inertial_n - expected_force).norm() < 1e-12,
-            "force: expected {expected_force:?}, got {:?}", out.force_inertial_n
+            "force: expected {expected_force:?}, got {:?}",
+            out.force_inertial_n
         );
         assert!(
             out.torque_body_nm.norm() < 1e-12,
@@ -170,11 +177,13 @@ mod tests {
 
         assert!(
             (out.force_inertial_n - f_inertial).norm() < 1e-12,
-            "force: expected {f_inertial:?}, got {:?}", out.force_inertial_n
+            "force: expected {f_inertial:?}, got {:?}",
+            out.force_inertial_n
         );
         assert!(
             (out.torque_body_nm - torque_body).norm() < 1e-12,
-            "torque: expected {torque_body:?}, got {:?}", out.torque_body_nm
+            "torque: expected {torque_body:?}, got {:?}",
+            out.torque_body_nm
         );
     }
 }

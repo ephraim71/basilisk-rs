@@ -485,8 +485,8 @@ impl GravityEffector {
             return (state.position_inertial_m, state.velocity_inertial_mps);
         }
 
-        let position_m =
-            body.initial_position_m + body.initial_velocity_mps * (current_sim_nanos as f64 * 1.0e-9);
+        let position_m = body.initial_position_m
+            + body.initial_velocity_mps * (current_sim_nanos as f64 * 1.0e-9);
         let velocity_mps = body.initial_velocity_mps;
 
         (position_m, velocity_mps)

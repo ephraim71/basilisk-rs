@@ -73,7 +73,8 @@ impl Tam {
         state: &SpacecraftStateMsg,
         magnetic_field: &MagneticFieldMsg,
     ) -> Vector3<f64> {
-        let magnetic_field_body_t = state.attitude_b_to_i
+        let magnetic_field_body_t = state
+            .attitude_b_to_i
             .inverse()
             .transform_vector(&magnetic_field.magnetic_field_inertial_t);
 

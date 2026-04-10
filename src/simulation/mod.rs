@@ -81,7 +81,8 @@ impl<'a> Simulation<'a> {
             return;
         }
 
-        self.modules.sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
+        self.modules
+            .sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
 
         for scheduled in &mut self.modules {
             scheduled.module.init();
@@ -127,7 +128,8 @@ impl<'a> Simulation<'a> {
             while group_start < self.modules.len() {
                 let priority = self.modules[group_start].priority;
                 let mut group_end = group_start + 1;
-                while group_end < self.modules.len() && self.modules[group_end].priority == priority {
+                while group_end < self.modules.len() && self.modules[group_end].priority == priority
+                {
                     group_end += 1;
                 }
 

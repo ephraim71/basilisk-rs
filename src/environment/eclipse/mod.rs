@@ -119,18 +119,18 @@ mod tests {
     use super::{Eclipse, EclipseConfig};
 
     const AU: f64 = 149_597_870_693.0; // m
-    const R_EARTH: f64 = 6_371_000.0;  // m
+    const R_EARTH: f64 = 6_371_000.0; // m
 
     fn dummy_context() -> SimulationContext {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
-        SimulationContext { start_epoch: epoch, current_sim_nanos: 0, current_epoch: epoch }
+        SimulationContext {
+            start_epoch: epoch,
+            current_sim_nanos: 0,
+            current_epoch: epoch,
+        }
     }
 
-    fn run_eclipse(
-        sc_position: Vector3<f64>,
-        sun_position: Vector3<f64>,
-        body_radius: f64,
-    ) -> f64 {
+    fn run_eclipse(sc_position: Vector3<f64>, sun_position: Vector3<f64>, body_radius: f64) -> f64 {
         let mut eclipse = Eclipse::new(EclipseConfig {
             name: "eclipse".to_string(),
             occulting_body_radius_m: body_radius,

@@ -5,9 +5,7 @@ use crate::reaction_wheel::ReactionWheel;
 use crate::srp::SolarRadiationPressure;
 use crate::thruster::Thruster;
 use hifitime::{Duration, Epoch};
-use nalgebra::{
-    Matrix3, Quaternion as RawQuaternion, UnitQuaternion, Vector3,
-};
+use nalgebra::{Matrix3, Quaternion as RawQuaternion, UnitQuaternion, Vector3};
 
 use crate::messages::{Input, Output, PlanetStateMsg, SpacecraftStateMsg};
 use crate::{Mat3, Module, SimulationContext};

@@ -28,9 +28,12 @@ impl Mtb {
 
     pub fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
         let attitude_body_to_inertial = state.attitude_b_to_i;
-        let magnetic_field_body_t = attitude_body_to_inertial
-            .inverse()
-            .transform_vector(&self.input_magnetic_field_msg.read().magnetic_field_inertial_t);
+        let magnetic_field_body_t = attitude_body_to_inertial.inverse().transform_vector(
+            &self
+                .input_magnetic_field_msg
+                .read()
+                .magnetic_field_inertial_t,
+        );
         let dipole_axis_body = normalize_or_zero(self.config.dipole_axis_body);
         let commanded_dipole = self
             .command_in

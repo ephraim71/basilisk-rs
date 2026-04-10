@@ -1,0 +1,34 @@
+name: PR Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_TERM_PROGRESS_WHEN: never
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Fetch assets
+        run: just fetch-assets
+
+      - uses: taiki-e/install-action@just
+
+      - name: Fetch Rust dependencies
+        run: cargo fetch
+
+      - name: Run tests
+        run: cargo test --lib

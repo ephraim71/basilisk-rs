@@ -290,7 +290,10 @@ fn main() {
             .expect("missing moon gravity body input"),
     );
     sim.connect(&spacecraft.state_out, &mut atmosphere.input_state_msg);
-    sim.connect(&earth_ephemeris.output_planet_msg, &mut atmosphere.input_planet_msg);
+    sim.connect(
+        &earth_ephemeris.output_planet_msg,
+        &mut atmosphere.input_planet_msg,
+    );
     sim.connect(&spacecraft.state_out, &mut eclipse.input_state_msg);
     sim.connect(&sun_ephemeris.output_sun_msg, &mut eclipse.input_sun_msg);
     sim.connect(

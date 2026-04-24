@@ -415,32 +415,6 @@ impl StateEffector for ReactionWheel {
         vec![omega_dot_radps2, effector_state[0]]
     }
 
-    fn rotational_angular_momentum_body(
-        &self,
-        effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
-    ) -> Vector3<f64> {
-        assert_eq!(
-            effector_state.len(),
-            self.state_len(),
-            "reaction wheel state length mismatch"
-        );
-        let spin_axis_body = normalize_or_zero(self.config.spin_axis_body);
-        self.config.js_kg_m2 * spin_axis_body * effector_state[0]
-    }
-
-    fn rotational_energy_j(&self, effector_state: &[f64], body_omega_radps: Vector3<f64>) -> f64 {
-        assert_eq!(
-            effector_state.len(),
-            self.state_len(),
-            "reaction wheel state length mismatch"
-        );
-        let spin_axis_body = normalize_or_zero(self.config.spin_axis_body);
-        let wheel_omega_radps = effector_state[0];
-        0.5 * self.config.js_kg_m2 * wheel_omega_radps * wheel_omega_radps
-            + self.config.js_kg_m2 * wheel_omega_radps * spin_axis_body.dot(&body_omega_radps)
-    }
-
     fn as_any(&self) -> &dyn Any {
         self
     }

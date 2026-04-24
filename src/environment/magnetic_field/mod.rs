@@ -111,17 +111,22 @@ impl IgrfField {
         state: &SpacecraftStateMsg,
         current_epoch: Epoch,
     ) -> Vector3<f64> {
-        let (position_inertial_m, inertial_to_fixed_from_msg) = if self.input_planet_msg.is_connected() {
-            let planet_state = self.input_planet_msg.read();
-            let relative_position_inertial_m = state.position_m - planet_state.position_inertial_m;
-            if planet_state.has_orientation {
-                (relative_position_inertial_m, Some(planet_state.inertial_to_fixed))
+        let (position_inertial_m, inertial_to_fixed_from_msg) =
+            if self.input_planet_msg.is_connected() {
+                let planet_state = self.input_planet_msg.read();
+                let relative_position_inertial_m =
+                    state.position_m - planet_state.position_inertial_m;
+                if planet_state.has_orientation {
+                    (
+                        relative_position_inertial_m,
+                        Some(planet_state.inertial_to_fixed),
+                    )
+                } else {
+                    (relative_position_inertial_m, None)
+                }
             } else {
-                (relative_position_inertial_m, None)
-            }
-        } else {
-            (state.position_m, None)
-        };
+                (state.position_m, None)
+            };
 
         let mut fallback_inertial_to_fixed = None;
         let position_fixed_m = if let Some(inertial_to_fixed) = inertial_to_fixed_from_msg {
@@ -159,8 +164,8 @@ impl IgrfField {
 
         let phase_started = self.timing_enabled.then(Instant::now);
         let field_fixed_t = ned_to_ecef(latitude_rad, longitude_rad, field_ned_t);
-        let field_inertial_t = if let Some(inertial_to_fixed) = inertial_to_fixed_from_msg
-            .or(fallback_inertial_to_fixed)
+        let field_inertial_t = if let Some(inertial_to_fixed) =
+            inertial_to_fixed_from_msg.or(fallback_inertial_to_fixed)
         {
             inertial_to_fixed.transpose() * field_fixed_t
         } else {

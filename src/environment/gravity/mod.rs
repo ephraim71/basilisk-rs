@@ -484,13 +484,12 @@ impl GravityEffector {
 
             let phase_started = self.timing_enabled.then(Instant::now);
             let planet_state_msg = current_planet_state_msg_from_input_or_initial(body);
-            let (position_inertial_m, velocity_inertial_mps) = if let Some(message) =
-                planet_state_msg.as_ref()
-            {
-                (message.position_inertial_m, message.velocity_inertial_mps)
-            } else {
-                current_planet_state_from_input_or_initial(body, current_sim_nanos)
-            };
+            let (position_inertial_m, velocity_inertial_mps) =
+                if let Some(message) = planet_state_msg.as_ref() {
+                    (message.position_inertial_m, message.velocity_inertial_mps)
+                } else {
+                    current_planet_state_from_input_or_initial(body, current_sim_nanos)
+                };
             if let Some(started) = phase_started {
                 self.timing_stats.update_cache_state_read_nanos += started.elapsed().as_nanos();
             }
@@ -505,7 +504,8 @@ impl GravityEffector {
                             })
                         } else if let Some(orientation_model) = &model.orientation_model {
                             let phase_started = self.timing_enabled.then(Instant::now);
-                            let inertial_to_fixed = orientation_model.rotation_matrix(current_epoch);
+                            let inertial_to_fixed =
+                                orientation_model.rotation_matrix(current_epoch);
                             if let Some(started) = phase_started {
                                 self.timing_stats.update_cache_orientation_current_nanos +=
                                     started.elapsed().as_nanos();

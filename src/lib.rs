@@ -87,7 +87,7 @@ mod tests {
             integration_step_nanos: 5_000_000,
             initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),
             initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
-            initial_attitude_b_to_i: UnitQuaternion::identity(),
+            initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
         });
         spacecraft.add_grav_body(GravBodyData::point_mass(

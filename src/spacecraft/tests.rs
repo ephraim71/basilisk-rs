@@ -1,9 +1,9 @@
 use hifitime::Epoch;
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Vector3};
 
-use super::{Spacecraft, SpacecraftConfig};
+use super::{Spacecraft, SpacecraftConfig, mrp::body_to_inertial_dcm_from_sigma_bn};
 use crate::gravity::GravBodyData;
-use crate::messages::{Output, ReactionWheelCommandMsg};
+use crate::messages::{Output, ReactionWheelCommandMsg, SpacecraftStateMsg};
 use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
 use crate::simulation::Simulation;
 
@@ -24,7 +24,7 @@ fn circular_orbit_spacecraft(radius_m: f64) -> Spacecraft {
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::new(radius_m, 0.0, 0.0),
         initial_velocity_mps: Vector3::new(0.0, v_circular, 0.0),
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
     });
     sc.add_grav_body(GravBodyData::point_mass(
@@ -121,7 +121,7 @@ fn torque_free_rotation_conserves_angular_momentum() {
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::zeros(),
         initial_velocity_mps: Vector3::zeros(),
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: omega0,
     });
 
@@ -156,7 +156,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::zeros(),
         initial_velocity_mps: Vector3::zeros(),
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
     });
 
@@ -223,7 +223,7 @@ fn spacecraft_outputs_mass_props_and_seeded_diagnostics() {
         integration_step_nanos: STEP_NANOS,
         initial_position_m: position0,
         initial_velocity_mps: velocity0,
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: omega0,
     });
 
@@ -267,6 +267,24 @@ fn spacecraft_outputs_mass_props_and_seeded_diagnostics() {
         (diagnostics.orbital_angular_momentum_inertial_kg_m2ps - expected_orbital_angular_momentum)
             .norm()
             < 1e-12
+    );
+}
+
+#[test]
+fn mrp_body_to_inertial_dcm_matches_spacecraft_state_rotation() {
+    let sigma_bn = Vector3::new(0.1, 0.2, 0.3);
+    let dcm = body_to_inertial_dcm_from_sigma_bn(sigma_bn);
+    let quaternion_rotation = SpacecraftStateMsg {
+        sigma_bn,
+        ..SpacecraftStateMsg::default()
+    }
+    .body_to_inertial()
+    .to_rotation_matrix()
+    .into_inner();
+
+    assert!(
+        (dcm - quaternion_rotation).norm() < 1.0e-12,
+        "expected direct MRP DCM to match existing body_to_inertial rotation"
     );
 }
 

@@ -1,13 +1,13 @@
 use crate::gravity::GravityEffector;
-use crate::messages::{
-    Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg, SpacecraftMassPropsMsg,
-    SpacecraftStateMsg,
-};
+use crate::messages::{Input, Output, PlanetStateMsg, SpacecraftMassPropsMsg, SpacecraftStateMsg};
 use hifitime::{Duration, Epoch};
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Vector3};
 use std::any::Any;
 
+use self::mrp::{body_to_inertial_dcm_from_sigma_bn, mrp_kinematics, shadow_mrp};
 use crate::{Module, SimulationContext};
+
+mod mrp;
 
 #[derive(Clone, Debug)]
 pub struct SpacecraftConfig {
@@ -53,16 +53,6 @@ pub trait StateEffector: Send {
         effector_state: &[f64],
         body_omega_dot_radps2: Vector3<f64>,
     ) -> Vec<f64>;
-    fn rotational_angular_momentum_body(
-        &self,
-        _effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
-    ) -> Vector3<f64> {
-        Vector3::zeros()
-    }
-    fn rotational_energy_j(&self, _effector_state: &[f64], _body_omega_radps: Vector3<f64>) -> f64 {
-        0.0
-    }
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -77,19 +67,12 @@ pub struct Spacecraft {
     pub config: SpacecraftConfig,
     pub state_out: Output<SpacecraftStateMsg>,
     pub mass_props_out: Output<SpacecraftMassPropsMsg>,
-    pub diagnostics_out: Output<SpacecraftDiagnosticsMsg>,
     pub gravity: GravityEffector,
     pub state_effectors: Vec<Box<dyn StateEffector>>,
     pub dynamic_effectors: Vec<Box<dyn DynamicEffector>>,
     integration_step_seconds: f64,
     integration_step_duration: Duration,
     integrated_state: Option<IntegratedState>,
-}
-
-impl Default for Spacecraft {
-    fn default() -> Self {
-        Self::new(SpacecraftConfig::default())
-    }
 }
 
 impl Spacecraft {
@@ -100,7 +83,6 @@ impl Spacecraft {
         Self {
             state_out: Output::default(),
             mass_props_out: Output::default(),
-            diagnostics_out: Output::default(),
             config,
             gravity: GravityEffector::new(),
             state_effectors: Vec::new(),
@@ -167,13 +149,6 @@ impl Module for Spacecraft {
             omega_radps: self.config.initial_omega_radps,
         });
         self.mass_props_out.write(self.current_mass_props_msg());
-        self.diagnostics_out.write(self.current_diagnostics_msg(
-            integrated_state,
-            inertial_position_m,
-            inertial_velocity_mps,
-            Vector3::zeros(),
-            Vector3::zeros(),
-        ));
     }
 
     fn update(&mut self, context: &SimulationContext) {
@@ -211,7 +186,6 @@ impl Module for Spacecraft {
             .integrated_state
             .clone()
             .expect("spacecraft integrated state must be initialized");
-        let old_omega_radps = integrated_state.omega_radps;
         let new_state = self.propagate_rk4(
             &integrated_state,
             step_start_nanos,
@@ -219,7 +193,7 @@ impl Module for Spacecraft {
             dt_seconds,
         );
 
-        self.integrated_state = Some(new_state.clone());
+        self.integrated_state = Some(new_state);
 
         self.sync_effectors_from_integrated_state();
         let integrated_state = self
@@ -233,12 +207,6 @@ impl Module for Spacecraft {
                 context.current_sim_nanos,
             );
 
-        let state_msg = spacecraft_state_msg_from_integrated_state(
-            integrated_state,
-            inertial_position_m,
-            inertial_velocity_mps,
-        );
-        let non_gravity_accel_inertial_mps2 = self.non_gravity_accel_inertial_mps2(&state_msg);
         self.state_out.write(SpacecraftStateMsg {
             position_m: inertial_position_m,
             velocity_mps: inertial_velocity_mps,
@@ -246,13 +214,6 @@ impl Module for Spacecraft {
             omega_radps: integrated_state.omega_radps,
         });
         self.mass_props_out.write(self.current_mass_props_msg());
-        self.diagnostics_out.write(self.current_diagnostics_msg(
-            integrated_state,
-            inertial_position_m,
-            inertial_velocity_mps,
-            (integrated_state.omega_radps - old_omega_radps) / dt_seconds,
-            non_gravity_accel_inertial_mps2,
-        ));
     }
 }
 
@@ -423,8 +384,8 @@ impl Spacecraft {
         current_epoch: Epoch,
     ) -> StateDerivative {
         let inertia = self.config.inertia_kg_m2;
-        let body_to_inertial = body_to_inertial_from_sigma_bn(state.sigma_bn);
-        let inertial_to_body = body_to_inertial.inverse();
+        let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);
+        let inertial_to_body_dcm = body_to_inertial_dcm.transpose();
         let (inertial_position_m, inertial_velocity_mps) =
             self.gravity.inertial_position_and_velocity(
                 state.position_wrt_central_body_m,
@@ -437,7 +398,6 @@ impl Spacecraft {
             inertial_velocity_mps,
         );
 
-        let mut total_force_inertial = Vector3::zeros();
         let mut back_sub = BackSubMatrices {
             matrix_a: self.config.mass_kg * Matrix3::identity(),
             matrix_b: Matrix3::zeros(),
@@ -448,8 +408,7 @@ impl Spacecraft {
         };
         for effector in &self.dynamic_effectors {
             let output = effector.compute_output(&state_msg);
-            total_force_inertial += output.force_inertial_n;
-            back_sub.vec_trans += inertial_to_body.transform_vector(&output.force_inertial_n);
+            back_sub.vec_trans += inertial_to_body_dcm * output.force_inertial_n;
             back_sub.vec_rot += output.torque_body_nm;
         }
 
@@ -472,8 +431,7 @@ impl Spacecraft {
             current_epoch,
             current_sim_nanos,
         );
-        let gravity_force_body =
-            inertial_to_body.transform_vector(&(self.config.mass_kg * gravity_accel));
+        let gravity_force_body = inertial_to_body_dcm * (self.config.mass_kg * gravity_accel);
         back_sub.vec_trans += gravity_force_body;
 
         let matrix_a_inverse = back_sub
@@ -490,8 +448,7 @@ impl Spacecraft {
             * rotation_rhs;
         let body_frame_translational_accel =
             matrix_a_inverse * (back_sub.vec_trans - back_sub.matrix_b * omega_dot);
-        let translational_accel =
-            body_to_inertial.transform_vector(&body_frame_translational_accel);
+        let translational_accel = body_to_inertial_dcm * body_frame_translational_accel;
 
         let effector_state_dots = self
             .state_effectors
@@ -517,71 +474,6 @@ impl Spacecraft {
             center_of_mass_body_m: Vector3::zeros(),
             inertia_about_point_b_body_kg_m2: self.config.inertia_kg_m2,
         }
-    }
-
-    fn current_diagnostics_msg(
-        &self,
-        state: &IntegratedState,
-        inertial_position_m: Vector3<f64>,
-        inertial_velocity_mps: Vector3<f64>,
-        omega_dot_radps2: Vector3<f64>,
-        non_gravity_accel_inertial_mps2: Vector3<f64>,
-    ) -> SpacecraftDiagnosticsMsg {
-        let rotational_angular_momentum_body_kg_m2ps =
-            self.rotational_angular_momentum_body_kg_m2ps(state);
-        let body_to_inertial = body_to_inertial_from_sigma_bn(state.sigma_bn);
-        let rotational_angular_momentum_inertial_kg_m2ps =
-            body_to_inertial.transform_vector(&rotational_angular_momentum_body_kg_m2ps);
-
-        SpacecraftDiagnosticsMsg {
-            omega_dot_radps2,
-            non_conservative_accel_body_mps2: body_to_inertial
-                .inverse_transform_vector(&non_gravity_accel_inertial_mps2),
-            orbital_kinetic_energy_j: 0.5
-                * self.config.mass_kg
-                * inertial_velocity_mps.norm_squared(),
-            rotational_energy_j: self.rotational_energy_j(state),
-            orbital_angular_momentum_inertial_kg_m2ps: inertial_position_m
-                .cross(&(self.config.mass_kg * inertial_velocity_mps)),
-            rotational_angular_momentum_inertial_kg_m2ps,
-        }
-    }
-
-    fn non_gravity_accel_inertial_mps2(&self, state_msg: &SpacecraftStateMsg) -> Vector3<f64> {
-        let total_force_inertial_n = self
-            .dynamic_effectors
-            .iter()
-            .map(|effector| effector.compute_output(state_msg).force_inertial_n)
-            .fold(Vector3::zeros(), |sum, force| sum + force);
-
-        total_force_inertial_n / self.config.mass_kg
-    }
-
-    fn rotational_angular_momentum_body_kg_m2ps(&self, state: &IntegratedState) -> Vector3<f64> {
-        let inertia = self.config.inertia_kg_m2;
-        let mut rotational_angular_momentum = inertia * state.omega_radps;
-        for (effector, effector_state) in self
-            .state_effectors
-            .iter()
-            .zip(state.effector_states.iter())
-        {
-            rotational_angular_momentum +=
-                effector.rotational_angular_momentum_body(effector_state, state.omega_radps);
-        }
-        rotational_angular_momentum
-    }
-
-    fn rotational_energy_j(&self, state: &IntegratedState) -> f64 {
-        let inertia = self.config.inertia_kg_m2;
-        let mut rotational_energy = 0.5 * state.omega_radps.dot(&(inertia * state.omega_radps));
-        for (effector, effector_state) in self
-            .state_effectors
-            .iter()
-            .zip(state.effector_states.iter())
-        {
-            rotational_energy += effector.rotational_energy_j(effector_state, state.omega_radps);
-        }
-        rotational_energy
     }
 }
 
@@ -615,43 +507,6 @@ fn combine_effector_state_derivatives(
         .collect()
 }
 
-fn body_to_inertial_from_sigma_bn(sigma_bn: Vector3<f64>) -> UnitQuaternion<f64> {
-    let sigma_squared = sigma_bn.norm_squared();
-    let denom = 1.0 + sigma_squared;
-    let q_scalar = (1.0 - sigma_squared) / denom;
-    let q_vector = 2.0 * sigma_bn / denom;
-    UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
-        q_scalar, q_vector.x, q_vector.y, q_vector.z,
-    ))
-    .inverse()
-}
-
-fn shadow_mrp(sigma_bn: Vector3<f64>) -> Vector3<f64> {
-    let sigma_norm_squared = sigma_bn.norm_squared();
-    if sigma_norm_squared > 1.0 {
-        -sigma_bn / sigma_norm_squared
-    } else {
-        sigma_bn
-    }
-}
-
-fn mrp_kinematics(sigma_bn: Vector3<f64>, omega_radps: Vector3<f64>) -> Vector3<f64> {
-    0.25 * mrp_b_matrix(sigma_bn) * omega_radps
-}
-
-fn mrp_b_matrix(sigma_bn: Vector3<f64>) -> Matrix3<f64> {
-    let sigma_squared = sigma_bn.norm_squared();
-    (1.0 - sigma_squared) * Matrix3::identity()
-        + 2.0 * skew_symmetric(sigma_bn)
-        + 2.0 * (sigma_bn * sigma_bn.transpose())
-}
-
-fn skew_symmetric(vector: Vector3<f64>) -> Matrix3<f64> {
-    Matrix3::new(
-        0.0, -vector.z, vector.y, vector.z, 0.0, -vector.x, -vector.y, vector.x, 0.0,
-    )
-}
-
 fn spacecraft_state_msg_from_integrated_state(
     state: &IntegratedState,
     inertial_position_m: Vector3<f64>,
@@ -662,20 +517,6 @@ fn spacecraft_state_msg_from_integrated_state(
         velocity_mps: inertial_velocity_mps,
         sigma_bn: state.sigma_bn,
         omega_radps: state.omega_radps,
-    }
-}
-
-impl Default for SpacecraftConfig {
-    fn default() -> Self {
-        Self {
-            mass_kg: 0.0,
-            inertia_kg_m2: Matrix3::zeros(),
-            integration_step_nanos: 1,
-            initial_position_m: Vector3::zeros(),
-            initial_velocity_mps: Vector3::zeros(),
-            initial_sigma_bn: Vector3::zeros(),
-            initial_omega_radps: Vector3::zeros(),
-        }
     }
 }
 

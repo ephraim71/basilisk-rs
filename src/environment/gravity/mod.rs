@@ -1,12 +1,14 @@
+use std::cell::RefCell;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anise::almanac::Almanac;
 use anise::frames::Frame;
-use hifitime::Epoch;
-use nalgebra::Vector3;
+use hifitime::{Duration, Epoch};
+use nalgebra::{Matrix3, Vector3};
 
 use crate::messages::{Input, PlanetStateMsg};
 
@@ -40,6 +42,15 @@ pub struct SphericalHarmonicsGravityModel {
     n2: Vec<Vec<f64>>,
     n_quot1: Vec<Vec<f64>>,
     n_quot2: Vec<Vec<f64>>,
+    scratch: RefCell<SphericalHarmonicsScratch>,
+}
+
+#[derive(Clone, Debug)]
+struct SphericalHarmonicsScratch {
+    a_bar: Vec<Vec<f64>>,
+    r_e: Vec<f64>,
+    i_m: Vec<f64>,
+    rho_l: Vec<f64>,
 }
 
 impl SphericalHarmonicsGravityModel {
@@ -140,6 +151,8 @@ impl SphericalHarmonicsGravityModel {
 
         let (a_bar_seed, n1, n2, n_quot1, n_quot2) = initialize_pines_parameters(max_deg);
 
+        let scratch_a_bar = a_bar_seed.clone();
+
         Self {
             rad_equator_m,
             mu_body_m3ps2,
@@ -153,6 +166,12 @@ impl SphericalHarmonicsGravityModel {
             n2,
             n_quot1,
             n_quot2,
+            scratch: RefCell::new(SphericalHarmonicsScratch {
+                a_bar: scratch_a_bar,
+                r_e: vec![0.0; max_deg + 2],
+                i_m: vec![0.0; max_deg + 2],
+                rho_l: vec![0.0; max_deg + 2],
+            }),
         }
     }
 
@@ -197,13 +216,23 @@ impl SphericalHarmonicsGravityModel {
         let u = z / radius;
         let order = degree;
 
-        let mut a_bar = self.a_bar_seed.clone();
+        let mut scratch = self.scratch.borrow_mut();
+        scratch.a_bar.clone_from(&self.a_bar_seed);
+        scratch.r_e[..=order + 1].fill(0.0);
+        scratch.i_m[..=order + 1].fill(0.0);
+        scratch.rho_l[..=degree + 1].fill(0.0);
+
+        let SphericalHarmonicsScratch {
+            a_bar,
+            r_e,
+            i_m,
+            rho_l,
+        } = &mut *scratch;
+
         for l in 1..=degree + 1 {
             a_bar[l][l - 1] = (((2 * l) as f64 * get_k(l - 1)) / get_k(l)).sqrt() * a_bar[l][l] * u;
         }
 
-        let mut r_e = vec![0.0; order + 2];
-        let mut i_m = vec![0.0; order + 2];
         r_e[0] = 1.0;
 
         for m in 0..=order + 1 {
@@ -218,7 +247,6 @@ impl SphericalHarmonicsGravityModel {
         }
 
         let rho = self.rad_equator_m / radius;
-        let mut rho_l = vec![0.0; degree + 2];
         rho_l[0] = self.mu_body_m3ps2 / radius;
         rho_l[1] = rho_l[0] * rho;
 
@@ -295,6 +323,33 @@ pub struct GravBodyData {
     pub planet_body_in_msg: Input<PlanetStateMsg>,
 }
 
+#[derive(Clone, Debug)]
+struct CachedOrientationState {
+    inertial_to_fixed: Matrix3<f64>,
+    inertial_to_fixed_dot: Matrix3<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedGravBodyState {
+    position_inertial_m: Vector3<f64>,
+    velocity_inertial_mps: Vector3<f64>,
+    cached_at_sim_nanos: u64,
+    orientation: Option<CachedOrientationState>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GravityTimingStats {
+    pub update_cache_calls: u64,
+    pub update_cache_total_nanos: u128,
+    pub update_cache_state_read_nanos: u128,
+    pub update_cache_orientation_current_nanos: u128,
+    pub update_cache_orientation_previous_nanos: u128,
+    pub compute_gravity_field_calls: u64,
+    pub compute_gravity_field_total_nanos: u128,
+    pub compute_gravity_position_step_nanos: u128,
+    pub compute_gravity_accel_eval_nanos: u128,
+}
+
 impl GravBodyData {
     pub fn point_mass(
         planet_name: impl Into<String>,
@@ -362,19 +417,11 @@ impl GravBodyData {
             GravityModel::PointMass(model) => model.compute_field(position_inertial_m),
             GravityModel::SphericalHarmonics(model) => {
                 if let Some(orientation_model) = &model.orientation_model {
-                    let rotation = orientation_model
-                        .almanac
-                        .rotate(
-                            orientation_model.inertial_frame,
-                            orientation_model.fixed_frame,
-                            current_epoch,
-                        )
-                        .expect("failed to compute ANISE body-fixed rotation");
-                    let position_body_fixed_m =
-                        apply_anise_rotation(&rotation.rot_mat, position_inertial_m);
+                    let inertial_to_fixed = orientation_model.rotation_matrix(current_epoch);
+                    let position_body_fixed_m = inertial_to_fixed * position_inertial_m;
                     let acceleration_body_fixed_mps2 =
                         model.compute_field(position_body_fixed_m, model.max_deg, true);
-                    apply_anise_rotation_transpose(&rotation.rot_mat, acceleration_body_fixed_mps2)
+                    inertial_to_fixed.transpose() * acceleration_body_fixed_mps2
                 } else {
                     let theta = model.body_rotation_rate_radps * current_sim_nanos as f64 * 1.0e-9;
                     let position_body_fixed_m = rotate_about_z(position_inertial_m, -theta);
@@ -390,17 +437,154 @@ impl GravBodyData {
 #[derive(Clone, Debug, Default)]
 pub struct GravityEffector {
     pub grav_bodies: Vec<GravBodyData>,
+    cached_body_states: Vec<CachedGravBodyState>,
+    central_body_index: Option<usize>,
+    timing_enabled: bool,
+    timing_stats: GravityTimingStats,
 }
 
 impl GravityEffector {
     pub fn new() -> Self {
         Self {
             grav_bodies: Vec::new(),
+            cached_body_states: Vec::new(),
+            central_body_index: None,
+            timing_enabled: false,
+            timing_stats: GravityTimingStats::default(),
         }
+    }
+
+    pub fn set_timing_enabled(&mut self, enabled: bool) {
+        self.timing_enabled = enabled;
+    }
+
+    pub fn timing_stats(&self) -> &GravityTimingStats {
+        &self.timing_stats
     }
 
     pub fn add_grav_body(&mut self, grav_body: GravBodyData) {
         self.grav_bodies.push(grav_body);
+    }
+
+    pub fn update_cache(
+        &mut self,
+        current_sim_nanos: u64,
+        current_epoch: Epoch,
+        orientation_derivative_step_nanos: u64,
+    ) {
+        let total_started = self.timing_enabled.then(Instant::now);
+        self.cached_body_states.clear();
+        self.cached_body_states.reserve(self.grav_bodies.len());
+        self.central_body_index = None;
+
+        for (body_index, body) in self.grav_bodies.iter().enumerate() {
+            if body.is_central_body {
+                self.central_body_index = Some(body_index);
+            }
+
+            let phase_started = self.timing_enabled.then(Instant::now);
+            let planet_state_msg = current_planet_state_msg_from_input_or_initial(body);
+            let (position_inertial_m, velocity_inertial_mps) = if let Some(message) =
+                planet_state_msg.as_ref()
+            {
+                (message.position_inertial_m, message.velocity_inertial_mps)
+            } else {
+                current_planet_state_from_input_or_initial(body, current_sim_nanos)
+            };
+            if let Some(started) = phase_started {
+                self.timing_stats.update_cache_state_read_nanos += started.elapsed().as_nanos();
+            }
+
+            let orientation = match &body.gravity_model {
+                GravityModel::SphericalHarmonics(model) => {
+                    if let Some(message) = planet_state_msg.as_ref() {
+                        if message.has_orientation {
+                            Some(CachedOrientationState {
+                                inertial_to_fixed: message.inertial_to_fixed,
+                                inertial_to_fixed_dot: message.inertial_to_fixed_dot,
+                            })
+                        } else if let Some(orientation_model) = &model.orientation_model {
+                            let phase_started = self.timing_enabled.then(Instant::now);
+                            let inertial_to_fixed = orientation_model.rotation_matrix(current_epoch);
+                            if let Some(started) = phase_started {
+                                self.timing_stats.update_cache_orientation_current_nanos +=
+                                    started.elapsed().as_nanos();
+                            }
+
+                            let inertial_to_fixed_dot = if orientation_derivative_step_nanos == 0 {
+                                Matrix3::zeros()
+                            } else {
+                                let derivative_step = Duration::from_total_nanoseconds(
+                                    orientation_derivative_step_nanos as i128,
+                                );
+                                let previous_epoch = current_epoch - derivative_step;
+                                let phase_started = self.timing_enabled.then(Instant::now);
+                                let previous_inertial_to_fixed =
+                                    orientation_model.rotation_matrix(previous_epoch);
+                                if let Some(started) = phase_started {
+                                    self.timing_stats.update_cache_orientation_previous_nanos +=
+                                        started.elapsed().as_nanos();
+                                }
+                                (inertial_to_fixed - previous_inertial_to_fixed)
+                                    / (orientation_derivative_step_nanos as f64 * 1.0e-9)
+                            };
+
+                            Some(CachedOrientationState {
+                                inertial_to_fixed,
+                                inertial_to_fixed_dot,
+                            })
+                        } else {
+                            None
+                        }
+                    } else if let Some(orientation_model) = &model.orientation_model {
+                        let phase_started = self.timing_enabled.then(Instant::now);
+                        let inertial_to_fixed = orientation_model.rotation_matrix(current_epoch);
+                        if let Some(started) = phase_started {
+                            self.timing_stats.update_cache_orientation_current_nanos +=
+                                started.elapsed().as_nanos();
+                        }
+
+                        let inertial_to_fixed_dot = if orientation_derivative_step_nanos == 0 {
+                            Matrix3::zeros()
+                        } else {
+                            let derivative_step = Duration::from_total_nanoseconds(
+                                orientation_derivative_step_nanos as i128,
+                            );
+                            let previous_epoch = current_epoch - derivative_step;
+                            let phase_started = self.timing_enabled.then(Instant::now);
+                            let previous_inertial_to_fixed =
+                                orientation_model.rotation_matrix(previous_epoch);
+                            if let Some(started) = phase_started {
+                                self.timing_stats.update_cache_orientation_previous_nanos +=
+                                    started.elapsed().as_nanos();
+                            }
+                            (inertial_to_fixed - previous_inertial_to_fixed)
+                                / (orientation_derivative_step_nanos as f64 * 1.0e-9)
+                        };
+
+                        Some(CachedOrientationState {
+                            inertial_to_fixed,
+                            inertial_to_fixed_dot,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                GravityModel::PointMass(_) => None,
+            };
+
+            self.cached_body_states.push(CachedGravBodyState {
+                position_inertial_m,
+                velocity_inertial_mps,
+                cached_at_sim_nanos: current_sim_nanos,
+                orientation,
+            });
+        }
+
+        if let Some(started) = total_started {
+            self.timing_stats.update_cache_calls += 1;
+            self.timing_stats.update_cache_total_nanos += started.elapsed().as_nanos();
+        }
     }
 
     pub fn central_body(&self) -> Option<&GravBodyData> {
@@ -418,42 +602,64 @@ impl GravityEffector {
     }
 
     pub fn compute_gravity_field(
-        &self,
+        &mut self,
         relative_position_m: Vector3<f64>,
         current_epoch: Epoch,
         current_sim_nanos: u64,
     ) -> Vector3<f64> {
-        let inertial_position_m = if let Some(central_body) = self.central_body() {
-            relative_position_m + self.current_planet_state(central_body, current_sim_nanos).0
+        let total_started = self.timing_enabled.then(Instant::now);
+        let central_body_index = self.central_body_index.or_else(|| {
+            self.grav_bodies
+                .iter()
+                .position(|body| body.is_central_body)
+        });
+
+        let phase_started = self.timing_enabled.then(Instant::now);
+        let inertial_position_m = if let Some(central_body_index) = central_body_index {
+            relative_position_m
+                + self.euler_stepped_body_position(central_body_index, current_sim_nanos)
         } else {
             relative_position_m
         };
 
-        let central_body_position_m = self
-            .central_body()
-            .map(|body| self.current_planet_state(body, current_sim_nanos).0)
+        let central_body_position_m = central_body_index
+            .map(|body_index| self.euler_stepped_body_position(body_index, current_sim_nanos))
             .unwrap_or_else(Vector3::zeros);
+        if let Some(started) = phase_started {
+            self.timing_stats.compute_gravity_position_step_nanos += started.elapsed().as_nanos();
+        }
 
-        self.grav_bodies.iter().fold(Vector3::zeros(), |sum, body| {
-            let body_position_m = self.current_planet_state(body, current_sim_nanos).0;
+        let phase_started = self.timing_enabled.then(Instant::now);
+        let mut total_acceleration = Vector3::zeros();
+        for (body_index, body) in self.grav_bodies.iter().enumerate() {
+            let body_position_m = self.euler_stepped_body_position(body_index, current_sim_nanos);
             let spacecraft_wrt_body_m = inertial_position_m - body_position_m;
-            let mut acceleration = sum
-                + body.compute_gravity_inertial(
-                    spacecraft_wrt_body_m,
-                    current_epoch,
-                    current_sim_nanos,
-                );
+            total_acceleration += self.compute_cached_gravity_inertial(
+                body_index,
+                body,
+                spacecraft_wrt_body_m,
+                current_epoch,
+                current_sim_nanos,
+            );
 
-            if self.central_body().is_some() && !body.is_central_body {
-                acceleration += body.compute_gravity_inertial(
+            if central_body_index.is_some() && !body.is_central_body {
+                total_acceleration += self.compute_cached_gravity_inertial(
+                    body_index,
+                    body,
                     body_position_m - central_body_position_m,
                     current_epoch,
                     current_sim_nanos,
                 );
             }
-
-            acceleration
-        })
+        }
+        if let Some(started) = phase_started {
+            self.timing_stats.compute_gravity_accel_eval_nanos += started.elapsed().as_nanos();
+        }
+        if let Some(started) = total_started {
+            self.timing_stats.compute_gravity_field_calls += 1;
+            self.timing_stats.compute_gravity_field_total_nanos += started.elapsed().as_nanos();
+        }
+        total_acceleration
     }
 
     pub fn inertial_position_and_velocity(
@@ -462,9 +668,17 @@ impl GravityEffector {
         relative_velocity_mps: Vector3<f64>,
         current_sim_nanos: u64,
     ) -> (Vector3<f64>, Vector3<f64>) {
-        if let Some(central_body) = self.central_body() {
-            let (central_position_m, central_velocity_mps) =
-                self.current_planet_state(central_body, current_sim_nanos);
+        let central_body_index = self.central_body_index.or_else(|| {
+            self.grav_bodies
+                .iter()
+                .position(|body| body.is_central_body)
+        });
+
+        if let Some(central_body_index) = central_body_index {
+            let central_position_m =
+                self.euler_stepped_body_position(central_body_index, current_sim_nanos);
+            let central_velocity_mps =
+                self.euler_stepped_body_velocity(central_body_index, current_sim_nanos);
 
             (
                 relative_position_m + central_position_m,
@@ -475,21 +689,71 @@ impl GravityEffector {
         }
     }
 
-    fn current_planet_state(
+    fn euler_stepped_body_position(
         &self,
-        body: &GravBodyData,
+        body_index: usize,
         current_sim_nanos: u64,
-    ) -> (Vector3<f64>, Vector3<f64>) {
-        if body.planet_body_in_msg.is_connected() {
-            let state = body.planet_body_in_msg.read();
-            return (state.position_inertial_m, state.velocity_inertial_mps);
+    ) -> Vector3<f64> {
+        if let Some(cached_state) = self.cached_body_states.get(body_index) {
+            let dt_seconds =
+                signed_time_delta_seconds(current_sim_nanos, cached_state.cached_at_sim_nanos);
+            cached_state.position_inertial_m + cached_state.velocity_inertial_mps * dt_seconds
+        } else {
+            let body = &self.grav_bodies[body_index];
+            current_planet_state_from_input_or_initial(body, current_sim_nanos).0
         }
+    }
 
-        let position_m = body.initial_position_m
-            + body.initial_velocity_mps * (current_sim_nanos as f64 * 1.0e-9);
-        let velocity_mps = body.initial_velocity_mps;
+    fn euler_stepped_body_velocity(
+        &self,
+        body_index: usize,
+        current_sim_nanos: u64,
+    ) -> Vector3<f64> {
+        if let Some(cached_state) = self.cached_body_states.get(body_index) {
+            let _ = current_sim_nanos;
+            cached_state.velocity_inertial_mps
+        } else {
+            let body = &self.grav_bodies[body_index];
+            current_planet_state_from_input_or_initial(body, current_sim_nanos).1
+        }
+    }
 
-        (position_m, velocity_mps)
+    fn compute_cached_gravity_inertial(
+        &self,
+        body_index: usize,
+        body: &GravBodyData,
+        position_inertial_m: Vector3<f64>,
+        current_epoch: Epoch,
+        current_sim_nanos: u64,
+    ) -> Vector3<f64> {
+        let Some(cached_state) = self.cached_body_states.get(body_index) else {
+            return body.compute_gravity_inertial(
+                position_inertial_m,
+                current_epoch,
+                current_sim_nanos,
+            );
+        };
+
+        match (&body.gravity_model, &cached_state.orientation) {
+            (GravityModel::PointMass(model), _) => model.compute_field(position_inertial_m),
+            (GravityModel::SphericalHarmonics(model), Some(orientation)) => {
+                let dt_seconds =
+                    signed_time_delta_seconds(current_sim_nanos, cached_state.cached_at_sim_nanos);
+                let inertial_to_fixed =
+                    orientation.inertial_to_fixed + orientation.inertial_to_fixed_dot * dt_seconds;
+                let position_body_fixed_m = inertial_to_fixed * position_inertial_m;
+                let acceleration_body_fixed_mps2 =
+                    model.compute_field(position_body_fixed_m, model.max_deg, true);
+                inertial_to_fixed.transpose() * acceleration_body_fixed_mps2
+            }
+            (GravityModel::SphericalHarmonics(model), None) => {
+                let theta = model.body_rotation_rate_radps * current_sim_nanos as f64 * 1.0e-9;
+                let position_body_fixed_m = rotate_about_z(position_inertial_m, -theta);
+                let acceleration_body_fixed_mps2 =
+                    model.compute_field(position_body_fixed_m, model.max_deg, true);
+                rotate_about_z(acceleration_body_fixed_mps2, theta)
+            }
+        }
     }
 }
 
@@ -597,6 +861,14 @@ impl AniseOrientationModel {
             fixed_frame,
         }
     }
+
+    fn rotation_matrix(&self, epoch: Epoch) -> Matrix3<f64> {
+        let rotation = self
+            .almanac
+            .rotate(self.inertial_frame, self.fixed_frame, epoch)
+            .expect("failed to compute ANISE body-fixed rotation");
+        matrix3_from_anise(&rotation.rot_mat)
+    }
 }
 
 impl fmt::Debug for AniseOrientationModel {
@@ -608,22 +880,45 @@ impl fmt::Debug for AniseOrientationModel {
     }
 }
 
-fn apply_anise_rotation(rot_mat: &anise::math::Matrix3, vector: Vector3<f64>) -> Vector3<f64> {
-    Vector3::new(
-        rot_mat[(0, 0)] * vector.x + rot_mat[(0, 1)] * vector.y + rot_mat[(0, 2)] * vector.z,
-        rot_mat[(1, 0)] * vector.x + rot_mat[(1, 1)] * vector.y + rot_mat[(1, 2)] * vector.z,
-        rot_mat[(2, 0)] * vector.x + rot_mat[(2, 1)] * vector.y + rot_mat[(2, 2)] * vector.z,
-    )
+fn current_planet_state_from_input_or_initial(
+    body: &GravBodyData,
+    current_sim_nanos: u64,
+) -> (Vector3<f64>, Vector3<f64>) {
+    if body.planet_body_in_msg.is_connected() {
+        let state = body.planet_body_in_msg.read();
+        return (state.position_inertial_m, state.velocity_inertial_mps);
+    }
+
+    let position_m =
+        body.initial_position_m + body.initial_velocity_mps * (current_sim_nanos as f64 * 1.0e-9);
+    let velocity_mps = body.initial_velocity_mps;
+
+    (position_m, velocity_mps)
 }
 
-fn apply_anise_rotation_transpose(
-    rot_mat: &anise::math::Matrix3,
-    vector: Vector3<f64>,
-) -> Vector3<f64> {
-    Vector3::new(
-        rot_mat[(0, 0)] * vector.x + rot_mat[(1, 0)] * vector.y + rot_mat[(2, 0)] * vector.z,
-        rot_mat[(0, 1)] * vector.x + rot_mat[(1, 1)] * vector.y + rot_mat[(2, 1)] * vector.z,
-        rot_mat[(0, 2)] * vector.x + rot_mat[(1, 2)] * vector.y + rot_mat[(2, 2)] * vector.z,
+fn current_planet_state_msg_from_input_or_initial(body: &GravBodyData) -> Option<PlanetStateMsg> {
+    if body.planet_body_in_msg.is_connected() {
+        Some(body.planet_body_in_msg.read())
+    } else {
+        None
+    }
+}
+
+fn signed_time_delta_seconds(current_sim_nanos: u64, baseline_sim_nanos: u64) -> f64 {
+    (current_sim_nanos as i128 - baseline_sim_nanos as i128) as f64 * 1.0e-9
+}
+
+fn matrix3_from_anise(rot_mat: &anise::math::Matrix3) -> Matrix3<f64> {
+    Matrix3::new(
+        rot_mat[(0, 0)],
+        rot_mat[(0, 1)],
+        rot_mat[(0, 2)],
+        rot_mat[(1, 0)],
+        rot_mat[(1, 1)],
+        rot_mat[(1, 2)],
+        rot_mat[(2, 0)],
+        rot_mat[(2, 1)],
+        rot_mat[(2, 2)],
     )
 }
 

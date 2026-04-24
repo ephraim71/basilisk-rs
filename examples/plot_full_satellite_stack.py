@@ -82,22 +82,22 @@ def main() -> None:
     for name, rows in sun_sensor_rows.items():
         axes[1, 1].plot(
             [row["sim_time_s"] for row in rows],
-            [row["alpha_rad"] for row in rows],
+            [row["sensed_value"] for row in rows],
             label=name,
         )
-    axes[1, 1].set_title("Sun Sensor Alpha")
-    axes[1, 1].set_ylabel("rad")
+    axes[1, 1].set_title("Sun Sensor Sensed Value")
+    axes[1, 1].set_ylabel("signal")
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].legend(ncol=2, fontsize=8)
 
     for name, rows in sun_sensor_rows.items():
         axes[2, 0].plot(
             [row["sim_time_s"] for row in rows],
-            [row["beta_rad"] for row in rows],
+            [row["true_value"] for row in rows],
             label=name,
         )
-    axes[2, 0].set_title("Sun Sensor Beta")
-    axes[2, 0].set_ylabel("rad")
+    axes[2, 0].set_title("Sun Sensor True Value")
+    axes[2, 0].set_ylabel("signal")
     axes[2, 0].grid(True, alpha=0.3)
     axes[2, 0].legend(ncol=2, fontsize=8)
 

@@ -199,7 +199,6 @@ impl<'a> Simulation<'a> {
 
     pub fn context(&self) -> SimulationContext {
         SimulationContext {
-            start_epoch: self.start_epoch,
             current_sim_nanos: self.current_sim_nanos,
             current_epoch: self.current_epoch(),
         }

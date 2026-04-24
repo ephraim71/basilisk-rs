@@ -58,7 +58,7 @@ impl StarTracker {
     }
 
     fn compute_true_output(&self, state: &SpacecraftStateMsg) -> UnitQuaternion<f64> {
-        self.config.body_to_sensor_quaternion * state.attitude_b_to_i.inverse()
+        self.config.body_to_sensor_quaternion * state.inertial_to_body()
     }
 
     fn apply_sensor_errors(&mut self, true_attitude: UnitQuaternion<f64>) -> UnitQuaternion<f64> {

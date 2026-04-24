@@ -1,7 +1,8 @@
 use nalgebra::Vector3;
+use std::any::Any;
 
 use crate::messages::{EclipseMsg, Input, SpacecraftStateMsg, SunEphemerisMsg};
-use crate::spacecraft::EffectorOutput;
+use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
 const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1372.5398;
@@ -51,6 +52,20 @@ impl SolarRadiationPressure {
             force_inertial_n: scale_factor * sun_to_spacecraft * eclipse.illumination_factor,
             torque_body_nm: Vector3::zeros(),
         }
+    }
+}
+
+impl DynamicEffector for SolarRadiationPressure {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        SolarRadiationPressure::compute_output(self, state)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

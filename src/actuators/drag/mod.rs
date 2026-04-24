@@ -1,7 +1,8 @@
 use nalgebra::Vector3;
+use std::any::Any;
 
 use crate::messages::{AtmosphereMsg, Input, SpacecraftStateMsg};
-use crate::spacecraft::EffectorOutput;
+use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
 pub struct DragConfig {
@@ -44,7 +45,7 @@ impl Drag {
             return EffectorOutput::default();
         }
 
-        let body_to_inertial = state.attitude_b_to_i;
+        let body_to_inertial = state.body_to_inertial();
         let inertial_to_body = body_to_inertial.inverse();
         let relative_velocity_body = inertial_to_body.transform_vector(&relative_velocity_inertial);
         let force_body = -0.5
@@ -59,6 +60,20 @@ impl Drag {
             force_inertial_n: body_to_inertial.transform_vector(&force_body),
             torque_body_nm: self.config.com_offset_m.cross(&force_body),
         }
+    }
+}
+
+impl DynamicEffector for Drag {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        Drag::compute_output(self, state)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

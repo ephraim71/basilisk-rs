@@ -1,7 +1,8 @@
 use nalgebra::Vector3;
+use std::any::Any;
 
-use crate::messages::{Input, ThrusterCommandMsg};
-use crate::spacecraft::EffectorOutput;
+use crate::messages::{Input, SpacecraftStateMsg, ThrusterCommandMsg};
+use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
 pub struct ThrusterRampPoint {
@@ -123,7 +124,7 @@ impl Thruster {
         }
     }
 
-    pub fn prepare_for_step(&mut self, current_sim_nanos: u64) {
+    pub fn pre_integration(&mut self, current_sim_nanos: u64) {
         let current_time_s = current_sim_nanos as f64 * 1.0e-9;
         let command_on_time_s = self.command_in.read().on_time_s;
         if (command_on_time_s - self.last_command_s).abs() > 1.0e-15 {
@@ -168,7 +169,7 @@ impl Thruster {
                 );
         }
 
-        let attitude_b_to_i = state.attitude_b_to_i;
+        let attitude_b_to_i = state.body_to_inertial();
 
         EffectorOutput {
             force_inertial_n: attitude_b_to_i.transform_vector(&force_body_n),
@@ -319,6 +320,24 @@ impl Thruster {
     }
 }
 
+impl DynamicEffector for Thruster {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn pre_integration(&mut self, current_sim_nanos: u64, _dt_seconds: f64) {
+        Thruster::pre_integration(self, current_sim_nanos);
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        Thruster::compute_output(self, state)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 fn normalized_direction(direction_body: Vector3<f64>) -> Vector3<f64> {
     if direction_body.norm_squared() > 0.0 {
         direction_body.normalize()
@@ -416,7 +435,7 @@ mod tests {
         let mut thr = Thruster::new(config);
         let cmd = Output::new(ThrusterCommandMsg { on_time_s: 5.0 });
         thr.command_in.connect(cmd.slot());
-        thr.prepare_for_step(0); // fires immediately at t=0
+        thr.pre_integration(0); // fires immediately at t=0
         thr
     }
 

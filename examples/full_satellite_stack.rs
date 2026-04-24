@@ -10,7 +10,7 @@ use basilisk_rs::gravity::GravBodyData;
 use basilisk_rs::imu::{Imu, ImuConfig};
 use basilisk_rs::magnetic_field::{IgrfField, IgrfFieldConfig};
 use basilisk_rs::simulation::Simulation;
-use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig, SpacecraftEffector};
+use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::srp::{SolarRadiationPressure, SolarRadiationPressureConfig};
 use basilisk_rs::star_tracker::{StarTracker, StarTrackerConfig};
 use basilisk_rs::sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
@@ -37,12 +37,14 @@ fn main() {
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 18.0,
-        inertia_kg_m2: [[0.16, 0.001, 0.0], [0.001, 0.21, 0.0], [0.0, 0.0, 0.28]],
+        inertia_kg_m2: Matrix3::new(0.16, 0.001, 0.0, 0.001, 0.21, 0.0, 0.0, 0.0, 0.28),
+        integration_step_nanos: 5_000_000,
         initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),
         initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.01, 0.02, 0.015),
     });
+    spacecraft.set_timing_enabled(profile_sim);
 
     spacecraft.add_grav_body(
         GravBodyData::spherical_harmonics_from_file(
@@ -79,12 +81,28 @@ fn main() {
         name: "sun_ephemeris".to_string(),
         spk_path: repo_root.join("assets/anise/de440s.bsp"),
     });
+    sun_ephemeris.set_timing_enabled(profile_sim);
+    let mut earth_ephemeris = AnisePlanetEphemeris::new(AnisePlanetEphemerisConfig {
+        name: "earth_ephemeris".to_string(),
+        spk_path: repo_root.join("assets/anise/de440s.bsp"),
+        additional_kernel_paths: vec![
+            repo_root.join("assets/anise/pck11.pca"),
+            repo_root.join("assets/anise/earth_latest_high_prec.bpc"),
+        ],
+        source_frame: EARTH_J2000,
+        observer_frame: EARTH_J2000,
+        fixed_frame: Some(IAU_EARTH_FRAME),
+    });
+    earth_ephemeris.set_timing_enabled(profile_sim);
     let mut moon_ephemeris = AnisePlanetEphemeris::new(AnisePlanetEphemerisConfig {
         name: "moon_ephemeris".to_string(),
         spk_path: repo_root.join("assets/anise/de440s.bsp"),
+        additional_kernel_paths: vec![],
         source_frame: MOON_J2000,
         observer_frame: EARTH_J2000,
+        fixed_frame: None,
     });
+    moon_ephemeris.set_timing_enabled(profile_sim);
     let mut atmosphere = MsisAtmosphere::new(MsisAtmosphereConfig {
         name: "earth_atmosphere".to_string(),
         planet_radius_m: 6_378_136.3,
@@ -97,6 +115,7 @@ fn main() {
         f107_daily: 150.0,
         f107_average: 150.0,
     });
+    atmosphere.set_timing_enabled(profile_sim);
     let mut eclipse = Eclipse::new(EclipseConfig {
         name: "earth_eclipse".to_string(),
         occulting_body_radius_m: 6_378_136.3,
@@ -109,6 +128,7 @@ fn main() {
         inertial_frame: EARTH_J2000,
         fixed_frame: IAU_EARTH_FRAME,
     });
+    magnetic_field.set_timing_enabled(profile_sim);
 
     let mut imu_1 = Imu::new(ImuConfig {
         name: "imu_1".to_string(),
@@ -252,6 +272,12 @@ fn main() {
     sim.set_timing_enabled(profile_sim);
 
     sim.connect(
+        &earth_ephemeris.output_planet_msg,
+        spacecraft
+            .grav_body_input_mut("earth")
+            .expect("missing earth gravity body input"),
+    );
+    sim.connect(
         &sun_ephemeris.output_planet_msg,
         spacecraft
             .grav_body_input_mut("sun")
@@ -264,6 +290,7 @@ fn main() {
             .expect("missing moon gravity body input"),
     );
     sim.connect(&spacecraft.state_out, &mut atmosphere.input_state_msg);
+    sim.connect(&earth_ephemeris.output_planet_msg, &mut atmosphere.input_planet_msg);
     sim.connect(&spacecraft.state_out, &mut eclipse.input_state_msg);
     sim.connect(&sun_ephemeris.output_sun_msg, &mut eclipse.input_sun_msg);
     sim.connect(
@@ -272,10 +299,14 @@ fn main() {
     );
     sim.connect(&sun_ephemeris.output_sun_msg, &mut srp.input_sun_msg);
     sim.connect(&eclipse.output_eclipse_msg, &mut srp.input_eclipse_msg);
-    spacecraft.add_effector(SpacecraftEffector::Drag(drag));
-    spacecraft.add_effector(SpacecraftEffector::SolarRadiationPressure(srp));
+    spacecraft.add_dynamic_effector(drag);
+    spacecraft.add_dynamic_effector(srp);
 
     sim.connect(&spacecraft.state_out, &mut magnetic_field.input_state_msg);
+    sim.connect(
+        &earth_ephemeris.output_planet_msg,
+        &mut magnetic_field.input_planet_msg,
+    );
     sim.connect(&spacecraft.state_out, &mut imu_1.input_state_msg);
     sim.connect(&spacecraft.state_out, &mut imu_2.input_state_msg);
     sim.connect(&spacecraft.state_out, &mut tam_1.input_state_msg);
@@ -293,6 +324,10 @@ fn main() {
     ] {
         sim.connect(&spacecraft.state_out, &mut sun_sensor.input_state_msg);
         sim.connect(&sun_ephemeris.output_sun_msg, &mut sun_sensor.input_sun_msg);
+        sim.connect(
+            &eclipse.output_eclipse_msg,
+            &mut sun_sensor.input_eclipse_msg,
+        );
     }
     sim.connect(
         &magnetic_field.output_magnetic_field_msg,
@@ -365,6 +400,12 @@ fn main() {
     sim.add_module(
         "sun_ephemeris",
         &mut sun_ephemeris,
+        5_000_000,
+        PRIORITY_ENVIRONMENT,
+    );
+    sim.add_module(
+        "earth_ephemeris",
+        &mut earth_ephemeris,
         5_000_000,
         PRIORITY_ENVIRONMENT,
     );
@@ -570,6 +611,185 @@ fn main() {
                 timing.total_update_nanos as f64 * 1.0e-6,
             );
         }
+        let grav = spacecraft.gravity.timing_stats();
+        println!("gravity_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_cache_total",
+            grav.update_cache_calls,
+            grav.update_cache_total_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "cache_state_read",
+            grav.update_cache_state_read_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "cache_orientation_now",
+            grav.update_cache_orientation_current_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "cache_orientation_prev",
+            grav.update_cache_orientation_previous_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "compute_field_total",
+            grav.compute_gravity_field_calls,
+            grav.compute_gravity_field_total_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "position_step",
+            grav.compute_gravity_position_step_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "accel_eval",
+            grav.compute_gravity_accel_eval_nanos as f64 * 1.0e-6,
+        );
+
+        let atm = atmosphere.timing_stats();
+        println!("atmosphere_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_total",
+            atm.update_calls,
+            atm.total_update_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "read_state",
+            atm.read_state_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "read_planet",
+            atm.read_planet_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "anise_rotation",
+            atm.anise_rotation_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "geodetic",
+            atm.geodetic_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "msis_eval",
+            atm.msis_eval_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "output_write",
+            atm.output_write_nanos as f64 * 1.0e-6,
+        );
+
+        let mag = magnetic_field.timing_stats();
+        println!("magnetic_field_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_total",
+            mag.update_calls,
+            mag.total_update_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "read_input",
+            mag.read_input_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "anise_rotation",
+            mag.anise_rotation_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "geodetic",
+            mag.geodetic_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "igrf_eval",
+            mag.igrf_eval_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "frame_transform",
+            mag.frame_transform_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "output_write",
+            mag.output_write_nanos as f64 * 1.0e-6,
+        );
+
+        let sun = sun_ephemeris.timing_stats();
+        println!("sun_ephemeris_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_total",
+            sun.update_calls,
+            sun.total_update_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "translate",
+            sun.translate_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "write_sun_msg",
+            sun.write_sun_msg_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "write_planet_msg",
+            sun.write_planet_msg_nanos as f64 * 1.0e-6,
+        );
+
+        let earth = earth_ephemeris.timing_stats();
+        println!("earth_ephemeris_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_total",
+            earth.update_calls,
+            earth.total_update_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "translate",
+            earth.translate_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "write_output",
+            earth.write_output_nanos as f64 * 1.0e-6,
+        );
+
+        let moon = moon_ephemeris.timing_stats();
+        println!("moon_ephemeris_breakdown_ms =");
+        println!(
+            "  {:>24}  calls={:>6}  total_ms={:>10.3}",
+            "update_total",
+            moon.update_calls,
+            moon.total_update_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "translate",
+            moon.translate_nanos as f64 * 1.0e-6,
+        );
+        println!(
+            "  {:>24}  total_ms={:>10.3}",
+            "write_output",
+            moon.write_output_nanos as f64 * 1.0e-6,
+        );
     }
     println!("recording_enabled = {}", enable_recording);
     println!("show_progress = {}", show_progress);
@@ -577,28 +797,9 @@ fn main() {
     if enable_recording {
         println!("output_dir = {}", output_dir.display());
     }
-    println!("effectors = {}", spacecraft.effectors.len());
-    println!("imu_1 = {:?}", imu_1.output_imu_msg.read());
-    println!("imu_2 = {:?}", imu_2.output_imu_msg.read());
-    println!("tam_1 = {:?}", tam_1.output_tam_msg.read());
-    println!("tam_2 = {:?}", tam_2.output_tam_msg.read());
-    println!("gps = {:?}", gps.output_gps_msg.read());
-    println!("sun = {:?}", sun_ephemeris.output_sun_msg.read());
-    println!("moon = {:?}", moon_ephemeris.output_planet_msg.read());
-    println!("atmosphere = {:?}", atmosphere.output_atmosphere_msg.read());
-    println!("eclipse = {:?}", eclipse.output_eclipse_msg.read());
-    println!("st_1 = {:?}", star_tracker_1.output_star_tracker_msg.read());
-    println!("st_2 = {:?}", star_tracker_2.output_star_tracker_msg.read());
     println!(
-        "sun_sensors = {:?}",
-        [
-            sun_sensor_px.output_sun_sensor_msg.read(),
-            sun_sensor_mx.output_sun_sensor_msg.read(),
-            sun_sensor_py.output_sun_sensor_msg.read(),
-            sun_sensor_my.output_sun_sensor_msg.read(),
-            sun_sensor_pz.output_sun_sensor_msg.read(),
-            sun_sensor_mz.output_sun_sensor_msg.read(),
-        ]
+        "effectors = {}",
+        spacecraft.state_effectors.len() + spacecraft.dynamic_effectors.len()
     );
 }
 
@@ -611,9 +812,14 @@ fn single_sun_sensor(
         name: name.to_string(),
         position_m,
         body_to_sensor_quaternion: body_to_sensor_for_boresight(boresight_body),
-        alpha_beta_half_fov_rad: 60.0_f64.to_radians(),
-        alpha_noise_std_rad: 0.05_f64.to_radians(),
-        beta_noise_std_rad: 0.05_f64.to_radians(),
+        fov_half_angle_rad: 60.0_f64.to_radians(),
+        scale_factor: 1.0,
+        kelly_factor: 0.0,
+        k_power: 2.0,
+        bias: 0.0,
+        noise_std: 0.002,
+        min_output: 0.0,
+        max_output: 1.0,
     })
 }
 

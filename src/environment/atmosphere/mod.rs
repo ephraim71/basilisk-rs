@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anise::almanac::Almanac;
 use anise::frames::Frame;
@@ -80,6 +81,20 @@ pub struct MsisAtmosphere {
     pub input_planet_msg: Input<PlanetStateMsg>,
     pub output_atmosphere_msg: Output<AtmosphereMsg>,
     orientation_model: AniseOrientationModel,
+    timing_enabled: bool,
+    timing_stats: MsisAtmosphereTimingStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MsisAtmosphereTimingStats {
+    pub update_calls: u64,
+    pub total_update_nanos: u128,
+    pub read_state_nanos: u128,
+    pub read_planet_nanos: u128,
+    pub anise_rotation_nanos: u128,
+    pub geodetic_nanos: u128,
+    pub msis_eval_nanos: u128,
+    pub output_write_nanos: u128,
 }
 
 impl Module for MsisAtmosphere {
@@ -88,9 +103,26 @@ impl Module for MsisAtmosphere {
     }
 
     fn update(&mut self, context: &SimulationContext) {
+        let total_started = self.timing_enabled.then(Instant::now);
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let state = self.input_state_msg.read();
+        if let Some(started) = phase_started {
+            self.timing_stats.read_state_nanos += started.elapsed().as_nanos();
+        }
+
         let atmosphere = self.evaluate_msis(&state, context.current_epoch);
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         self.output_atmosphere_msg.write(atmosphere);
+        if let Some(started) = phase_started {
+            self.timing_stats.output_write_nanos += started.elapsed().as_nanos();
+        }
+
+        if let Some(started) = total_started {
+            self.timing_stats.update_calls += 1;
+            self.timing_stats.total_update_nanos += started.elapsed().as_nanos();
+        }
     }
 }
 
@@ -109,35 +141,83 @@ impl MsisAtmosphere {
             input_planet_msg: Input::default(),
             output_atmosphere_msg: Output::default(),
             orientation_model,
+            timing_enabled: false,
+            timing_stats: MsisAtmosphereTimingStats::default(),
         }
     }
 
-    fn evaluate_msis(&self, state: &SpacecraftStateMsg, current_epoch: Epoch) -> AtmosphereMsg {
+    pub fn set_timing_enabled(&mut self, enabled: bool) {
+        self.timing_enabled = enabled;
+    }
+
+    pub fn timing_stats(&self) -> &MsisAtmosphereTimingStats {
+        &self.timing_stats
+    }
+
+    fn evaluate_msis(&mut self, state: &SpacecraftStateMsg, current_epoch: Epoch) -> AtmosphereMsg {
         let spacecraft_position_inertial_m = state.position_m;
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let planet_position_inertial_m = if self.input_planet_msg.is_connected() {
             self.input_planet_msg.read().position_inertial_m
         } else {
             Vector3::zeros()
         };
+        if let Some(started) = phase_started {
+            self.timing_stats.read_planet_nanos += started.elapsed().as_nanos();
+        }
+
         let relative_position_inertial_m =
             spacecraft_position_inertial_m - planet_position_inertial_m;
-        let rotation = self
-            .orientation_model
-            .almanac
-            .rotate(
-                self.orientation_model.inertial_frame,
-                self.orientation_model.fixed_frame,
-                current_epoch,
-            )
-            .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
-        let relative_position_fixed_m =
-            apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m);
+
+        let relative_position_fixed_m = if self.input_planet_msg.is_connected() {
+            let planet_state = self.input_planet_msg.read();
+            if planet_state.has_orientation {
+                planet_state.inertial_to_fixed * relative_position_inertial_m
+            } else {
+                let phase_started = self.timing_enabled.then(Instant::now);
+                let rotation = self
+                    .orientation_model
+                    .almanac
+                    .rotate(
+                        self.orientation_model.inertial_frame,
+                        self.orientation_model.fixed_frame,
+                        current_epoch,
+                    )
+                    .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
+                if let Some(started) = phase_started {
+                    self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
+                }
+                apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m)
+            }
+        } else {
+            let phase_started = self.timing_enabled.then(Instant::now);
+            let rotation = self
+                .orientation_model
+                .almanac
+                .rotate(
+                    self.orientation_model.inertial_frame,
+                    self.orientation_model.fixed_frame,
+                    current_epoch,
+                )
+                .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
+            if let Some(started) = phase_started {
+                self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
+            }
+            apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m)
+        };
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let (latitude_rad, longitude_rad, altitude_m) = ecef_to_geodetic(relative_position_fixed_m);
+        if let Some(started) = phase_started {
+            self.timing_stats.geodetic_nanos += started.elapsed().as_nanos();
+        }
 
         if altitude_m < 0.0 {
             return AtmosphereMsg::default();
         }
 
+        let phase_started = self.timing_enabled.then(Instant::now);
         let (density_kgpm3, local_temp_k) = nrlmsise_with_inputs(
             altitude_m / 1_000.0,
             latitude_rad.to_degrees(),
@@ -157,6 +237,9 @@ impl MsisAtmosphere {
                 self.config.ap_3hr,
             ]),
         );
+        if let Some(started) = phase_started {
+            self.timing_stats.msis_eval_nanos += started.elapsed().as_nanos();
+        }
 
         AtmosphereMsg {
             neutral_density_kgpm3: density_kgpm3,

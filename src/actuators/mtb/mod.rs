@@ -1,7 +1,8 @@
 use nalgebra::Vector3;
+use std::any::Any;
 
 use crate::messages::{Input, MagneticFieldMsg, MtbCommandMsg, SpacecraftStateMsg};
-use crate::spacecraft::EffectorOutput;
+use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
 pub struct MtbConfig {
@@ -27,7 +28,7 @@ impl Mtb {
     }
 
     pub fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        let attitude_body_to_inertial = state.attitude_b_to_i;
+        let attitude_body_to_inertial = state.body_to_inertial();
         let magnetic_field_body_t = attitude_body_to_inertial.inverse().transform_vector(
             &self
                 .input_magnetic_field_msg
@@ -46,6 +47,20 @@ impl Mtb {
             force_inertial_n: Vector3::zeros(),
             torque_body_nm: dipole_body_am2.cross(&magnetic_field_body_t),
         }
+    }
+}
+
+impl DynamicEffector for Mtb {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        Mtb::compute_output(self, state)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

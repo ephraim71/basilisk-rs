@@ -10,6 +10,7 @@ use hifitime::Epoch;
 
 pub mod actuators;
 pub mod environment;
+pub mod fsw;
 pub mod messages;
 pub mod sensors;
 pub mod simulation;
@@ -51,11 +52,8 @@ pub mod tam;
 #[path = "actuators/thruster/mod.rs"]
 pub mod thruster;
 
-pub type Mat3 = [[f64; 3]; 3];
-
 #[derive(Clone, Debug)]
 pub struct SimulationContext {
-    pub start_epoch: Epoch,
     pub current_sim_nanos: u64,
     pub current_epoch: Epoch,
 }
@@ -72,20 +70,21 @@ pub fn add(left: u64, right: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
     use crate::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
     use crate::imu::{Imu, ImuConfig};
     use crate::messages::ReactionWheelCommandMsg;
     use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
     use crate::simulation::Simulation;
-    use crate::spacecraft::{Spacecraft, SpacecraftConfig, SpacecraftEffector};
+    use crate::spacecraft::{Spacecraft, SpacecraftConfig};
 
     #[test]
     fn example_architecture_wiring_is_reasonable() {
         let mut spacecraft = Spacecraft::new(SpacecraftConfig {
             mass_kg: 12.0,
-            inertia_kg_m2: [[0.12, 0.0, 0.0], [0.0, 0.15, 0.0], [0.0, 0.0, 0.18]],
+            inertia_kg_m2: Matrix3::new(0.12, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.18),
+            integration_step_nanos: 5_000_000,
             initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),
             initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
             initial_attitude_b_to_i: UnitQuaternion::identity(),
@@ -120,7 +119,7 @@ mod tests {
             let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
             sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
             sim.connect(&rw_command, &mut reaction_wheel.command_in);
-            spacecraft.add_effector(SpacecraftEffector::ReactionWheel(reaction_wheel));
+            spacecraft.add_state_effector(reaction_wheel);
             sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 0);
             sim.add_module("imu", &mut imu, 5_000_000, 10);
             sim.run_for(0);
@@ -131,8 +130,11 @@ mod tests {
             imu.output_imu_msg.read().angular_rate_sensor_radps,
             Vector3::new(0.01, 0.02, 0.03)
         );
-        assert_eq!(spacecraft.effectors.len(), 1);
-        assert_eq!(spacecraft.grav_field.grav_bodies.len(), 1);
+        assert_eq!(
+            spacecraft.state_effectors.len() + spacecraft.dynamic_effectors.len(),
+            1
+        );
+        assert_eq!(spacecraft.gravity.grav_bodies.len(), 1);
         assert_eq!(
             module_names,
             vec!["spacecraft".to_string(), "imu".to_string()]

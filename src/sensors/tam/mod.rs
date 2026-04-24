@@ -74,8 +74,7 @@ impl Tam {
         magnetic_field: &MagneticFieldMsg,
     ) -> Vector3<f64> {
         let magnetic_field_body_t = state
-            .attitude_b_to_i
-            .inverse()
+            .inertial_to_body()
             .transform_vector(&magnetic_field.magnetic_field_inertial_t);
 
         self.config

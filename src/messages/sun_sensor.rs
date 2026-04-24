@@ -2,8 +2,8 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 
 #[derive(Clone, Debug, Default)]
 pub struct SunSensorMsg {
-    pub alpha_rad: f64,
-    pub beta_rad: f64,
+    pub sensed_value: f64,
+    pub true_value: f64,
     pub valid: bool,
 }
 
@@ -11,12 +11,12 @@ impl TelemetryMessage for SunSensorMsg {
     fn flatten(&self) -> Vec<TelemetryField> {
         vec![
             TelemetryField {
-                path: "alpha_rad".to_string(),
-                value: self.alpha_rad,
+                path: "sensed_value".to_string(),
+                value: self.sensed_value,
             },
             TelemetryField {
-                path: "beta_rad".to_string(),
-                value: self.beta_rad,
+                path: "true_value".to_string(),
+                value: self.true_value,
             },
             TelemetryField {
                 path: "valid".to_string(),

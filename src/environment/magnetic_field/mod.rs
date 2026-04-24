@@ -1,14 +1,15 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anise::almanac::Almanac;
 use anise::frames::Frame;
 use hifitime::Epoch;
 use igrf::Error as IgrfError;
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use time::{Date, Month};
 
-use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg};
+use crate::messages::{Input, MagneticFieldMsg, Output, PlanetStateMsg, SpacecraftStateMsg};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -24,8 +25,23 @@ pub struct IgrfFieldConfig {
 pub struct IgrfField {
     pub config: IgrfFieldConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
+    pub input_planet_msg: Input<PlanetStateMsg>,
     pub output_magnetic_field_msg: Output<MagneticFieldMsg>,
     orientation_model: AniseOrientationModel,
+    timing_enabled: bool,
+    timing_stats: IgrfFieldTimingStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IgrfFieldTimingStats {
+    pub update_calls: u64,
+    pub total_update_nanos: u128,
+    pub read_input_nanos: u128,
+    pub anise_rotation_nanos: u128,
+    pub geodetic_nanos: u128,
+    pub igrf_eval_nanos: u128,
+    pub frame_transform_nanos: u128,
+    pub output_write_nanos: u128,
 }
 
 impl Module for IgrfField {
@@ -35,9 +51,26 @@ impl Module for IgrfField {
     }
 
     fn update(&mut self, context: &SimulationContext) {
+        let total_started = self.timing_enabled.then(Instant::now);
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let state = self.read_input_message();
+        if let Some(started) = phase_started {
+            self.timing_stats.read_input_nanos += started.elapsed().as_nanos();
+        }
+
         let magnetic_field_inertial_t = self.compute_magnetic_field(&state, context.current_epoch);
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         self.write_output_message(magnetic_field_inertial_t);
+        if let Some(started) = phase_started {
+            self.timing_stats.output_write_nanos += started.elapsed().as_nanos();
+        }
+
+        if let Some(started) = total_started {
+            self.timing_stats.update_calls += 1;
+            self.timing_stats.total_update_nanos += started.elapsed().as_nanos();
+        }
     }
 }
 
@@ -53,9 +86,20 @@ impl IgrfField {
         Self {
             config,
             input_state_msg: Input::default(),
+            input_planet_msg: Input::default(),
             output_magnetic_field_msg: Output::default(),
             orientation_model,
+            timing_enabled: false,
+            timing_stats: IgrfFieldTimingStats::default(),
         }
+    }
+
+    pub fn set_timing_enabled(&mut self, enabled: bool) {
+        self.timing_enabled = enabled;
+    }
+
+    pub fn timing_stats(&self) -> &IgrfFieldTimingStats {
+        &self.timing_stats
     }
 
     fn read_input_message(&self) -> SpacecraftStateMsg {
@@ -63,27 +107,70 @@ impl IgrfField {
     }
 
     fn compute_magnetic_field(
-        &self,
+        &mut self,
         state: &SpacecraftStateMsg,
         current_epoch: Epoch,
     ) -> Vector3<f64> {
-        let position_inertial_m = state.position_m;
-        let rotation = self
-            .orientation_model
-            .almanac
-            .rotate(
-                self.orientation_model.inertial_frame,
-                self.orientation_model.fixed_frame,
-                current_epoch,
-            )
-            .expect("failed to compute ANISE Earth-fixed rotation for IGRF");
-        let position_fixed_m = apply_anise_rotation(&rotation.rot_mat, position_inertial_m);
+        let (position_inertial_m, inertial_to_fixed_from_msg) = if self.input_planet_msg.is_connected() {
+            let planet_state = self.input_planet_msg.read();
+            let relative_position_inertial_m = state.position_m - planet_state.position_inertial_m;
+            if planet_state.has_orientation {
+                (relative_position_inertial_m, Some(planet_state.inertial_to_fixed))
+            } else {
+                (relative_position_inertial_m, None)
+            }
+        } else {
+            (state.position_m, None)
+        };
+
+        let mut fallback_inertial_to_fixed = None;
+        let position_fixed_m = if let Some(inertial_to_fixed) = inertial_to_fixed_from_msg {
+            inertial_to_fixed * position_inertial_m
+        } else {
+            let phase_started = self.timing_enabled.then(Instant::now);
+            let rotation = self
+                .orientation_model
+                .almanac
+                .rotate(
+                    self.orientation_model.inertial_frame,
+                    self.orientation_model.fixed_frame,
+                    current_epoch,
+                )
+                .expect("failed to compute ANISE Earth-fixed rotation for IGRF");
+            if let Some(started) = phase_started {
+                self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
+            }
+            fallback_inertial_to_fixed = Some(matrix3_from_anise_rotation(&rotation.rot_mat));
+            apply_anise_rotation(&rotation.rot_mat, position_inertial_m)
+        };
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let (latitude_rad, longitude_rad, altitude_m) = ecef_to_geodetic(position_fixed_m);
+        if let Some(started) = phase_started {
+            self.timing_stats.geodetic_nanos += started.elapsed().as_nanos();
+        }
+
+        let phase_started = self.timing_enabled.then(Instant::now);
         let field_ned_t =
             local_ned_field_from_igrf(latitude_rad, longitude_rad, altitude_m, current_epoch);
-        let field_fixed_t = ned_to_ecef(latitude_rad, longitude_rad, field_ned_t);
+        if let Some(started) = phase_started {
+            self.timing_stats.igrf_eval_nanos += started.elapsed().as_nanos();
+        }
 
-        apply_anise_rotation_transpose(&rotation.rot_mat, field_fixed_t)
+        let phase_started = self.timing_enabled.then(Instant::now);
+        let field_fixed_t = ned_to_ecef(latitude_rad, longitude_rad, field_ned_t);
+        let field_inertial_t = if let Some(inertial_to_fixed) = inertial_to_fixed_from_msg
+            .or(fallback_inertial_to_fixed)
+        {
+            inertial_to_fixed.transpose() * field_fixed_t
+        } else {
+            field_fixed_t
+        };
+        if let Some(started) = phase_started {
+            self.timing_stats.frame_transform_nanos += started.elapsed().as_nanos();
+        }
+
+        field_inertial_t
     }
 
     fn write_output_message(&mut self, magnetic_field_inertial_t: Vector3<f64>) {
@@ -221,21 +308,24 @@ fn apply_anise_rotation(rot_mat: &anise::math::Matrix3, vector: Vector3<f64>) ->
     )
 }
 
-fn apply_anise_rotation_transpose(
-    rot_mat: &anise::math::Matrix3,
-    vector: Vector3<f64>,
-) -> Vector3<f64> {
-    Vector3::new(
-        rot_mat[(0, 0)] * vector.x + rot_mat[(1, 0)] * vector.y + rot_mat[(2, 0)] * vector.z,
-        rot_mat[(0, 1)] * vector.x + rot_mat[(1, 1)] * vector.y + rot_mat[(2, 1)] * vector.z,
-        rot_mat[(0, 2)] * vector.x + rot_mat[(1, 2)] * vector.y + rot_mat[(2, 2)] * vector.z,
-    )
-}
-
 fn resolve_repo_relative_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
     }
+}
+
+fn matrix3_from_anise_rotation(rotation: &anise::math::Matrix3) -> Matrix3<f64> {
+    Matrix3::new(
+        rotation[(0, 0)],
+        rotation[(0, 1)],
+        rotation[(0, 2)],
+        rotation[(1, 0)],
+        rotation[(1, 1)],
+        rotation[(1, 2)],
+        rotation[(2, 0)],
+        rotation[(2, 1)],
+        rotation[(2, 2)],
+    )
 }

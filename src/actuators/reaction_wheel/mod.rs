@@ -1,7 +1,14 @@
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
+use std::any::Any;
 
 use crate::messages::{Input, ReactionWheelCommandMsg};
-use crate::spacecraft::EffectorOutput;
+use crate::spacecraft::{BackSubMatrices, EffectorOutput, StateEffector};
+
+#[derive(Clone, Debug, Default)]
+pub struct ReactionWheelBackSubContribution {
+    pub matrix_d_correction_kg_m2: Matrix3<f64>,
+    pub torque_body_nm: Vector3<f64>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReactionWheelModel {
@@ -142,10 +149,14 @@ impl ReactionWheel {
         }
     }
 
-    pub fn prepare_for_step(&mut self, dt_seconds: f64) {
+    pub fn pre_integration(&mut self, dt_seconds: f64) {
         self.configure_rw_request();
         self.update_friction_torque();
-        self.update_state(dt_seconds);
+        self.omega_before_radps = self.omega_radps;
+        if matches!(self.config.model, ReactionWheelModel::JitterFullyCoupled) && dt_seconds > 0.0 {
+            self.theta_rad += self.omega_radps * dt_seconds;
+            self.update_jitter_axes();
+        }
     }
 
     pub fn compute_output(&self, _state: &crate::messages::SpacecraftStateMsg) -> EffectorOutput {
@@ -176,6 +187,53 @@ impl ReactionWheel {
                 torque_body_nm: motor_and_friction_torque,
             }
         }
+    }
+
+    pub fn set_omega_radps(&mut self, omega_radps: f64) {
+        self.omega_radps = omega_radps;
+        if matches!(
+            self.config.model,
+            ReactionWheelModel::JitterSimple | ReactionWheelModel::JitterFullyCoupled
+        ) {
+            self.update_jitter_axes();
+        }
+    }
+
+    pub fn back_sub_contribution(
+        &self,
+        wheel_omega_radps: f64,
+        body_omega_radps: Vector3<f64>,
+    ) -> Option<ReactionWheelBackSubContribution> {
+        if !matches!(self.config.model, ReactionWheelModel::BalancedWheels) {
+            return None;
+        }
+
+        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
+        let matrix_d_correction_kg_m2 = -self.config.js_kg_m2 * (spin_axis * spin_axis.transpose());
+        let torque_body_nm = -spin_axis * (self.u_current_nm + self.friction_torque_nm)
+            - self.config.js_kg_m2 * wheel_omega_radps * body_omega_radps.cross(&spin_axis);
+
+        Some(ReactionWheelBackSubContribution {
+            matrix_d_correction_kg_m2,
+            torque_body_nm,
+        })
+    }
+
+    pub fn omega_dot_radps2(&self, body_omega_dot_radps2: Vector3<f64>) -> Option<f64> {
+        if !matches!(self.config.model, ReactionWheelModel::BalancedWheels) {
+            return None;
+        }
+
+        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
+        let js = self.config.js_kg_m2;
+        if js <= 0.0 {
+            return Some(0.0);
+        }
+
+        Some(
+            (self.u_current_nm + self.friction_torque_nm) / js
+                - spin_axis.dot(&body_omega_dot_radps2),
+        )
     }
 
     fn configure_rw_request(&mut self) {
@@ -271,38 +329,120 @@ impl ReactionWheel {
         self.friction_torque_nm = -friction_force;
     }
 
-    fn update_state(&mut self, dt_seconds: f64) {
-        if dt_seconds <= 0.0 {
-            return;
-        }
+    fn update_jitter_axes(&mut self) {
+        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
+        let rotation = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(spin_axis),
+            self.theta_rad,
+        );
+        self.w2_hat_b = rotation.transform_vector(&normalize_or_fallback(
+            self.config.torque_axis_body,
+            normalize_or_zero(orthogonal_unit_vector(self.config.spin_axis_body)),
+        ));
+        self.w3_hat_b = rotation.transform_vector(&normalize_or_fallback(
+            self.config.gimbal_axis_body,
+            normalize_or_zero(orthogonal_unit_vector_2(self.config.spin_axis_body)),
+        ));
+    }
+}
 
-        self.omega_before_radps = self.omega_radps;
-        let omega_dot = if self.config.js_kg_m2 > 0.0 {
-            (self.u_current_nm + self.friction_torque_nm) / self.config.js_kg_m2
-        } else {
-            0.0
-        };
-        self.omega_radps += omega_dot * dt_seconds;
+impl StateEffector for ReactionWheel {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
 
-        if matches!(
-            self.config.model,
-            ReactionWheelModel::JitterSimple | ReactionWheelModel::JitterFullyCoupled
-        ) {
-            self.theta_rad += self.omega_radps * dt_seconds;
-            let spin_axis = normalize_or_zero(self.config.spin_axis_body);
-            let rotation = nalgebra::UnitQuaternion::from_axis_angle(
-                &nalgebra::Unit::new_normalize(spin_axis),
-                self.theta_rad,
+    fn state_len(&self) -> usize {
+        2
+    }
+
+    fn initial_state(&self) -> Vec<f64> {
+        assert!(
+            matches!(self.config.model, ReactionWheelModel::BalancedWheels),
+            "spacecraft dynamics currently only support balanced reaction wheels with back substitution"
+        );
+        vec![self.omega_radps, self.theta_rad]
+    }
+
+    fn load_state(&mut self, state: &[f64]) {
+        assert_eq!(
+            state.len(),
+            self.state_len(),
+            "reaction wheel state length mismatch"
+        );
+        self.set_omega_radps(state[0]);
+        self.theta_rad = state[1];
+    }
+
+    fn pre_integration(&mut self, _current_sim_nanos: u64, dt_seconds: f64) {
+        ReactionWheel::pre_integration(self, dt_seconds);
+    }
+
+    fn update_contributions(
+        &self,
+        effector_state: &[f64],
+        body_omega_radps: Vector3<f64>,
+        back_sub: &mut BackSubMatrices,
+    ) {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "reaction wheel state length mismatch"
+        );
+        let contribution = self
+            .back_sub_contribution(effector_state[0], body_omega_radps)
+            .expect(
+                "spacecraft dynamics currently only support balanced reaction wheels with back substitution",
             );
-            self.w2_hat_b = rotation.transform_vector(&normalize_or_fallback(
-                self.config.torque_axis_body,
-                normalize_or_zero(orthogonal_unit_vector(self.config.spin_axis_body)),
-            ));
-            self.w3_hat_b = rotation.transform_vector(&normalize_or_fallback(
-                self.config.gimbal_axis_body,
-                normalize_or_zero(orthogonal_unit_vector_2(self.config.spin_axis_body)),
-            ));
-        }
+        back_sub.matrix_d += contribution.matrix_d_correction_kg_m2;
+        back_sub.vec_rot += contribution.torque_body_nm;
+    }
+
+    fn compute_derivatives(
+        &self,
+        effector_state: &[f64],
+        body_omega_dot_radps2: Vector3<f64>,
+    ) -> Vec<f64> {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "reaction wheel state length mismatch"
+        );
+        let omega_dot_radps2 = self
+            .omega_dot_radps2(body_omega_dot_radps2)
+            .expect(
+                "spacecraft dynamics currently only support balanced reaction wheels with back substitution",
+            );
+        vec![omega_dot_radps2, effector_state[0]]
+    }
+
+    fn rotational_angular_momentum_body(
+        &self,
+        effector_state: &[f64],
+        _body_omega_radps: Vector3<f64>,
+    ) -> Vector3<f64> {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "reaction wheel state length mismatch"
+        );
+        let spin_axis_body = normalize_or_zero(self.config.spin_axis_body);
+        self.config.js_kg_m2 * spin_axis_body * effector_state[0]
+    }
+
+    fn rotational_energy_j(&self, effector_state: &[f64], body_omega_radps: Vector3<f64>) -> f64 {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "reaction wheel state length mismatch"
+        );
+        let spin_axis_body = normalize_or_zero(self.config.spin_axis_body);
+        let wheel_omega_radps = effector_state[0];
+        0.5 * self.config.js_kg_m2 * wheel_omega_radps * wheel_omega_radps
+            + self.config.js_kg_m2 * wheel_omega_radps * spin_axis_body.dot(&body_omega_radps)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -391,7 +531,7 @@ mod tests {
         let cases = [(-1.2, 1.0, -1.0), (1.5, 2.0, 1.5), (2.5, 2.0, 2.0)];
         for (cmd, limit, expected) in cases {
             let mut rw = rw_with_command(limit, 0.0, 0.0, -1.0, 0.0, cmd);
-            rw.prepare_for_step(1.0);
+            rw.pre_integration(1.0);
             assert!(
                 (rw.u_current_nm - expected).abs() < 1e-10,
                 "cmd={cmd} limit={limit}: expected u={expected}, got {}",
@@ -404,7 +544,7 @@ mod tests {
     #[test]
     fn minimum_torque_threshold() {
         let mut rw0 = rw_with_command(10.0, 0.1, 0.0, -1.0, 0.0, -0.09);
-        rw0.prepare_for_step(1.0);
+        rw0.pre_integration(1.0);
         assert!(
             rw0.u_current_nm.abs() < 1e-10,
             "expected zero (below min), got {}",
@@ -412,7 +552,7 @@ mod tests {
         );
 
         let mut rw1 = rw_with_command(10.0, 0.0, 0.0, -1.0, 0.0, 0.0001);
-        rw1.prepare_for_step(1.0);
+        rw1.pre_integration(1.0);
         assert!(
             (rw1.u_current_nm - 0.0001).abs() < 1e-10,
             "expected 0.0001, got {}",
@@ -428,7 +568,7 @@ mod tests {
         let cases = [(49.0, 1.5), (51.0, 0.0), (-52.0, 1.5)];
         for (omega, expected) in cases {
             let mut rw = rw_with_command(10.0, 0.0, limit, -1.0, omega, 1.5);
-            rw.prepare_for_step(1.0);
+            rw.pre_integration(1.0);
             assert!(
                 (rw.u_current_nm - expected).abs() < 1e-10,
                 "omega={omega}: expected u={expected}, got {}",
@@ -444,7 +584,7 @@ mod tests {
         let cases = [(0.01, 0.01), (-0.04, -0.02), (0.04, 0.02)];
         for (cmd, expected) in cases {
             let mut rw = rw_with_command(10.0, 0.0, 0.0, 1.0, 50.0, cmd);
-            rw.prepare_for_step(1.0);
+            rw.pre_integration(1.0);
             assert!(
                 (rw.u_current_nm - expected).abs() < 1e-10,
                 "cmd={cmd}: expected u={expected}, got {}",

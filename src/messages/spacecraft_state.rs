@@ -1,4 +1,4 @@
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
@@ -6,7 +6,7 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 pub struct SpacecraftStateMsg {
     pub position_m: Vector3<f64>,
     pub velocity_mps: Vector3<f64>,
-    pub attitude_b_to_i: UnitQuaternion<f64>,
+    pub sigma_bn: Vector3<f64>,
     pub omega_radps: Vector3<f64>,
 }
 
@@ -15,15 +15,31 @@ impl Default for SpacecraftStateMsg {
         Self {
             position_m: Vector3::zeros(),
             velocity_mps: Vector3::zeros(),
-            attitude_b_to_i: UnitQuaternion::identity(),
+            sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
         }
     }
 }
 
+impl SpacecraftStateMsg {
+    pub fn body_to_inertial(&self) -> UnitQuaternion<f64> {
+        let sigma_squared = self.sigma_bn.norm_squared();
+        let denom = 1.0 + sigma_squared;
+        let q_scalar = (1.0 - sigma_squared) / denom;
+        let q_vector = 2.0 * self.sigma_bn / denom;
+        UnitQuaternion::new_normalize(Quaternion::new(
+            q_scalar, q_vector.x, q_vector.y, q_vector.z,
+        ))
+        .inverse()
+    }
+
+    pub fn inertial_to_body(&self) -> UnitQuaternion<f64> {
+        self.body_to_inertial().inverse()
+    }
+}
+
 impl TelemetryMessage for SpacecraftStateMsg {
     fn flatten(&self) -> Vec<TelemetryField> {
-        let q = self.attitude_b_to_i.quaternion();
         vec![
             TelemetryField {
                 path: "position_m.x".to_string(),
@@ -50,20 +66,16 @@ impl TelemetryMessage for SpacecraftStateMsg {
                 value: self.velocity_mps.z,
             },
             TelemetryField {
-                path: "attitude_b_to_i.x".to_string(),
-                value: q.i,
+                path: "sigma_bn.x".to_string(),
+                value: self.sigma_bn.x,
             },
             TelemetryField {
-                path: "attitude_b_to_i.y".to_string(),
-                value: q.j,
+                path: "sigma_bn.y".to_string(),
+                value: self.sigma_bn.y,
             },
             TelemetryField {
-                path: "attitude_b_to_i.z".to_string(),
-                value: q.k,
-            },
-            TelemetryField {
-                path: "attitude_b_to_i.w".to_string(),
-                value: q.w,
+                path: "sigma_bn.z".to_string(),
+                value: self.sigma_bn.z,
             },
             TelemetryField {
                 path: "omega_radps.x".to_string(),

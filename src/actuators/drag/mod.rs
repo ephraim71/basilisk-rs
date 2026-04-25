@@ -107,13 +107,13 @@ mod tests {
     }
 
     fn make_state(
-        attitude_b_to_i: UnitQuaternion<f64>,
+        sigma_bn: Vector3<f64>,
         velocity_mps: Vector3<f64>,
     ) -> SpacecraftStateMsg {
         SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps,
-            attitude_b_to_i,
+            sigma_bn,
             omega_radps: Vector3::zeros(),
         }
     }
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn zero_density_yields_zero_output() {
         let (drag, _atmo) = make_drag(0.0, 1.5, 2.75, Vector3::new(1.0, 0.0, 0.0));
-        let state = make_state(UnitQuaternion::identity(), Vector3::new(0.0, 0.5, 0.0));
+        let state = make_state(Vector3::zeros(), Vector3::new(0.0, 0.5, 0.0));
         let out = drag.compute_output(&state);
         assert_eq!(out.force_inertial_n, Vector3::zeros());
         assert_eq!(out.torque_body_nm, Vector3::zeros());
@@ -137,7 +137,7 @@ mod tests {
         let v_inertial = Vector3::new(0.0, 0.5, 0.0);
 
         let (drag, _atmo) = make_drag(density, cd, area, Vector3::zeros());
-        let state = make_state(UnitQuaternion::identity(), v_inertial);
+        let state = make_state(Vector3::zeros(), v_inertial);
         let out = drag.compute_output(&state);
 
         let v_mag = v_inertial.norm();
@@ -166,20 +166,20 @@ mod tests {
 
         // MRP sigma_BN = [0.1, 0.2, 0.3] → quaternion q_BN (maps N → B frame).
         // q = [(1-|σ|²)/(1+|σ|²), 2σ/(1+|σ|²)] — Shuster 1993 convention.
-        let sigma = [0.1_f64, 0.2, 0.3];
-        let s2: f64 = sigma.iter().map(|x| x * x).sum(); // 0.14
+        let sigma = Vector3::new(0.1_f64, 0.2, 0.3);
+        let s2 = sigma.norm_squared(); // 0.14
         let d = 1.0 + s2;
         let q_bn = UnitQuaternion::new_normalize(Quaternion::new(
             (1.0 - s2) / d,
-            2.0 * sigma[0] / d,
-            2.0 * sigma[1] / d,
-            2.0 * sigma[2] / d,
+            2.0 * sigma.x / d,
+            2.0 * sigma.y / d,
+            2.0 * sigma.z / d,
         ));
         // attitude_b_to_i = q_NB = q_BN⁻¹
         let attitude_b_to_i = q_bn.inverse();
 
         let (drag, _atmo) = make_drag(density, cd, area, com_offset);
-        let state = make_state(attitude_b_to_i, v_inertial);
+        let state = make_state(sigma, v_inertial);
         let out = drag.compute_output(&state);
 
         // Reference: same math as Basilisk test_cannonballDrag

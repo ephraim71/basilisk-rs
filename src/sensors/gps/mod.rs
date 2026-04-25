@@ -136,7 +136,7 @@ fn seed_from_name(name: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
-    use nalgebra::{SMatrix, SVector, UnitQuaternion, Vector3};
+    use nalgebra::{SMatrix, SVector, Vector3};
 
     use crate::messages::{Output, SpacecraftStateMsg};
     use crate::{Module, SimulationContext};
@@ -155,7 +155,6 @@ mod tests {
 
     fn make_context(epoch: Epoch, nanos: u64) -> SimulationContext {
         SimulationContext {
-            start_epoch: epoch,
             current_sim_nanos: nanos,
             current_epoch: epoch,
         }
@@ -170,7 +169,7 @@ mod tests {
         let state_out = Output::new(SpacecraftStateMsg {
             position_m: position,
             velocity_mps: velocity,
-            attitude_b_to_i: UnitQuaternion::identity(),
+            sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
         });
         gps.input_state_msg.connect(state_out.slot());

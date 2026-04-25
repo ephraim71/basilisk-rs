@@ -210,7 +210,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
 }
 
 #[test]
-fn spacecraft_outputs_mass_props_and_seeded_diagnostics() {
+fn spacecraft_outputs_initial_state_and_mass_props() {
     let inertia_diag = Vector3::new(0.12, 0.15, 0.18);
     let omega0 = Vector3::new(0.1, 0.05, 0.02);
     let velocity0 = Vector3::new(10.0, -20.0, 30.0);
@@ -234,7 +234,7 @@ fn spacecraft_outputs_mass_props_and_seeded_diagnostics() {
     }
 
     let mass_props = spacecraft.mass_props_out.read();
-    let diagnostics = spacecraft.diagnostics_out.read();
+    let state = spacecraft.state_out.read();
 
     assert!((mass_props.mass_kg - mass_kg).abs() < 1e-12);
     assert!(mass_props.center_of_mass_body_m.norm() < 1e-12);
@@ -244,30 +244,10 @@ fn spacecraft_outputs_mass_props_and_seeded_diagnostics() {
             < 1e-12
     );
 
-    let expected_rotational_energy =
-        0.5 * (Matrix3::from_diagonal(&inertia_diag) * omega0).dot(&omega0);
-    let expected_orbital_kinetic_energy = 0.5 * mass_kg * velocity0.norm_squared();
-    let expected_orbital_angular_momentum = position0.cross(&(mass_kg * velocity0));
-
-    assert!(diagnostics.omega_dot_radps2.norm() < 1e-12);
-    assert!(diagnostics.non_conservative_accel_body_mps2.norm() < 1e-12);
-    assert!(
-        (diagnostics.rotational_energy_j - expected_rotational_energy).abs() < 1e-12,
-        "expected rotational energy {:.6e}, got {:.6e}",
-        expected_rotational_energy,
-        diagnostics.rotational_energy_j
-    );
-    assert!(
-        (diagnostics.orbital_kinetic_energy_j - expected_orbital_kinetic_energy).abs() < 1e-12,
-        "expected orbital kinetic energy {:.6e}, got {:.6e}",
-        expected_orbital_kinetic_energy,
-        diagnostics.orbital_kinetic_energy_j
-    );
-    assert!(
-        (diagnostics.orbital_angular_momentum_inertial_kg_m2ps - expected_orbital_angular_momentum)
-            .norm()
-            < 1e-12
-    );
+    assert!((state.position_m - position0).norm() < 1e-12);
+    assert!((state.velocity_mps - velocity0).norm() < 1e-12);
+    assert!(state.sigma_bn.norm() < 1e-12);
+    assert!((state.omega_radps - omega0).norm() < 1e-12);
 }
 
 #[test]

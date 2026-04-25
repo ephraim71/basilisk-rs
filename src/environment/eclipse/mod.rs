@@ -111,7 +111,7 @@ fn safe_acos(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::Vector3;
 
     use crate::messages::{Output, SpacecraftStateMsg, SunEphemerisMsg};
     use crate::{Module, SimulationContext};
@@ -124,7 +124,6 @@ mod tests {
     fn dummy_context() -> SimulationContext {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
         SimulationContext {
-            start_epoch: epoch,
             current_sim_nanos: 0,
             current_epoch: epoch,
         }
@@ -139,7 +138,7 @@ mod tests {
         let state_out = Output::new(SpacecraftStateMsg {
             position_m: sc_position,
             velocity_mps: Vector3::zeros(),
-            attitude_b_to_i: UnitQuaternion::identity(),
+            sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
         });
         let sun_out = Output::new(SunEphemerisMsg {

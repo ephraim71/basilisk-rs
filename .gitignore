@@ -5,3 +5,4 @@ Cargo.lock
 *.pyc
 __pycache__/
 assets/
+.venv

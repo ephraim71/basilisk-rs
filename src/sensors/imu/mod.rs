@@ -95,7 +95,6 @@ mod tests {
     fn dummy_context() -> SimulationContext {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
         SimulationContext {
-            start_epoch: epoch,
             current_sim_nanos: 0,
             current_epoch: epoch,
         }
@@ -105,7 +104,7 @@ mod tests {
         let state_out = Output::new(SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps: Vector3::zeros(),
-            attitude_b_to_i: UnitQuaternion::identity(),
+            sigma_bn: Vector3::zeros(),
             omega_radps,
         });
         imu.input_state_msg.connect(state_out.slot());

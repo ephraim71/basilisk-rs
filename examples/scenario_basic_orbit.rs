@@ -16,7 +16,7 @@ use basilisk_rs::gravity::GravBodyData;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use hifitime::Epoch;
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Vector3};
 
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
@@ -113,7 +113,7 @@ fn main() {
         integration_step_nanos: step_nanos,
         initial_position_m: r0,
         initial_velocity_mps: v0,
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
     });
 

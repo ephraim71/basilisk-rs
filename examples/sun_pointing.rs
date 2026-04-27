@@ -71,7 +71,7 @@ fn main() {
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::zeros(),
         initial_velocity_mps: Vector3::zeros(),
-        initial_attitude_b_to_i: UnitQuaternion::identity(),
+        initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.0, 0.0, 0.0),
     });
 
@@ -385,7 +385,7 @@ fn main() {
 
     let final_state = spacecraft.state_out.read();
     let body_z_inertial = final_state
-        .attitude_b_to_i
+        .body_to_inertial()
         .transform_vector(&Vector3::new(0.0, 0.0, 1.0));
     let sun_hat_inertial = sun_position_inertial_m.normalize();
     let final_error_rad = body_z_inertial

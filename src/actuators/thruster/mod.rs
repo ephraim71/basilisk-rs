@@ -412,7 +412,7 @@ fn tilde(vector: Vector3<f64>) -> nalgebra::Matrix3<f64> {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::Vector3;
 
     use crate::messages::{Output, SpacecraftStateMsg, ThrusterCommandMsg};
 
@@ -443,7 +443,7 @@ mod tests {
         SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps: Vector3::zeros(),
-            attitude_b_to_i: UnitQuaternion::identity(),
+            sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
         }
     }

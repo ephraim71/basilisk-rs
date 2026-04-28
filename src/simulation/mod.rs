@@ -1,6 +1,5 @@
 use hifitime::{Duration, Epoch};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::time::Instant;
 
 use crate::messages::{Input, Output};
@@ -124,39 +123,20 @@ impl<'a> Simulation<'a> {
                         && s.next_run_nanos - s.period_nanos < current)
             };
 
-            let mut group_start = 0;
-            while group_start < self.modules.len() {
-                let priority = self.modules[group_start].priority;
-                let mut group_end = group_start + 1;
-                while group_end < self.modules.len() && self.modules[group_end].priority == priority
-                {
-                    group_end += 1;
-                }
-
-                let group = &mut self.modules[group_start..group_end];
-                if self.collect_timings {
-                    group
-                        .par_iter_mut()
-                        .filter(should_fire)
-                        .for_each(|scheduled| {
-                            let started_at = Instant::now();
-                            scheduled.module.update(&context);
+            for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) 
+            {
+                group
+                    .iter_mut()
+                    .filter(should_fire)
+                    .for_each(|scheduled| {
+                        let started_at = Instant::now();
+                        scheduled.module.update(&context);
+                        if self.collect_timings { 
                             scheduled.total_update_nanos += started_at.elapsed().as_nanos();
-                            scheduled.num_updates += 1;
-                            scheduled.next_run_nanos += scheduled.period_nanos;
-                        });
-                } else {
-                    group
-                        .par_iter_mut()
-                        .filter(should_fire)
-                        .for_each(|scheduled| {
-                            scheduled.module.update(&context);
-                            scheduled.num_updates += 1;
-                            scheduled.next_run_nanos += scheduled.period_nanos;
-                        });
-                }
-
-                group_start = group_end;
+                        }
+                        scheduled.num_updates += 1;
+                        scheduled.next_run_nanos += scheduled.period_nanos;
+                    });
             }
 
             if self.current_sim_nanos == stop_nanos {

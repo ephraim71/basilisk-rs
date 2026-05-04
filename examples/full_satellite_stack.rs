@@ -37,6 +37,7 @@ fn main() {
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 18.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::new(0.16, 0.001, 0.0, 0.001, 0.21, 0.0, 0.0, 0.0, 0.28),
         integration_step_nanos: 5_000_000,
         initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),

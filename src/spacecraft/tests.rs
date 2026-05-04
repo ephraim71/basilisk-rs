@@ -20,6 +20,7 @@ fn circular_orbit_spacecraft(radius_m: f64) -> Spacecraft {
     let v_circular = (MU_EARTH_M3PS2 / radius_m).sqrt();
     let mut sc = Spacecraft::new(SpacecraftConfig {
         mass_kg: 100.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::identity(),
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::new(radius_m, 0.0, 0.0),
@@ -117,6 +118,7 @@ fn torque_free_rotation_conserves_angular_momentum() {
 
     let mut sc = Spacecraft::new(SpacecraftConfig {
         mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: inertia,
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::zeros(),
@@ -152,6 +154,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::new(locked_inertia_x, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.18),
         integration_step_nanos: STEP_NANOS,
         initial_position_m: Vector3::zeros(),
@@ -219,6 +222,7 @@ fn spacecraft_outputs_initial_state_and_mass_props() {
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::from_diagonal(&inertia_diag),
         integration_step_nanos: STEP_NANOS,
         initial_position_m: position0,
@@ -248,6 +252,38 @@ fn spacecraft_outputs_initial_state_and_mass_props() {
     assert!((state.velocity_mps - velocity0).norm() < 1e-12);
     assert!(state.sigma_bn.norm() < 1e-12);
     assert!((state.omega_radps - omega0).norm() < 1e-12);
+}
+
+#[test]
+fn spacecraft_mass_props_include_hub_center_of_mass_offset() {
+    let hub_center = Vector3::new(0.0, 0.0, 1.0);
+    let hub_inertia_about_com = Matrix3::new(900.0, 0.0, 0.0, 0.0, 800.0, 0.0, 0.0, 0.0, 600.0);
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: hub_center,
+        inertia_kg_m2: hub_inertia_about_com,
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+    });
+
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+    }
+
+    let mass_props = spacecraft.mass_props_out.read();
+    assert!((mass_props.mass_kg - 750.0).abs() < 1.0e-12);
+    assert!((mass_props.center_of_mass_body_m - hub_center).norm() < 1.0e-12);
+    assert!(
+        (mass_props.inertia_about_point_b_body_kg_m2
+            - Matrix3::new(1650.0, 0.0, 0.0, 0.0, 1550.0, 0.0, 0.0, 0.0, 600.0))
+        .norm()
+            < 1.0e-12
+    );
 }
 
 #[test]

@@ -106,10 +106,7 @@ mod tests {
         (drag, atmo_out)
     }
 
-    fn make_state(
-        sigma_bn: Vector3<f64>,
-        velocity_mps: Vector3<f64>,
-    ) -> SpacecraftStateMsg {
+    fn make_state(sigma_bn: Vector3<f64>, velocity_mps: Vector3<f64>) -> SpacecraftStateMsg {
         SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps,

@@ -109,6 +109,7 @@ fn main() {
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 100.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::identity(),
         integration_step_nanos: step_nanos,
         initial_position_m: r0,

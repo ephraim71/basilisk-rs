@@ -381,6 +381,7 @@ impl StateEffector for ReactionWheel {
         &self,
         effector_state: &[f64],
         body_omega_radps: Vector3<f64>,
+        _gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
         assert_eq!(
@@ -400,6 +401,7 @@ impl StateEffector for ReactionWheel {
     fn compute_derivatives(
         &self,
         effector_state: &[f64],
+        _body_trans_accel_mps2: Vector3<f64>,
         body_omega_dot_radps2: Vector3<f64>,
     ) -> Vec<f64> {
         assert_eq!(

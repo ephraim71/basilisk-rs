@@ -128,7 +128,11 @@ jobs:
             printf 'Warm build time: `%s`\n' "${warm_build_time}"
           } > .github/tmp/pr-benchmark-comment.md
 
+      - name: Write benchmark summary
+        run: cat .github/tmp/pr-benchmark-comment.md >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Post PR comment
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: actions/github-script@v7
         with:
           script: |

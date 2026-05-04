@@ -12,6 +12,7 @@ pub mod actuators;
 pub mod environment;
 pub mod fsw;
 pub mod messages;
+pub mod power;
 pub mod sensors;
 pub mod simulation;
 pub mod spacecraft;
@@ -25,10 +26,14 @@ pub mod drag;
 pub mod eclipse;
 #[path = "environment/ephemeris/mod.rs"]
 pub mod ephemeris;
+#[path = "actuators/facet_drag/mod.rs"]
+pub mod facet_drag;
 #[path = "sensors/gps/mod.rs"]
 pub mod gps;
 #[path = "environment/gravity/mod.rs"]
 pub mod gravity;
+#[path = "actuators/hinged_rigid_body/mod.rs"]
+pub mod hinged_rigid_body;
 #[path = "sensors/imu/mod.rs"]
 pub mod imu;
 #[path = "environment/magnetic_field/mod.rs"]
@@ -39,6 +44,10 @@ pub mod mtb;
 pub mod nrlmsise;
 #[path = "actuators/reaction_wheel/mod.rs"]
 pub mod reaction_wheel;
+#[path = "power/simple_battery/mod.rs"]
+pub mod simple_battery;
+#[path = "environment/solar_flux/mod.rs"]
+pub mod solar_flux;
 #[path = "environment/srp/mod.rs"]
 pub mod srp;
 #[path = "sensors/star_tracker/mod.rs"]
@@ -83,6 +92,7 @@ mod tests {
     fn example_architecture_wiring_is_reasonable() {
         let mut spacecraft = Spacecraft::new(SpacecraftConfig {
             mass_kg: 12.0,
+            hub_center_of_mass_body_m: Vector3::zeros(),
             inertia_kg_m2: Matrix3::new(0.12, 0.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.18),
             integration_step_nanos: 5_000_000,
             initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),

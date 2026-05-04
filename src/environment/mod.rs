@@ -4,5 +4,6 @@ pub use crate::ephemeris;
 pub use crate::gravity;
 pub use crate::magnetic_field;
 pub use crate::nrlmsise;
+pub use crate::solar_flux;
 pub use crate::srp;
 pub use crate::sun_ephemeris;

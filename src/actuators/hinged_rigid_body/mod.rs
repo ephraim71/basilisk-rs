@@ -290,14 +290,77 @@ impl StateEffector for HingedRigidBodyStateEffector {
             effector_state[1],
         );
         let r_tilde = tilde(kinematics.panel_com_position_body_m);
+        let r_prime_tilde = tilde(kinematics.panel_com_prime_body_mps);
+        let inertia_prime_about_panel_com_body = kinematics.theta_dot_radps
+            * (self.config.inertia_about_panel_com_panel_kg_m2[(2, 2)]
+                - self.config.inertia_about_panel_com_panel_kg_m2[(0, 0)])
+            * (kinematics.s_hat1_body * kinematics.s_hat3_body.transpose()
+                + kinematics.s_hat3_body * kinematics.s_hat1_body.transpose());
         StateEffectorMassProps {
             mass_kg: self.config.mass_kg,
+            mass_dot_kgps: 0.0,
             center_of_mass_body_m: kinematics.panel_com_position_body_m,
+            center_of_mass_prime_body_mps: kinematics.panel_com_prime_body_mps,
             inertia_about_point_b_body_kg_m2: kinematics.dcm_panel_body.transpose()
                 * self.config.inertia_about_panel_com_panel_kg_m2
                 * kinematics.dcm_panel_body
                 + self.config.mass_kg * r_tilde * r_tilde.transpose(),
+            inertia_about_point_b_body_prime_kg_m2ps: inertia_prime_about_panel_com_body
+                - self.config.mass_kg * (r_prime_tilde * r_tilde + r_tilde * r_prime_tilde),
         }
+    }
+
+    fn rotational_angular_momentum_body(
+        &self,
+        effector_state: &[f64],
+        body_omega_radps: Vector3<f64>,
+    ) -> Vector3<f64> {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "hinged rigid body state length mismatch"
+        );
+        let kinematics = HingedRigidBodyKinematics::from_config(
+            &self.config,
+            effector_state[0],
+            effector_state[1],
+        );
+        let inertia_panel_com_body = kinematics.dcm_panel_body.transpose()
+            * self.config.inertia_about_panel_com_panel_kg_m2
+            * kinematics.dcm_panel_body;
+        let omega_panel_body =
+            body_omega_radps + kinematics.theta_dot_radps * kinematics.s_hat2_body;
+        let panel_com_velocity_body = kinematics.panel_com_prime_body_mps
+            + body_omega_radps.cross(&kinematics.panel_com_position_body_m);
+
+        inertia_panel_com_body * omega_panel_body
+            + self.config.mass_kg
+                * kinematics
+                    .panel_com_position_body_m
+                    .cross(&panel_com_velocity_body)
+    }
+
+    fn rotational_energy_j(&self, effector_state: &[f64], body_omega_radps: Vector3<f64>) -> f64 {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "hinged rigid body state length mismatch"
+        );
+        let kinematics = HingedRigidBodyKinematics::from_config(
+            &self.config,
+            effector_state[0],
+            effector_state[1],
+        );
+        let inertia_panel_com_body = kinematics.dcm_panel_body.transpose()
+            * self.config.inertia_about_panel_com_panel_kg_m2
+            * kinematics.dcm_panel_body;
+        let omega_panel_body =
+            body_omega_radps + kinematics.theta_dot_radps * kinematics.s_hat2_body;
+        let panel_com_velocity_body = kinematics.panel_com_prime_body_mps
+            + body_omega_radps.cross(&kinematics.panel_com_position_body_m);
+
+        0.5 * omega_panel_body.dot(&(inertia_panel_com_body * omega_panel_body))
+            + 0.5 * self.config.mass_kg * panel_com_velocity_body.norm_squared()
     }
 
     fn write_outputs(&mut self, _current_sim_nanos: u64, hub_state: &SpacecraftStateMsg) {
@@ -411,11 +474,11 @@ impl HingedRigidBodyKinematics {
         let dcm_panel_hinge = Matrix3::new(
             theta_rad.cos(),
             0.0,
-            theta_rad.sin(),
+            -theta_rad.sin(),
             0.0,
             1.0,
             0.0,
-            -theta_rad.sin(),
+            theta_rad.sin(),
             0.0,
             theta_rad.cos(),
         );
@@ -568,7 +631,7 @@ mod tests {
 
         assert_vector_close(
             mass_props.center_of_mass_body_m,
-            Vector3::new(0.0, 0.0, -2.0),
+            Vector3::new(0.0, 0.0, 2.0),
             1.0e-12,
         );
         assert!(

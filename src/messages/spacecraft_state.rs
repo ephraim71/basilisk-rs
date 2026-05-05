@@ -30,7 +30,6 @@ impl SpacecraftStateMsg {
         UnitQuaternion::new_normalize(Quaternion::new(
             q_scalar, q_vector.x, q_vector.y, q_vector.z,
         ))
-        .inverse()
     }
 
     pub fn inertial_to_body(&self) -> UnitQuaternion<f64> {

@@ -304,7 +304,7 @@ mod tests {
         drag.add_facet(
             3.0,
             2.2,
-            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
             Vector3::new(0.0, 0.2, 0.0),
         );
         let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2);

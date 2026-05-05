@@ -3,7 +3,7 @@ use nalgebra::{Matrix3, Vector3};
 pub(crate) fn body_to_inertial_dcm_from_sigma_bn(sigma_bn: Vector3<f64>) -> Matrix3<f64> {
     let sigma_squared = sigma_bn.norm_squared();
     let sigma_tilde = sigma_bn.cross_matrix();
-    let correction = (8.0 * sigma_tilde * sigma_tilde - 4.0 * (1.0 - sigma_squared) * sigma_tilde)
+    let correction = (8.0 * sigma_tilde * sigma_tilde + 4.0 * (1.0 - sigma_squared) * sigma_tilde)
         / (1.0 + sigma_squared).powi(2);
     Matrix3::identity() + correction
 }

@@ -6,6 +6,11 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 pub struct SpacecraftDiagnosticsMsg {
     pub omega_dot_radps2: Vector3<f64>,
     pub non_conservative_accel_body_mps2: Vector3<f64>,
+    pub drag_force_body_n: Vector3<f64>,
+    pub drag_torque_body_nm: Vector3<f64>,
+    pub srp_force_body_n: Vector3<f64>,
+    pub srp_force_inertial_n: Vector3<f64>,
+    pub srp_torque_body_nm: Vector3<f64>,
     pub orbital_kinetic_energy_j: f64,
     pub rotational_energy_j: f64,
     pub orbital_angular_momentum_inertial_kg_m2ps: Vector3<f64>,
@@ -17,6 +22,11 @@ impl Default for SpacecraftDiagnosticsMsg {
         Self {
             omega_dot_radps2: Vector3::zeros(),
             non_conservative_accel_body_mps2: Vector3::zeros(),
+            drag_force_body_n: Vector3::zeros(),
+            drag_torque_body_nm: Vector3::zeros(),
+            srp_force_body_n: Vector3::zeros(),
+            srp_force_inertial_n: Vector3::zeros(),
+            srp_torque_body_nm: Vector3::zeros(),
             orbital_kinetic_energy_j: 0.0,
             rotational_energy_j: 0.0,
             orbital_angular_momentum_inertial_kg_m2ps: Vector3::zeros(),
@@ -51,6 +61,66 @@ impl TelemetryMessage for SpacecraftDiagnosticsMsg {
             TelemetryField {
                 path: "non_conservative_accel_body_mps2.z".to_string(),
                 value: self.non_conservative_accel_body_mps2.z,
+            },
+            TelemetryField {
+                path: "drag_force_body_n.x".to_string(),
+                value: self.drag_force_body_n.x,
+            },
+            TelemetryField {
+                path: "drag_force_body_n.y".to_string(),
+                value: self.drag_force_body_n.y,
+            },
+            TelemetryField {
+                path: "drag_force_body_n.z".to_string(),
+                value: self.drag_force_body_n.z,
+            },
+            TelemetryField {
+                path: "drag_torque_body_nm.x".to_string(),
+                value: self.drag_torque_body_nm.x,
+            },
+            TelemetryField {
+                path: "drag_torque_body_nm.y".to_string(),
+                value: self.drag_torque_body_nm.y,
+            },
+            TelemetryField {
+                path: "drag_torque_body_nm.z".to_string(),
+                value: self.drag_torque_body_nm.z,
+            },
+            TelemetryField {
+                path: "srp_force_body_n.x".to_string(),
+                value: self.srp_force_body_n.x,
+            },
+            TelemetryField {
+                path: "srp_force_body_n.y".to_string(),
+                value: self.srp_force_body_n.y,
+            },
+            TelemetryField {
+                path: "srp_force_body_n.z".to_string(),
+                value: self.srp_force_body_n.z,
+            },
+            TelemetryField {
+                path: "srp_force_inertial_n.x".to_string(),
+                value: self.srp_force_inertial_n.x,
+            },
+            TelemetryField {
+                path: "srp_force_inertial_n.y".to_string(),
+                value: self.srp_force_inertial_n.y,
+            },
+            TelemetryField {
+                path: "srp_force_inertial_n.z".to_string(),
+                value: self.srp_force_inertial_n.z,
+            },
+            TelemetryField {
+                path: "srp_torque_body_nm.x".to_string(),
+                value: self.srp_torque_body_nm.x,
+            },
+            TelemetryField {
+                path: "srp_torque_body_nm.y".to_string(),
+                value: self.srp_torque_body_nm.y,
+            },
+            TelemetryField {
+                path: "srp_torque_body_nm.z".to_string(),
+                value: self.srp_torque_body_nm.z,
             },
             TelemetryField {
                 path: "orbital_kinetic_energy_j".to_string(),

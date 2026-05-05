@@ -161,30 +161,28 @@ mod tests {
         let com_offset = Vector3::new(1.0_f64, 0.0, 0.0);
         let v_inertial = Vector3::new(0.0, 0.5, 0.0);
 
-        // MRP sigma_BN = [0.1, 0.2, 0.3] → quaternion q_BN (maps N → B frame).
+        // MRP sigma_BN = [0.1, 0.2, 0.3] -> quaternion q_NB (maps B -> N frame).
         // q = [(1-|σ|²)/(1+|σ|²), 2σ/(1+|σ|²)] — Shuster 1993 convention.
         let sigma = Vector3::new(0.1_f64, 0.2, 0.3);
         let s2 = sigma.norm_squared(); // 0.14
         let d = 1.0 + s2;
-        let q_bn = UnitQuaternion::new_normalize(Quaternion::new(
+        let q_nb = UnitQuaternion::new_normalize(Quaternion::new(
             (1.0 - s2) / d,
             2.0 * sigma.x / d,
             2.0 * sigma.y / d,
             2.0 * sigma.z / d,
         ));
-        // attitude_b_to_i = q_NB = q_BN⁻¹
-        let attitude_b_to_i = q_bn.inverse();
 
         let (drag, _atmo) = make_drag(density, cd, area, com_offset);
         let state = make_state(sigma, v_inertial);
         let out = drag.compute_output(&state);
 
         // Reference: same math as Basilisk test_cannonballDrag
-        let v_body = q_bn.transform_vector(&v_inertial);
+        let v_body = q_nb.inverse().transform_vector(&v_inertial);
         let v_mag = v_inertial.norm(); // frame-invariant
         let f_mag = 0.5 * density * v_mag * v_mag * cd * area;
         let f_body = -f_mag * v_body.normalize();
-        let f_inertial = attitude_b_to_i.transform_vector(&f_body);
+        let f_inertial = q_nb.transform_vector(&f_body);
         let torque_body = com_offset.cross(&f_body);
 
         assert!(

@@ -37,7 +37,6 @@ pub struct SphericalHarmonicsGravityModel {
     pub c_bar: Vec<Vec<f64>>,
     pub s_bar: Vec<Vec<f64>>,
     orientation_model: Option<AniseOrientationModel>,
-    a_bar_seed: Vec<Vec<f64>>,
     n1: Vec<Vec<f64>>,
     n2: Vec<Vec<f64>>,
     n_quot1: Vec<Vec<f64>>,
@@ -161,7 +160,6 @@ impl SphericalHarmonicsGravityModel {
             c_bar,
             s_bar,
             orientation_model: None,
-            a_bar_seed,
             n1,
             n2,
             n_quot1,
@@ -217,7 +215,6 @@ impl SphericalHarmonicsGravityModel {
         let order = degree;
 
         let mut scratch = self.scratch.borrow_mut();
-        scratch.a_bar.clone_from(&self.a_bar_seed);
         scratch.r_e[..=order + 1].fill(0.0);
         scratch.i_m[..=order + 1].fill(0.0);
         scratch.rho_l[..=degree + 1].fill(0.0);

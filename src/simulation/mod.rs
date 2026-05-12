@@ -123,20 +123,16 @@ impl<'a> Simulation<'a> {
                         && s.next_run_nanos - s.period_nanos < current)
             };
 
-            for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) 
-            {
-                group
-                    .iter_mut()
-                    .filter(should_fire)
-                    .for_each(|scheduled| {
-                        let started_at = Instant::now();
-                        scheduled.module.update(&context);
-                        if self.collect_timings { 
-                            scheduled.total_update_nanos += started_at.elapsed().as_nanos();
-                        }
-                        scheduled.num_updates += 1;
-                        scheduled.next_run_nanos += scheduled.period_nanos;
-                    });
+            for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) {
+                group.iter_mut().filter(should_fire).for_each(|scheduled| {
+                    let started_at = Instant::now();
+                    scheduled.module.update(&context);
+                    if self.collect_timings {
+                        scheduled.total_update_nanos += started_at.elapsed().as_nanos();
+                    }
+                    scheduled.num_updates += 1;
+                    scheduled.next_run_nanos += scheduled.period_nanos;
+                });
             }
 
             if self.current_sim_nanos == stop_nanos {

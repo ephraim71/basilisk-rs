@@ -380,6 +380,7 @@ impl Spacecraft {
             .collect()
     }
 
+    // Called after RK4 completes to publish the final committed state to other modules.
     fn sync_effectors_from_integrated_state(&mut self) {
         let Some(integrated_state) = &self.integrated_state else {
             return;
@@ -389,6 +390,9 @@ impl Spacecraft {
         self.sync_state_effectors_from_states(&effector_states);
     }
 
+    // Writes effector_states into each state effector so their output messages reflect
+    // the given state. Called at every RK4 substep with the trial state, so dynamic
+    // effectors (e.g. SRP) read the correct panel angle/MOI when computing forces.
     fn sync_state_effectors_from_states(&mut self, effector_states: &[Vec<f64>]) {
         assert_eq!(
             self.state_effectors.len(),
@@ -416,6 +420,8 @@ impl Spacecraft {
         current_epoch: Epoch,
         dt_seconds: f64,
     ) -> (IntegratedState, Vector3<f64>) {
+        // Each k evaluates forces at a trial state. State effector outputs are synced
+        // inside equations_of_motion so dynamic effectors see the correct trial values.
         let k1 = self.equations_of_motion(state, current_sim_nanos, current_epoch);
         let k2 = self.equations_of_motion(
             &self.state_with_derivative(state, &k1, dt_seconds * 0.5),
@@ -519,6 +525,7 @@ impl Spacecraft {
         current_sim_nanos: u64,
         current_epoch: Epoch,
     ) -> StateDerivative {
+        // Sync outputs (e.g. panel angle) so dynamic effectors read the correct trial state.
         self.sync_state_effectors_from_states(&state.effector_states);
         let mass_props = self.mass_props_for_effector_states(&state.effector_states);
         let inertia = mass_props.inertia_about_point_b_body_kg_m2;

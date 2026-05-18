@@ -535,7 +535,7 @@ mod tests {
     use nalgebra::{Matrix3, Vector3};
 
     #[test]
-    fn linear_profiler_matches_basilisk_reference_points() {
+    fn linear_profiler_matches_basilisk_unit_test_trace() {
         let mut profiler = HingedBodyLinearProfiler::with_profile(
             "profiler",
             1_000_000_000,
@@ -545,23 +545,39 @@ mod tests {
         );
         profiler.init();
 
-        let cases = [
-            (0, 0.0, 0.0),
-            (1_000_000_000, 0.0, std::f64::consts::PI / 180.0),
-            (
-                1_500_000_000,
-                std::f64::consts::PI / 360.0,
-                std::f64::consts::PI / 180.0,
-            ),
-            (
-                2_000_000_000,
-                std::f64::consts::PI / 180.0,
-                std::f64::consts::PI / 180.0,
-            ),
-            (2_500_000_000, std::f64::consts::PI / 180.0, 0.0),
+        let sample_times_nanos = [
+            0,
+            500_000_000,
+            1_000_000_000,
+            1_500_000_000,
+            2_000_000_000,
+            2_500_000_000,
+            3_000_000_000,
+        ];
+        let expected_theta = [
+            0.0,
+            0.0,
+            0.0,
+            std::f64::consts::PI / 360.0,
+            std::f64::consts::PI / 180.0,
+            std::f64::consts::PI / 180.0,
+            std::f64::consts::PI / 180.0,
+        ];
+        let expected_theta_dot = [
+            0.0,
+            0.0,
+            std::f64::consts::PI / 180.0,
+            std::f64::consts::PI / 180.0,
+            std::f64::consts::PI / 180.0,
+            0.0,
+            0.0,
         ];
 
-        for (time_nanos, expected_theta, expected_theta_dot) in cases {
+        for ((time_nanos, expected_theta), expected_theta_dot) in sample_times_nanos
+            .into_iter()
+            .zip(expected_theta)
+            .zip(expected_theta_dot)
+        {
             let reference = profiler.reference_at(time_nanos);
             assert!((reference.theta_rad - expected_theta).abs() < 1.0e-12);
             assert!((reference.theta_dot_radps - expected_theta_dot).abs() < 1.0e-12);

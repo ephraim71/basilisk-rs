@@ -385,16 +385,19 @@ impl Spacecraft {
             return;
         };
 
+        let effector_states = integrated_state.effector_states.clone();
+        self.sync_state_effectors_from_states(&effector_states);
+    }
+
+    fn sync_state_effectors_from_states(&mut self, effector_states: &[Vec<f64>]) {
         assert_eq!(
             self.state_effectors.len(),
-            integrated_state.effector_states.len(),
+            effector_states.len(),
             "state effector count does not match integrated state count"
         );
 
-        for (effector, effector_state) in self
-            .state_effectors
-            .iter_mut()
-            .zip(integrated_state.effector_states.iter())
+        for (effector, effector_state) in
+            self.state_effectors.iter_mut().zip(effector_states.iter())
         {
             assert_eq!(
                 effector.state_len(),
@@ -516,6 +519,7 @@ impl Spacecraft {
         current_sim_nanos: u64,
         current_epoch: Epoch,
     ) -> StateDerivative {
+        self.sync_state_effectors_from_states(&state.effector_states);
         let mass_props = self.mass_props_for_effector_states(&state.effector_states);
         let inertia = mass_props.inertia_about_point_b_body_kg_m2;
         let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);

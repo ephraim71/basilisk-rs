@@ -1,9 +1,17 @@
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
+use std::any::Any;
+use std::sync::{Arc, Mutex};
 
-use super::{Spacecraft, SpacecraftConfig, mrp::body_to_inertial_dcm_from_sigma_bn};
+use super::{
+    BackSubMatrices, DynamicEffector, EffectorOutput, Spacecraft, SpacecraftConfig, StateEffector,
+    mrp::body_to_inertial_dcm_from_sigma_bn,
+};
+use crate::Module;
 use crate::gravity::GravBodyData;
-use crate::messages::{Output, ReactionWheelCommandMsg, SpacecraftStateMsg};
+use crate::messages::{
+    HingedRigidBodyMsg, Input, Output, ReactionWheelCommandMsg, SpacecraftStateMsg,
+};
 use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
 use crate::simulation::Simulation;
 
@@ -301,6 +309,131 @@ fn mrp_body_to_inertial_dcm_matches_spacecraft_state_rotation() {
     assert!(
         (dcm - quaternion_rotation).norm() < 1.0e-12,
         "expected direct MRP DCM to match existing body_to_inertial rotation"
+    );
+}
+
+struct PublishingThetaEffector {
+    theta_out: Output<HingedRigidBodyMsg>,
+}
+
+impl PublishingThetaEffector {
+    fn new() -> Self {
+        Self {
+            theta_out: Output::default(),
+        }
+    }
+}
+
+impl StateEffector for PublishingThetaEffector {
+    fn name(&self) -> &str {
+        "publishing_theta"
+    }
+
+    fn state_len(&self) -> usize {
+        1
+    }
+
+    fn initial_state(&self) -> Vec<f64> {
+        vec![0.0]
+    }
+
+    fn load_state(&mut self, state: &[f64]) {
+        self.theta_out.write(HingedRigidBodyMsg {
+            theta_rad: state[0],
+            theta_dot_radps: 1.0,
+        });
+    }
+
+    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {}
+
+    fn update_contributions(
+        &self,
+        _effector_state: &[f64],
+        _body_omega_radps: Vector3<f64>,
+        _gravity_body_mps2: Vector3<f64>,
+        _back_sub: &mut BackSubMatrices,
+    ) {
+    }
+
+    fn compute_derivatives(
+        &self,
+        _effector_state: &[f64],
+        _body_trans_accel_mps2: Vector3<f64>,
+        _body_omega_dot_radps2: Vector3<f64>,
+    ) -> Vec<f64> {
+        vec![1.0]
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct RecordingThetaDynamicEffector {
+    theta_in: Input<HingedRigidBodyMsg>,
+    observed_thetas: Arc<Mutex<Vec<f64>>>,
+}
+
+impl DynamicEffector for RecordingThetaDynamicEffector {
+    fn name(&self) -> &str {
+        "recording_theta"
+    }
+
+    fn compute_output(&self, _state: &SpacecraftStateMsg) -> EffectorOutput {
+        self.observed_thetas
+            .lock()
+            .expect("observed theta lock poisoned")
+            .push(self.theta_in.read().theta_rad);
+        EffectorOutput::default()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[test]
+fn rk_substeps_sync_state_effector_outputs_before_dynamic_effectors() {
+    let publisher = PublishingThetaEffector::new();
+    let theta_out = publisher.theta_out.clone();
+    let observed_thetas = Arc::new(Mutex::new(Vec::new()));
+    let mut recorder = RecordingThetaDynamicEffector {
+        theta_in: Input::default(),
+        observed_thetas: Arc::clone(&observed_thetas),
+    };
+    recorder.theta_in.connect(theta_out.slot());
+
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::identity(),
+        integration_step_nanos: 1_000_000_000,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+    });
+    spacecraft.add_state_effector(publisher);
+    spacecraft.add_dynamic_effector(recorder);
+    spacecraft.init();
+
+    let state = spacecraft
+        .integrated_state
+        .clone()
+        .expect("spacecraft must initialize integrated state");
+    spacecraft.propagate_rk4(&state, 0, start_epoch(), 1.0);
+
+    let observed = observed_thetas
+        .lock()
+        .expect("observed theta lock poisoned")
+        .clone();
+    assert!(
+        observed.iter().any(|theta| (*theta - 0.5).abs() < 1.0e-12),
+        "expected a synced RK midpoint theta, observed {observed:?}"
+    );
+    assert!(
+        observed.iter().any(|theta| (*theta - 1.0).abs() < 1.0e-12),
+        "expected a synced RK endpoint theta, observed {observed:?}"
     );
 }
 

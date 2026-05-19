@@ -26,8 +26,6 @@ pub mod drag;
 pub mod eclipse;
 #[path = "environment/ephemeris/mod.rs"]
 pub mod ephemeris;
-#[path = "actuators/facet_drag/mod.rs"]
-pub mod facet_drag;
 #[path = "sensors/gps/mod.rs"]
 pub mod gps;
 #[path = "environment/gravity/mod.rs"]

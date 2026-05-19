@@ -1,3 +1,5 @@
+pub mod facet;
+
 use nalgebra::Vector3;
 use std::any::Any;
 

@@ -285,6 +285,214 @@ fn sprung_hinged_panel_conserves_total_angular_momentum() {
     }
 }
 
+/// Rotational kinetic energy must be conserved under torque-free rigid-body rotation.
+/// (Reads the diagnostics `rotational_energy_j` field directly, exercising that path.)
+#[test]
+fn torque_free_rotation_conserves_rotational_energy() {
+    let inertia = Matrix3::from_diagonal(&Vector3::new(0.12, 0.15, 0.18));
+    let mut sc = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: inertia,
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, 0.05, 0.02),
+    });
+
+    let diagnostics = sc.diagnostics_out.clone();
+    let e_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(0);
+        e_initial = diagnostics.read().rotational_energy_j;
+        sim.run_for(DURATION_NANOS);
+    }
+    let e_final = diagnostics.read().rotational_energy_j;
+
+    let rel_err = (e_final - e_initial).abs() / e_initial.abs();
+    assert!(
+        rel_err < 1e-10,
+        "rotational energy not conserved: E0={e_initial:.6e}  Ef={e_final:.6e}  rel_err={rel_err:.2e}"
+    );
+}
+
+/// With a conservative sprung panel (no damping, no motor) and no external torque,
+/// total rotational energy (kinetic + spring potential) must be conserved. This
+/// exercises the spring potential-energy term and is a stricter check than momentum:
+/// it catches sign/term errors in the back-substitution that momentum can be blind to.
+#[test]
+fn sprung_hinged_panel_conserves_total_energy() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(900.0, 0.0, 0.0, 0.0, 800.0, 0.0, 0.0, 0.0, 600.0),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+    });
+
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 100.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::new(100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0);
+    config.center_of_mass_offset_m = 1.5;
+    config.spring_constant_nm_per_rad = 100.0;
+    config.damping_nm_s_per_rad = 0.0;
+    config.hinge_position_body_m = Vector3::new(0.5, 0.0, 1.0);
+    config.body_to_hinge_dcm = Matrix3::identity();
+    config.theta_init_rad = 0.2;
+    config.theta_ref_rad = 0.0;
+    let panel = HingedRigidBodyStateEffector::new(config);
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let e_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        spacecraft.add_state_effector(panel);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        e_initial = diagnostics.read().rotational_energy_j;
+        sim.run_for(DURATION_NANOS);
+    }
+    let e_final = diagnostics.read().rotational_energy_j;
+
+    // RK4 is not symplectic, so energy conservation is to integration accuracy rather
+    // than machine precision; the spring oscillates ~10 times over the run.
+    let rel_err = (e_final - e_initial).abs() / e_initial.abs();
+    assert!(
+        rel_err < 1e-9,
+        "total rotational energy not conserved: E0={e_initial:.6e}  Ef={e_final:.6e}  rel_err={rel_err:.2e}"
+    );
+}
+
+/// A panel damper (c>0) must conserve total angular momentum (it is an internal
+/// torque) while strictly dissipating energy. A flipped damper sign would inject
+/// energy instead of removing it, so asserting monotonic energy decrease guards the
+/// sign of the damping term.
+#[test]
+fn damped_hinged_panel_dissipates_energy_but_conserves_momentum() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(900.0, 0.0, 0.0, 0.0, 800.0, 0.0, 0.0, 0.0, 600.0),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+    });
+
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 100.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::new(100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0);
+    config.center_of_mass_offset_m = 1.5;
+    config.spring_constant_nm_per_rad = 100.0;
+    config.damping_nm_s_per_rad = 5.0; // positive damping -> dissipation
+    config.hinge_position_body_m = Vector3::new(0.5, 0.0, 1.0);
+    config.body_to_hinge_dcm = Matrix3::identity();
+    config.theta_init_rad = 0.2;
+    config.theta_ref_rad = 0.0;
+    let panel = HingedRigidBodyStateEffector::new(config);
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let h_initial;
+    let mut energies = Vec::new();
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        spacecraft.add_state_effector(panel);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        let d0 = diagnostics.read();
+        h_initial = d0.rotational_angular_momentum_inertial_kg_m2ps;
+        energies.push(d0.rotational_energy_j);
+        for _ in 0..20 {
+            sim.run_for(5_000_000_000); // 5 s increments
+            energies.push(diagnostics.read().rotational_energy_j);
+        }
+    }
+    let d_final = diagnostics.read();
+    let h_final = d_final.rotational_angular_momentum_inertial_kg_m2ps;
+
+    // Angular momentum conserved despite the internal damper.
+    let h_norm = h_initial.norm();
+    for i in 0..3 {
+        let rel_err = (h_final[i] - h_initial[i]).abs() / h_norm;
+        assert!(
+            rel_err < 1e-10,
+            "damped panel: angular momentum component {i} not conserved (rel_err={rel_err:.2e})"
+        );
+    }
+
+    // Energy strictly decreases (monotonic dissipation), and the total drop is real.
+    for window in energies.windows(2) {
+        assert!(
+            window[1] <= window[0] + 1e-9,
+            "energy increased across an interval: {:.9e} -> {:.9e}",
+            window[0],
+            window[1]
+        );
+    }
+    let total_drop = energies.first().unwrap() - energies.last().unwrap();
+    assert!(
+        total_drop > 1e-3,
+        "expected meaningful energy dissipation, got drop={total_drop:.3e}"
+    );
+}
+
+/// A torque-free spin about a principal axis keeps omega exactly constant, so the
+/// body-to-inertial attitude is a closed-form rotation by omega*t. Spinning fast
+/// enough to cross |sigma|=1 many times exercises the MRP shadow-set switch on every
+/// revolution; the final DCM must still match the analytic rotation. This is the
+/// direct attitude-level guard for the RK4 shadow-switch fix.
+#[test]
+fn principal_axis_spin_matches_analytic_attitude_across_mrp_switches() {
+    let omega_z = 0.5; // rad/s about the body z (a principal axis -> torque free)
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        // z is the max-inertia principal axis: spin about it is torque-free and stable.
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(0.12, 0.15, 0.18)),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.0, 0.0, omega_z),
+    });
+
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(DURATION_NANOS);
+    }
+
+    let state = spacecraft.state_out.read();
+
+    // omega about a principal axis is unchanged by torque-free motion.
+    assert!(
+        (state.omega_radps - Vector3::new(0.0, 0.0, omega_z)).norm() < 1e-10,
+        "omega drifted: {:?}",
+        state.omega_radps
+    );
+
+    // Analytic body-to-inertial DCM: active rotation by angle = omega_z * t about z.
+    let angle = omega_z * (DURATION_NANOS as f64 * 1e-9);
+    let (c, s) = (angle.cos(), angle.sin());
+    let expected_body_to_inertial = Matrix3::new(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0);
+    let actual_body_to_inertial = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);
+
+    let dcm_err = (actual_body_to_inertial - expected_body_to_inertial).norm();
+    assert!(
+        dcm_err < 1e-10,
+        "attitude DCM does not match analytic rotation across MRP switches: err={dcm_err:.3e}"
+    );
+}
+
 #[test]
 fn spacecraft_outputs_initial_state_and_mass_props() {
     let inertia_diag = Vector3::new(0.12, 0.15, 0.18);

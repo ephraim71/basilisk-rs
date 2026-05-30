@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn density_matches_basilisk_exponential_atmosphere_truth() {
+    fn density_matches_exponential_atmosphere_closed_form() {
         let planet_radius_m = 6_378_136.6;
         let mut atmosphere = ExponentialAtmosphere::new(ExponentialAtmosphereConfig {
             name: "exp_atmo".to_string(),
@@ -376,7 +376,7 @@ mod tests {
         atmosphere.input_state_msg.connect(state_out.slot());
         atmosphere.init();
 
-        // (orbit radius [m], Basilisk truth density [kg/m^3])
+        // (orbit radius [m], expected density [kg/m^3])
         let cases = [(6_571_000.0_f64, 1.703062e-10_f64), (6_600_000.0, 5.617201e-12)];
         for (radius_m, truth_density) in cases {
             state_out.write(SpacecraftStateMsg {
@@ -386,7 +386,7 @@ mod tests {
             atmosphere.update(&dummy_context());
             let density = atmosphere.output_atmosphere_msg.read().neutral_density_kgpm3;
 
-            // Independent closed-form truth (same formula Basilisk validates against).
+            // Independent closed-form truth.
             let alt = radius_m - planet_radius_m;
             let analytic = 1.217 * (-alt / 8500.0).exp();
             let rel_err = (density - analytic).abs() / analytic;
@@ -395,7 +395,7 @@ mod tests {
             let rel_err_truth = (density - truth_density).abs() / truth_density;
             assert!(
                 rel_err_truth < 1e-5,
-                "density at r={radius_m:.0} m does not match Basilisk truth: \
+                "density at r={radius_m:.0} m does not match expected truth: \
                  got {density:.6e}, expected {truth_density:.6e} (rel_err={rel_err_truth:.2e})"
             );
         }

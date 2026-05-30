@@ -179,7 +179,7 @@ mod tests {
         let state = make_state(sigma, v_inertial);
         let out = drag.compute_output(&state);
 
-        // Reference: same math as Basilisk test_cannonballDrag
+        // Cannonball drag: F = -0.5 * rho * Cd * A * |v| * v, in the body frame
         let v_body = q_nb.inverse().transform_vector(&v_inertial);
         let v_mag = v_inertial.norm(); // frame-invariant
         let f_mag = 0.5 * density * v_mag * v_mag * cd * area;

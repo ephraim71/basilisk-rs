@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn known_rotation_transforms_omega() {
         let omega_body = Vector3::new(0.0, 0.15, 0.1);
-        // Euler 3-2-1: yaw=0.7854, pitch=1.0, roll=0.1 — same as Basilisk setBodyToPlatformDCM
+        // Euler 3-2-1: yaw=0.7854, pitch=1.0, roll=0.1
         let q = UnitQuaternion::from_euler_angles(0.1, 1.0, 0.7854);
         let expected = q.transform_vector(&omega_body);
 

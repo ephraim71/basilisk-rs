@@ -186,7 +186,7 @@ mod tests {
             / (SPEED_OF_LIGHT_MPS * d.powi(3));
         let expected = scale * sun_to_sc;
 
-        let basilisk_truth =
+        let expected_truth =
             Vector3::new(-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06);
         assert!(
             (out.force_inertial_n - expected).norm() < 1e-12,
@@ -195,10 +195,10 @@ mod tests {
             expected
         );
         assert!(
-            (out.force_inertial_n - basilisk_truth).norm() < 1e-12,
-            "basilisk mismatch: {:?} vs {:?}",
+            (out.force_inertial_n - expected_truth).norm() < 1e-12,
+            "truth mismatch: {:?} vs {:?}",
             out.force_inertial_n,
-            basilisk_truth
+            expected_truth
         );
     }
 

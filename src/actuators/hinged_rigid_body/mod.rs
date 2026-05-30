@@ -541,7 +541,7 @@ mod tests {
     use nalgebra::{Matrix3, Vector3};
 
     #[test]
-    fn linear_profiler_matches_basilisk_unit_test_trace() {
+    fn linear_profiler_produces_expected_trace() {
         let mut profiler = HingedBodyLinearProfiler::with_profile(
             "profiler",
             1_000_000_000,
@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn hinged_rigid_body_motor_torque_initial_config_matches_basilisk_geometry() {
+    fn hinged_rigid_body_motor_torque_initial_config_matches_expected_geometry() {
         let mut spacecraft = Spacecraft::new(SpacecraftConfig {
             mass_kg: 750.0,
             hub_center_of_mass_body_m: Vector3::new(0.0, 0.0, 1.0),
@@ -677,9 +677,9 @@ mod tests {
             initial_omega_radps: Vector3::zeros(),
         });
 
-        let panel1 = HingedRigidBodyStateEffector::new(basilisk_motor_torque_panel_1());
+        let panel1 = HingedRigidBodyStateEffector::new(motor_torque_panel_1());
         let panel1_state = panel1.panel_state_out.clone();
-        let panel2 = HingedRigidBodyStateEffector::new(basilisk_motor_torque_panel_2());
+        let panel2 = HingedRigidBodyStateEffector::new(motor_torque_panel_2());
         let panel2_state = panel2.panel_state_out.clone();
 
         spacecraft.add_state_effector(panel1);
@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn hinged_rigid_body_motor_torque_integrated_state_matches_basilisk_test_shape() {
+    fn hinged_rigid_body_motor_torque_integrated_state_remains_finite() {
         let mut spacecraft = Spacecraft::new(SpacecraftConfig {
             mass_kg: 750.0,
             hub_center_of_mass_body_m: Vector3::new(0.0, 0.0, 1.0),
@@ -746,9 +746,9 @@ mod tests {
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::zeros(),
         });
-        let mut panel1 = HingedRigidBodyStateEffector::new(basilisk_motor_torque_panel_1());
+        let mut panel1 = HingedRigidBodyStateEffector::new(motor_torque_panel_1());
         let panel1_hinge = panel1.hinged_rigid_body_out.clone();
-        let panel2 = HingedRigidBodyStateEffector::new(basilisk_motor_torque_panel_2());
+        let panel2 = HingedRigidBodyStateEffector::new(motor_torque_panel_2());
         let panel2_hinge = panel2.hinged_rigid_body_out.clone();
         let motor = Output::new(ArrayMotorTorqueMsg {
             motor_torque_nm: vec![2.0],
@@ -781,7 +781,7 @@ mod tests {
         assert!(panel2_hinge.read().theta_rad.is_finite());
     }
 
-    fn basilisk_motor_torque_panel_1() -> HingedRigidBodyConfig {
+    fn motor_torque_panel_1() -> HingedRigidBodyConfig {
         let mut config = HingedRigidBodyConfig::new("panel1");
         config.mass_kg = 100.0;
         config.inertia_about_panel_com_panel_kg_m2 =
@@ -794,7 +794,7 @@ mod tests {
         config
     }
 
-    fn basilisk_motor_torque_panel_2() -> HingedRigidBodyConfig {
+    fn motor_torque_panel_2() -> HingedRigidBodyConfig {
         let mut config = HingedRigidBodyConfig::new("panel2");
         config.mass_kg = 100.0;
         config.inertia_about_panel_com_panel_kg_m2 =

@@ -12,6 +12,7 @@ use crate::gravity::GravBodyData;
 use crate::messages::{
     HingedRigidBodyMsg, Input, Output, ReactionWheelCommandMsg, SpacecraftStateMsg,
 };
+use crate::hinged_rigid_body::{HingedRigidBodyConfig, HingedRigidBodyStateEffector};
 use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
 use crate::simulation::Simulation;
 
@@ -218,6 +219,70 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         expected_wheel_omega_x,
         wheel_omega_x
     );
+}
+
+/// Total rotational angular momentum about the system center of mass must be
+/// conserved while a sprung hinged panel oscillates under torque-free rotation.
+
+#[test]
+fn sprung_hinged_panel_conserves_total_angular_momentum() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(900.0, 0.0, 0.0, 0.0, 800.0, 0.0, 0.0, 0.0, 600.0),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+    });
+
+    // Sprung panel offset from the spin axis, displaced from its rest angle so it
+    // oscillates. No motor torque and no damping: the only internal coupling is the
+    // conservative spring, and there is no external torque (no gravity body).
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 100.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::new(100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0);
+    config.center_of_mass_offset_m = 1.5;
+    config.spring_constant_nm_per_rad = 100.0;
+    config.damping_nm_s_per_rad = 0.0;
+    config.hinge_position_body_m = Vector3::new(0.5, 0.0, 1.0);
+    config.body_to_hinge_dcm = Matrix3::identity();
+    config.theta_init_rad = 0.2;
+    config.theta_ref_rad = 0.0;
+    let panel = HingedRigidBodyStateEffector::new(config);
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let h_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        spacecraft.add_state_effector(panel);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        h_initial = diagnostics
+            .read()
+            .rotational_angular_momentum_inertial_kg_m2ps;
+        sim.run_for(DURATION_NANOS);
+    }
+
+    let h_final = diagnostics
+        .read()
+        .rotational_angular_momentum_inertial_kg_m2ps;
+    let h_norm = h_initial.norm();
+    assert!(h_norm > 0.0, "expected non-zero initial angular momentum");
+
+    for i in 0..3 {
+        let rel_err = (h_final[i] - h_initial[i]).abs() / h_norm;
+        assert!(
+            rel_err < 1e-10,
+            "rotational angular momentum component {i} not conserved: \
+             H0={:.6e}  Hf={:.6e}  rel_err={:.2e}",
+            h_initial[i],
+            h_final[i],
+            rel_err
+        );
+    }
 }
 
 #[test]

@@ -359,8 +359,14 @@ impl StateEffector for HingedRigidBodyStateEffector {
         let panel_com_velocity_body = kinematics.panel_com_prime_body_mps
             + body_omega_radps.cross(&kinematics.panel_com_position_body_m);
 
+        let theta = effector_state[0];
+        let spring_potential_energy_j = 0.5
+            * self.config.spring_constant_nm_per_rad
+            * (theta - self.theta_ref_rad).powi(2);
+
         0.5 * omega_panel_body.dot(&(inertia_panel_com_body * omega_panel_body))
             + 0.5 * self.config.mass_kg * panel_com_velocity_body.norm_squared()
+            + spring_potential_energy_j
     }
 
     fn write_outputs(&mut self, _current_sim_nanos: u64, hub_state: &SpacecraftStateMsg) {

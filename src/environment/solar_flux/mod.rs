@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn flux_at_one_au_matches_basilisk_constant() {
+    fn flux_at_one_au_matches_expected_constant() {
         let (mut solar_flux, _sun, _spacecraft, _eclipse) =
             make_solar_flux(Vector3::new(0.0, 0.0, ASTRONOMICAL_UNIT_M), None);
 
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn flux_scales_by_distance_squared_like_basilisk_unit_test() {
+    fn flux_scales_by_distance_squared() {
         let position_factor = 2.0_f64.sqrt();
         let illumination_factor = 0.5;
         let (mut solar_flux, _sun, spacecraft_out, _eclipse) = make_solar_flux(

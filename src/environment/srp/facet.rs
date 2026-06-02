@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn faceted_srp_uses_projected_panel_area_like_basilisk() {
+    fn faceted_srp_uses_projected_panel_area() {
         let (mut srp, _sun_out) = make_faceted_srp();
         let area_m2 = 2.0;
         let normal_body = Vector3::new(-1.0, 0.0, 0.0);
@@ -286,10 +286,10 @@ mod tests {
 
         assert!((out.force_inertial_n - expected_force).norm() < 1.0e-18);
         assert!((out.torque_body_nm - location_body_m.cross(&expected_force)).norm() < 1.0e-18);
-        let basilisk_force_truth = Vector3::new(1.1559997283187156e-05, 0.0, 0.0);
-        let basilisk_torque_truth = Vector3::new(0.0, 0.0, -1.1559997283187156e-05);
-        assert!((out.force_inertial_n - basilisk_force_truth).norm() < 1.0e-18);
-        assert!((out.torque_body_nm - basilisk_torque_truth).norm() < 1.0e-18);
+        let truth_force = Vector3::new(1.1559997283187156e-05, 0.0, 0.0);
+        let truth_torque = Vector3::new(0.0, 0.0, -1.1559997283187156e-05);
+        assert!((out.force_inertial_n - truth_force).norm() < 1.0e-18);
+        assert!((out.torque_body_nm - truth_torque).norm() < 1.0e-18);
 
         let (mut double_area_srp, _sun_out) = make_faceted_srp();
         double_area_srp.add_panel(
@@ -348,7 +348,7 @@ mod tests {
         assert!(out.torque_body_nm.z < 0.0);
     }
 
-    fn make_basilisk_facet_srp_unit_test_geometry(
+    fn make_facet_srp_geometry(
         facet_rot_angle1_rad: f64,
         facet_rot_angle2_rad: f64,
     ) -> (FacetSolarRadiationPressure, Output<SunEphemerisMsg>) {
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn faceted_srp_matches_basilisk_unit_test_angle_matrix() {
+    fn faceted_srp_matches_expected_angle_matrix() {
         const CASES: &[(f64, f64, [f64; 3], [f64; 3], [f64; 3], [f64; 3])] = &[
             (
                 -1.81514242207410276e-01,
@@ -564,7 +564,7 @@ mod tests {
 
         for (angle1, angle2, position, sigma_bn, expected_force_body, expected_torque_body) in CASES
         {
-            let (srp, _sun_out) = make_basilisk_facet_srp_unit_test_geometry(*angle1, *angle2);
+            let (srp, _sun_out) = make_facet_srp_geometry(*angle1, *angle2);
             let state = SpacecraftStateMsg {
                 position_m: Vector3::from_column_slice(position),
                 sigma_bn: Vector3::from_column_slice(sigma_bn),

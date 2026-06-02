@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_limits_match_basilisk_unit_test() {
+    fn storage_limits_are_enforced() {
         let power_1 = Output::new(PowerNodeUsageMsg { net_power_w: 5.0 });
         let power_2 = Output::new(PowerNodeUsageMsg { net_power_w: 5.0 });
         let mut battery = battery(5.0, 10.0);
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn fault_capacity_ratio_limits_stored_charge_like_basilisk_unit_test() {
+    fn fault_capacity_ratio_limits_stored_charge() {
         let cases = [
             (5.0, 5.0, 5.0, 10.0, 0.3),
             (1.0, 1.0, 5.0, 10.0, 0.3),

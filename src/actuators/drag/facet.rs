@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_density_yields_zero_output_mirrors_basilisk() {
+    fn zero_density_yields_zero_output() {
         let (mut drag, _atmo) = make_drag(0.0);
         drag.add_facet(
             1.0,
@@ -157,10 +157,10 @@ mod tests {
     }
 
     /// Facets whose normals point away from the flow direction (cos_θ ≤ 0) contribute nothing.
-    /// Mirrors Basilisk test_ShadowCalculation: normals [0,0,-1] and [0,-1,0], v=[0,7788,0].
+    /// Normals [0,0,-1] and [0,-1,0], v=[0,7788,0]: both perpendicular to or opposing flow.
     /// Both normals are perpendicular or opposing the flow, so total force/torque = zero.
     #[test]
-    fn facets_facing_away_from_flow_produce_no_force_mirrors_basilisk() {
+    fn facets_facing_away_from_flow_produce_no_force() {
         let (mut drag, _atmo) = make_drag(1.0);
         drag.add_facet(
             1.0,
@@ -182,9 +182,9 @@ mod tests {
     /// Two facets, identity attitude, v=[0,7788,0] m/s, density=1.0 kg/m³.
     /// Facet 1: normal=[1,0,0] → cos_θ=0 → no contribution.
     /// Facet 2: normal=[0,1,0], area=1.0, Cd=2.0, loc=[0.3,0,0] → head-on.
-    /// Mirrors Basilisk checkFacetDragForce formula exactly.
+    /// Force and torque computed directly from the facet drag formula.
     #[test]
-    fn two_facets_identity_attitude_force_and_torque_mirrors_basilisk() {
+    fn two_facets_identity_attitude_force_and_torque() {
         let density = 1.0_f64;
         let v_inertial = Vector3::new(0.0_f64, 7788.0, 0.0);
 
@@ -217,10 +217,10 @@ mod tests {
     }
 
     /// Two facets, MRP attitude σ=[0.1,0.2,0.3], v=[7000,0,0] m/s, density=2.0 kg/m³.
-    /// Expected values computed with identical formula to Basilisk's checkFacetDragForce.
-    /// Mirrors Basilisk test_DragCalculation parametrized cases with MRP rotation.
+    /// Expected values computed directly from the facet drag formula.
+    /// Parametrized cases with MRP attitude rotation.
     #[test]
-    fn two_facets_mrp_attitude_force_and_torque_mirrors_basilisk() {
+    fn two_facets_mrp_attitude_force_and_torque() {
         let density = 2.0_f64;
         let sigma = Vector3::new(0.1_f64, 0.2, 0.3);
         let v_inertial = Vector3::new(7000.0_f64, 0.0, 0.0);
@@ -244,7 +244,7 @@ mod tests {
             (1.0_f64, 1.5_f64, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0)),
         ];
 
-        // reference: Basilisk checkFacetDragForce summed over facets
+        // expected: facet drag force summed over facets
         let mut expected_force_body = Vector3::zeros();
         let mut expected_torque_body = Vector3::zeros();
         for (area, cd, normal, loc) in facets {

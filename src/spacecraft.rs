@@ -502,7 +502,7 @@ impl Spacecraft {
                 + derivative.position_wrt_central_body_dot_mps * dt_seconds,
             velocity_wrt_central_body_mps: state.velocity_wrt_central_body_mps
                 + derivative.velocity_wrt_central_body_dot_mps2 * dt_seconds,
-            sigma_bn: shadow_mrp(state.sigma_bn + derivative.sigma_dot * dt_seconds),
+            sigma_bn: state.sigma_bn + derivative.sigma_dot * dt_seconds,
             omega_radps: state.omega_radps + derivative.omega_dot_radps2 * dt_seconds,
             effector_states: state
                 .effector_states

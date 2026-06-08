@@ -180,6 +180,14 @@ impl<'a> Simulation<'a> {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.initialized = false;
+        self.current_sim_nanos = 0;
+        for m in &mut self.modules {
+            m.next_run_nanos = 0;
+        }
+    }
+
     pub fn module_names(&self) -> Vec<String> {
         self.modules
             .iter()

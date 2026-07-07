@@ -1,8 +1,9 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpacecraftDiagnosticsMsg {
     pub omega_dot_radps2: Vector3<f64>,
     pub gravity_accel_inertial_mps2: Vector3<f64>,

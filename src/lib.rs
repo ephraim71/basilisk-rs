@@ -8,6 +8,7 @@
 
 use hifitime::Epoch;
 
+pub mod clock_sync;
 pub mod device_interface;
 pub mod dynamics;
 pub mod environment;

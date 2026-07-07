@@ -76,7 +76,7 @@ impl<'a> Simulation<'a> {
         self.next_insertion_order += 1;
     }
 
-    pub fn connect<T>(&self, output: &Output<T>, input: &mut Input<T>) {
+    pub fn connect<T: Clone>(&self, output: &Output<T>, input: &mut Input<T>) {
         input.connect(output.slot());
     }
 
@@ -161,6 +161,22 @@ impl<'a> Simulation<'a> {
         if let Some(progress_bar) = progress_bar {
             progress_bar.finish_with_message("simulation complete");
         }
+    }
+
+    pub fn run_for_chunked_while(
+        &mut self,
+        duration_nanos: u64,
+        chunk_nanos: u64,
+        mut should_continue: impl FnMut() -> bool,
+    ) -> bool {
+        let chunk_nanos = chunk_nanos.max(1).min(duration_nanos.max(1));
+        let mut remaining_nanos = duration_nanos;
+        while remaining_nanos > 0 && should_continue() {
+            let run_nanos = remaining_nanos.min(chunk_nanos);
+            self.run_for(run_nanos);
+            remaining_nanos = remaining_nanos.saturating_sub(run_nanos);
+        }
+        remaining_nanos == 0
     }
 
     pub fn current_sim_nanos(&self) -> u64 {

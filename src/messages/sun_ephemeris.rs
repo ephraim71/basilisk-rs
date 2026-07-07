@@ -1,8 +1,9 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SunEphemerisMsg {
     pub sun_position_inertial_m: Vector3<f64>,
     pub sun_velocity_inertial_mps: Vector3<f64>,

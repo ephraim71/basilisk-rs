@@ -1,14 +1,18 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use super::MAX_EFF_COUNT;
 
 /// Reaction-wheel array configuration used by flight-software modules.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RwArrayConfigMsg {
     pub num_rw: usize,
     /// One body-frame spin-axis vector per wheel (`GsMatrix_B` upstream).
+    #[serde(with = "super::big_array")]
     pub spin_axes_body: [Vector3<f64>; MAX_EFF_COUNT],
+    #[serde(with = "super::big_array")]
     pub spin_axis_inertias_kg_m2: [f64; MAX_EFF_COUNT],
+    #[serde(with = "super::big_array")]
     pub max_motor_torques_nm: [f64; MAX_EFF_COUNT],
 }
 

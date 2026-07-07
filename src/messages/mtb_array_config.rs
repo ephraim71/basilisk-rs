@@ -1,12 +1,15 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use super::MAX_EFF_COUNT;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtbArrayConfigMsg {
     pub num_mtb: usize,
     /// Columns of the 3-by-numMTB `GtMatrix_B` matrix.
+    #[serde(with = "super::big_array")]
     pub dipole_axes_body: [Vector3<f64>; MAX_EFF_COUNT],
+    #[serde(with = "super::big_array")]
     pub max_dipoles_am2: [f64; MAX_EFF_COUNT],
 }
 

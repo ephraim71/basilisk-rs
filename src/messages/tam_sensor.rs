@@ -1,9 +1,10 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
 /// Three-axis magnetometer measurement expressed in the sensor frame.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TamSensorMsg {
     pub magnetic_field_sensor_t: Vector3<f64>,
 }

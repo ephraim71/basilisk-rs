@@ -1,6 +1,7 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AtmosphereMsg {
     pub neutral_density_kgpm3: f64,
     pub local_temp_k: f64,

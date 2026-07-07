@@ -78,8 +78,8 @@ mod tests {
     use crate::messages::{EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
 
     use super::{
-        ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS,
-        SolarRadiationPressure, SolarRadiationPressureConfig,
+        ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS, SolarRadiationPressure,
+        SolarRadiationPressureConfig,
     };
 
     fn make_srp(

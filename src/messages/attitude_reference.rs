@@ -1,8 +1,9 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AttitudeReferenceMsg {
     pub sigma_bn: Vector3<f64>,
     pub omega_bn_n_radps: Vector3<f64>,

@@ -1,6 +1,7 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EclipseMsg {
     pub illumination_factor: f64,
 }

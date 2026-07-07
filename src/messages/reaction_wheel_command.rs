@@ -1,6 +1,7 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReactionWheelCommandMsg {
     pub motor_torque_nm: f64,
 }

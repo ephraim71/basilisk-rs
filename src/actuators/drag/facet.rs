@@ -57,7 +57,10 @@ impl FacetDrag {
         }
 
         let relative_velocity_inertial = state.velocity_mps
-            - self.config.planet_rotation_rate_radps.cross(&state.position_m);
+            - self
+                .config
+                .planet_rotation_rate_radps
+                .cross(&state.position_m);
         let relative_speed = relative_velocity_inertial.norm();
         if relative_speed == 0.0 {
             return EffectorOutput::default();
@@ -69,27 +72,27 @@ impl FacetDrag {
             .transform_vector(&relative_velocity_inertial)
             / relative_speed;
 
-        let (force_body, torque_body) =
-            self.facets
-                .iter()
-                .fold((Vector3::zeros(), Vector3::zeros()), |(f_sum, t_sum), facet| {
-                    let cos_theta = facet.normal_body.dot(&v_hat_body);
-                    let projected_area = facet.area_m2 * cos_theta;
-                    if projected_area <= 0.0 {
-                        return (f_sum, t_sum);
-                    }
-                    let facet_force = -0.5
-                        * atmosphere.neutral_density_kgpm3
-                        * facet.drag_coeff
-                        * projected_area
-                        * relative_speed
-                        * relative_speed
-                        * v_hat_body;
-                    (
-                        f_sum + facet_force,
-                        t_sum + facet.location_body_m.cross(&facet_force),
-                    )
-                });
+        let (force_body, torque_body) = self.facets.iter().fold(
+            (Vector3::zeros(), Vector3::zeros()),
+            |(f_sum, t_sum), facet| {
+                let cos_theta = facet.normal_body.dot(&v_hat_body);
+                let projected_area = facet.area_m2 * cos_theta;
+                if projected_area <= 0.0 {
+                    return (f_sum, t_sum);
+                }
+                let facet_force = -0.5
+                    * atmosphere.neutral_density_kgpm3
+                    * facet.drag_coeff
+                    * projected_area
+                    * relative_speed
+                    * relative_speed
+                    * v_hat_body;
+                (
+                    f_sum + facet_force,
+                    t_sum + facet.location_body_m.cross(&facet_force),
+                )
+            },
+        );
 
         EffectorOutput {
             force_inertial_n: body_to_inertial.transform_vector(&force_body),
@@ -151,7 +154,10 @@ mod tests {
             Vector3::new(1.0, 0.0, 0.0),
             Vector3::new(0.1, 0.0, 0.0),
         );
-        let out = drag.compute_output(&make_state(Vector3::zeros(), Vector3::new(0.0, 7788.0, 0.0)));
+        let out = drag.compute_output(&make_state(
+            Vector3::zeros(),
+            Vector3::new(0.0, 7788.0, 0.0),
+        ));
         assert_eq!(out.force_inertial_n, Vector3::zeros());
         assert_eq!(out.torque_body_nm, Vector3::zeros());
     }
@@ -174,7 +180,10 @@ mod tests {
             Vector3::new(0.0, -1.0, 0.0),
             Vector3::new(0.0, 0.1, 0.0),
         );
-        let out = drag.compute_output(&make_state(Vector3::zeros(), Vector3::new(0.0, 7788.0, 0.0)));
+        let out = drag.compute_output(&make_state(
+            Vector3::zeros(),
+            Vector3::new(0.0, 7788.0, 0.0),
+        ));
         assert_eq!(out.force_inertial_n, Vector3::zeros());
         assert_eq!(out.torque_body_nm, Vector3::zeros());
     }
@@ -189,8 +198,18 @@ mod tests {
         let v_inertial = Vector3::new(0.0_f64, 7788.0, 0.0);
 
         let (mut drag, _atmo) = make_drag(density);
-        drag.add_facet(1.0, 2.0, Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.1, 0.0, 0.0));
-        drag.add_facet(1.0, 2.0, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0));
+        drag.add_facet(
+            1.0,
+            2.0,
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.1, 0.0, 0.0),
+        );
+        drag.add_facet(
+            1.0,
+            2.0,
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.3, 0.0, 0.0),
+        );
 
         let out = drag.compute_output(&make_state(Vector3::zeros(), v_inertial));
 
@@ -240,8 +259,18 @@ mod tests {
         let v_hat_body = q_nb.inverse().transform_vector(&v_inertial) / v_mag;
 
         let facets = [
-            (1.5_f64, 2.0_f64, Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 0.5, 0.0)),
-            (1.0_f64, 1.5_f64, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0)),
+            (
+                1.5_f64,
+                2.0_f64,
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(0.0, 0.5, 0.0),
+            ),
+            (
+                1.0_f64,
+                1.5_f64,
+                Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(0.3, 0.0, 0.0),
+            ),
         ];
 
         // expected: facet drag force summed over facets

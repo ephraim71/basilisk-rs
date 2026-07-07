@@ -1,8 +1,9 @@
 use nalgebra::UnitQuaternion;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StarTrackerMsg {
     pub attitude_inertial_to_sensor: UnitQuaternion<f64>,
 }

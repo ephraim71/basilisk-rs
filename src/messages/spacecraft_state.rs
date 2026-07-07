@@ -1,8 +1,9 @@
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpacecraftStateMsg {
     pub position_m: Vector3<f64>,
     pub velocity_mps: Vector3<f64>,

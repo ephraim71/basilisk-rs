@@ -9,6 +9,7 @@
 use hifitime::Epoch;
 
 pub mod actuators;
+pub mod clock_sync;
 pub mod environment;
 pub mod fsw;
 pub mod messages;

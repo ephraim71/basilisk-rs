@@ -822,6 +822,8 @@ fn single_sun_sensor(
         k_power: 2.0,
         bias: 0.0,
         noise_std: 0.002,
+        noise_prop: 1.0,
+        walk_bounds: -1.0,
         min_output: 0.0,
         max_output: 1.0,
     })

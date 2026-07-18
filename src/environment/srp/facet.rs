@@ -4,7 +4,7 @@ use std::any::Any;
 use crate::messages::{EclipseMsg, HingedRigidBodyMsg, Input, SpacecraftStateMsg, SunEphemerisMsg};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
-const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_700.0;
+const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
 const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1368.0;
 const SPEED_OF_LIGHT_MPS: f64 = 299_792_458.0;
 

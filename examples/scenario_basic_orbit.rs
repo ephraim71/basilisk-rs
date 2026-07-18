@@ -116,6 +116,7 @@ fn main() {
         initial_velocity_mps: v0,
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
+        integrator: None
     });
 
     if use_sh {

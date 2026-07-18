@@ -432,6 +432,8 @@ fn single_css(name: &str, position_m: Vector3<f64>, boresight_body: Vector3<f64>
         k_power: 2.0,
         bias: 0.0,
         noise_std: 0.0,
+        noise_prop: 1.0,
+        walk_bounds: -1.0,
         min_output: 0.0,
         max_output: 1.0,
     })

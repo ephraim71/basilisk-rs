@@ -7,7 +7,27 @@ use crate::spacecraft::{DynamicEffector, EffectorOutput};
 #[derive(Clone, Debug)]
 pub struct FacetDragConfig {
     pub name: String,
+    /// Planet spin rate used to model a rigidly co-rotating atmosphere via
+    /// `v_air = omega x r`. NOTE: assumes `state.position_m` is planet-centered
+    /// (origin at the planet's rotation center). In a non-planet-centered frame
+    /// this term is taken about the wrong point. A future wind-input message
+    /// would replace this inline term for non-rigid winds. Set to zero for a
+    /// non-rotating (inertial-velocity) atmosphere.
     pub planet_rotation_rate_radps: Vector3<f64>,
+}
+
+impl FacetDragConfig {
+    /// Check numeric invariants. Returns a description of the first violation,
+    /// or `Ok(())` when the configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.planet_rotation_rate_radps.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "planet_rotation_rate_radps must be finite, got {:?}",
+                self.planet_rotation_rate_radps
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -27,6 +47,9 @@ pub struct FacetDrag {
 
 impl FacetDrag {
     pub fn new(config: FacetDragConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid FacetDragConfig: {msg}");
+        }
         Self {
             config,
             input_atmosphere_msg: Input::default(),
@@ -41,6 +64,22 @@ impl FacetDrag {
         normal_body: Vector3<f64>,
         location_body_m: Vector3<f64>,
     ) -> usize {
+        assert!(
+            area_m2.is_finite() && area_m2 >= 0.0,
+            "facet area_m2 must be finite and >= 0, got {area_m2}"
+        );
+        assert!(
+            drag_coeff.is_finite() && drag_coeff >= 0.0,
+            "facet drag_coeff must be finite and >= 0, got {drag_coeff}"
+        );
+        assert!(
+            normal_body.iter().all(|v| v.is_finite()) && normal_body.norm() > 0.0,
+            "facet normal_body must be finite and non-zero, got {normal_body:?}"
+        );
+        assert!(
+            location_body_m.iter().all(|v| v.is_finite()),
+            "facet location_body_m must be finite, got {location_body_m:?}"
+        );
         self.facets.push(DragFacet {
             area_m2,
             drag_coeff,
@@ -274,5 +313,54 @@ mod tests {
             "torque: expected {expected_torque_body:?}, got {:?}",
             out.torque_body_nm
         );
+    }
+
+    /// With a rotating planet the drag opposes the atmosphere-relative velocity
+    /// v_rel = v - (omega x r). Mirrors Basilisk's wind-linked facet drag test.
+    #[test]
+    fn planet_rotation_produces_atmosphere_relative_drag() {
+        let density = 2.0_f64;
+        let omega = Vector3::new(0.0, 0.0, 7.29e-5);
+        let position = Vector3::new(7.0e6, 0.0, 0.0);
+        let velocity = Vector3::new(0.0, 7600.0, 0.0);
+
+        let atmo_out = Output::new(AtmosphereMsg {
+            neutral_density_kgpm3: density,
+            local_temp_k: 0.0,
+        });
+        let mut drag = FacetDrag::new(FacetDragConfig {
+            name: "facet_drag".to_string(),
+            planet_rotation_rate_radps: omega,
+        });
+        drag.input_atmosphere_msg.connect(atmo_out.slot());
+        // Facet normal along +y so it faces the (mostly +y) relative flow.
+        drag.add_facet(1.0, 2.0, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0));
+
+        // Identity attitude: body frame == inertial frame.
+        let state = SpacecraftStateMsg {
+            position_m: position,
+            ..make_state(Vector3::zeros(), velocity)
+        };
+        let out = drag.compute_output(&state);
+
+        let v_rel = velocity - omega.cross(&position);
+        let v_hat = v_rel.normalize();
+        let cos_theta = Vector3::new(0.0, 1.0, 0.0).dot(&v_hat);
+        let expected = -0.5 * density * 2.0 * (1.0 * cos_theta) * v_rel.norm() * v_rel.norm() * v_hat;
+
+        assert!((v_rel - velocity).norm() > 1.0, "omega x r should be non-trivial");
+        let rel_err = (out.force_inertial_n - expected).norm() / expected.norm();
+        assert!(
+            rel_err < 1e-12,
+            "force: expected {expected:?}, got {:?}",
+            out.force_inertial_n
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "area_m2")]
+    fn rejects_negative_facet_area() {
+        let (mut drag, _atmo) = make_drag(1.0);
+        drag.add_facet(-1.0, 2.0, Vector3::new(1.0, 0.0, 0.0), Vector3::zeros());
     }
 }

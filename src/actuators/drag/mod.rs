@@ -12,7 +12,45 @@ pub struct DragConfig {
     pub projected_area_m2: f64,
     pub drag_coeff: f64,
     pub com_offset_m: Vector3<f64>,
+    /// Planet spin rate used to model a rigidly co-rotating atmosphere via
+    /// `v_air = omega x r`. NOTE: assumes `state.position_m` is planet-centered
+    /// (origin at the planet's rotation center). In a non-planet-centered frame
+    /// this term is taken about the wrong point. A future wind-input message
+    /// would replace this inline term for non-rigid winds. Set to zero for a
+    /// non-rotating (inertial-velocity) atmosphere.
     pub planet_rotation_rate_radps: Vector3<f64>,
+}
+
+impl DragConfig {
+    /// Check physical and numeric invariants. Returns a description of the first
+    /// violation, or `Ok(())` when the configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.projected_area_m2.is_finite() || self.projected_area_m2 < 0.0 {
+            return Err(format!(
+                "projected_area_m2 must be finite and >= 0, got {}",
+                self.projected_area_m2
+            ));
+        }
+        if !self.drag_coeff.is_finite() || self.drag_coeff < 0.0 {
+            return Err(format!(
+                "drag_coeff must be finite and >= 0, got {}",
+                self.drag_coeff
+            ));
+        }
+        if !self.com_offset_m.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "com_offset_m must be finite, got {:?}",
+                self.com_offset_m
+            ));
+        }
+        if !self.planet_rotation_rate_radps.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "planet_rotation_rate_radps must be finite, got {:?}",
+                self.planet_rotation_rate_radps
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -23,6 +61,9 @@ pub struct Drag {
 
 impl Drag {
     pub fn new(config: DragConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid DragConfig: {msg}");
+        }
         Self {
             config,
             input_atmosphere_msg: Input::default(),
@@ -197,5 +238,58 @@ mod tests {
             "torque: expected {torque_body:?}, got {:?}",
             out.torque_body_nm
         );
+    }
+
+    /// With a rotating planet the drag opposes the *atmosphere-relative* velocity
+    /// v_rel = v - (omega x r), not the inertial velocity.
+    #[test]
+    fn planet_rotation_produces_atmosphere_relative_drag() {
+        let density = 2.0_f64;
+        let cd = 1.5_f64;
+        let area = 2.75_f64;
+        let omega = Vector3::new(0.0, 0.0, 7.29e-5); // planet spin [rad/s]
+        let position = Vector3::new(7.0e6, 0.0, 0.0);
+        let velocity = Vector3::new(0.0, 7600.0, 0.0);
+
+        let atmo_out = Output::new(AtmosphereMsg {
+            neutral_density_kgpm3: density,
+            local_temp_k: 0.0,
+        });
+        let mut drag = Drag::new(DragConfig {
+            name: "drag".to_string(),
+            projected_area_m2: area,
+            drag_coeff: cd,
+            com_offset_m: Vector3::zeros(),
+            planet_rotation_rate_radps: omega,
+        });
+        drag.input_atmosphere_msg.connect(atmo_out.slot());
+
+        // Identity attitude, so body frame == inertial frame.
+        let state = make_state(Vector3::zeros(), velocity);
+        let state = SpacecraftStateMsg {
+            position_m: position,
+            ..state
+        };
+        let out = drag.compute_output(&state);
+
+        let v_rel = velocity - omega.cross(&position);
+        let f_mag = 0.5 * density * v_rel.norm() * v_rel.norm() * cd * area;
+        let expected = -f_mag * v_rel.normalize();
+
+        // Sanity: co-rotation actually changed the relative velocity.
+        assert!((v_rel - velocity).norm() > 1.0, "omega x r should be non-trivial");
+
+        let rel_err = (out.force_inertial_n - expected).norm() / expected.norm();
+        assert!(
+            rel_err < 1e-12,
+            "force: expected {expected:?}, got {:?}",
+            out.force_inertial_n
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "drag_coeff")]
+    fn rejects_negative_drag_coeff() {
+        let _ = make_drag(1.0, -0.5, 2.75, Vector3::zeros());
     }
 }

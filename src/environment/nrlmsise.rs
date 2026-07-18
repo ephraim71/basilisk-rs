@@ -4851,6 +4851,11 @@ fn gtd7d(
 ///      * Atmosphere mass density in kg / m^3
 ///      * Temperature in Kelvin
 ///
+/// Evaluate NRLMSISE-00 and return `(density_kg_m3, temperature_k)`.
+///
+/// Selects the model by altitude: `gtd7` below 500 km, `gtd7d` at/above 500 km.
+/// `gtd7d`'s total mass density (`d[5]`) adds the "anomalous oxygen" term, which
+/// affects satellite drag above ~500 km and is negligible below it.
 pub fn nrlmsise_with_inputs(
     alt_km: f64,
     lat_deg: f64,
@@ -4890,7 +4895,11 @@ pub fn nrlmsise_with_inputs(
         d: [0.0; 9],
         t: [0.0; 2],
     };
-    gtd7d(&mut input, &mut flags, &mut output, &mut state);
+    if input.alt < 500.0 {
+        gtd7(&mut input, &mut flags, &mut output, &mut state);
+    } else {
+        gtd7d(&mut input, &mut flags, &mut output, &mut state);
+    }
     (output.d[5] * 1.0e3, output.t[1])
 }
 

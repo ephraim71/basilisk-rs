@@ -63,13 +63,11 @@ impl ExponentialAtmosphere {
 #[derive(Clone, Debug)]
 pub struct MsisAtmosphereConfig {
     pub name: String,
-    pub planet_radius_m: f64,
     pub first_kernel_path: PathBuf,
     pub additional_kernel_paths: Vec<PathBuf>,
     pub inertial_frame: Frame,
     pub fixed_frame: Frame,
-    pub ap_daily: f64,
-    pub ap_3hr: f64,
+    pub ap_array: [f64; 7],
     pub f107_daily: f64,
     pub f107_average: f64,
 }
@@ -175,36 +173,10 @@ impl MsisAtmosphere {
             if planet_state.has_orientation {
                 planet_state.inertial_to_fixed * relative_position_inertial_m
             } else {
-                let phase_started = self.timing_enabled.then(Instant::now);
-                let rotation = self
-                    .orientation_model
-                    .almanac
-                    .rotate(
-                        self.orientation_model.inertial_frame,
-                        self.orientation_model.fixed_frame,
-                        current_epoch,
-                    )
-                    .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
-                if let Some(started) = phase_started {
-                    self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
-                }
-                apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m)
+                self.rotate_inertial_to_fixed(relative_position_inertial_m, current_epoch)
             }
         } else {
-            let phase_started = self.timing_enabled.then(Instant::now);
-            let rotation = self
-                .orientation_model
-                .almanac
-                .rotate(
-                    self.orientation_model.inertial_frame,
-                    self.orientation_model.fixed_frame,
-                    current_epoch,
-                )
-                .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
-            if let Some(started) = phase_started {
-                self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
-            }
-            apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m)
+            self.rotate_inertial_to_fixed(relative_position_inertial_m, current_epoch)
         };
 
         let phase_started = self.timing_enabled.then(Instant::now);
@@ -226,16 +198,8 @@ impl MsisAtmosphere {
             seconds_of_day(current_epoch),
             self.config.f107_daily,
             self.config.f107_average,
-            self.config.ap_daily,
-            Some([
-                self.config.ap_daily,
-                self.config.ap_3hr,
-                self.config.ap_3hr,
-                self.config.ap_3hr,
-                self.config.ap_3hr,
-                self.config.ap_3hr,
-                self.config.ap_3hr,
-            ]),
+            self.config.ap_array[0],
+            Some(self.config.ap_array),
         );
         if let Some(started) = phase_started {
             self.timing_stats.msis_eval_nanos += started.elapsed().as_nanos();
@@ -245,6 +209,29 @@ impl MsisAtmosphere {
             neutral_density_kgpm3: density_kgpm3,
             local_temp_k,
         }
+    }
+
+    /// Rotate an inertial position into the planet-fixed frame using the
+    /// orientation model, when the planet message carries no orientation.
+    fn rotate_inertial_to_fixed(
+        &mut self,
+        relative_position_inertial_m: Vector3<f64>,
+        current_epoch: Epoch,
+    ) -> Vector3<f64> {
+        let phase_started = self.timing_enabled.then(Instant::now);
+        let rotation = self
+            .orientation_model
+            .almanac
+            .rotate(
+                self.orientation_model.inertial_frame,
+                self.orientation_model.fixed_frame,
+                current_epoch,
+            )
+            .expect("failed to compute ANISE Earth-fixed rotation for MSIS");
+        if let Some(started) = phase_started {
+            self.timing_stats.anise_rotation_nanos += started.elapsed().as_nanos();
+        }
+        apply_anise_rotation(&rotation.rot_mat, relative_position_inertial_m)
     }
 }
 

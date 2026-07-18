@@ -106,13 +106,11 @@ fn main() {
     moon_ephemeris.set_timing_enabled(profile_sim);
     let mut atmosphere = MsisAtmosphere::new(MsisAtmosphereConfig {
         name: "earth_atmosphere".to_string(),
-        planet_radius_m: 6_378_136.3,
         first_kernel_path: repo_root.join("assets/anise/pck11.pca"),
         additional_kernel_paths: vec![repo_root.join("assets/anise/earth_latest_high_prec.bpc")],
         inertial_frame: EARTH_J2000,
         fixed_frame: IAU_EARTH_FRAME,
-        ap_daily: 4.0,
-        ap_3hr: 4.0,
+        ap_array: [4.0; 7],
         f107_daily: 150.0,
         f107_average: 150.0,
     });

@@ -22,6 +22,43 @@ pub struct TamConfig {
     pub max_output_t: f64,
 }
 
+impl TamConfig {
+    /// Check numeric invariants. Returns a description of the first violation,
+    /// or `Ok(())` when the configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        for (label, value) in [
+            ("scale_factor", self.scale_factor),
+            ("min_output_t", self.min_output_t),
+            ("max_output_t", self.max_output_t),
+        ] {
+            if !value.is_finite() {
+                return Err(format!("{label} must be finite, got {value}"));
+            }
+        }
+        for (label, vector) in [("bias_t", self.bias_t), ("walk_bounds_t", self.walk_bounds_t)] {
+            if !vector.iter().all(|v| v.is_finite()) {
+                return Err(format!("{label} must be finite, got {vector:?}"));
+            }
+        }
+        if !self.p_matrix_sqrt_t.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "p_matrix_sqrt_t must be finite, got {:?}",
+                self.p_matrix_sqrt_t
+            ));
+        }
+        if !self.a_matrix.iter().all(|v| v.is_finite()) {
+            return Err(format!("a_matrix must be finite, got {:?}", self.a_matrix));
+        }
+        if self.min_output_t > self.max_output_t {
+            return Err(format!(
+                "min_output_t ({}) must not exceed max_output_t ({})",
+                self.min_output_t, self.max_output_t
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Tam {
     pub config: TamConfig,
@@ -34,6 +71,8 @@ pub struct Tam {
 
 impl Module for Tam {
     fn init(&mut self) {
+        // On reset, clear the accumulated Gauss-Markov walk state.
+        self.error_state_t = Vector3::zeros();
         self.output_tam_msg.write(TamMsg::default());
     }
 
@@ -50,6 +89,9 @@ impl Module for Tam {
 
 impl Tam {
     pub fn new(config: TamConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid TamConfig: {msg}");
+        }
         Self {
             rng: StdRng::seed_from_u64(seed_from_name(&config.name)),
             config,
@@ -118,4 +160,139 @@ fn seed_from_name(name: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     name.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+
+    use crate::messages::{MagneticFieldMsg, Output, SpacecraftStateMsg};
+    use crate::{Module, SimulationContext};
+
+    use super::{Tam, TamConfig};
+
+    fn dummy_context() -> SimulationContext {
+        SimulationContext {
+            current_sim_nanos: 0,
+            current_epoch: hifitime::Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
+        }
+    }
+
+    /// A noiseless config: zero process-noise sqrt and zero walk, so the error
+    /// state stays at zero and the output is deterministic.
+    fn noiseless_config(name: &str) -> TamConfig {
+        TamConfig {
+            name: name.to_string(),
+            body_to_sensor_quaternion: UnitQuaternion::identity(),
+            bias_t: Vector3::zeros(),
+            p_matrix_sqrt_t: Matrix3::zeros(),
+            a_matrix: Matrix3::identity(),
+            walk_bounds_t: Vector3::zeros(),
+            scale_factor: 1.0,
+            min_output_t: -1.0e-4,
+            max_output_t: 1.0e-4,
+        }
+    }
+
+    fn run(mut tam: Tam, sigma_bn: Vector3<f64>, field_inertial_t: Vector3<f64>) -> Vector3<f64> {
+        let state_out = Output::new(SpacecraftStateMsg {
+            sigma_bn,
+            ..Default::default()
+        });
+        let field_out = Output::new(MagneticFieldMsg {
+            magnetic_field_inertial_t: field_inertial_t,
+        });
+        tam.input_state_msg.connect(state_out.slot());
+        tam.input_magnetic_field_msg.connect(field_out.slot());
+        tam.init();
+        tam.update(&dummy_context());
+        tam.output_tam_msg.read().magnetic_field_sensor_t
+    }
+
+    #[test]
+    fn transform_bias_and_scale_no_noise() {
+        let mut config = noiseless_config("tam");
+        config.bias_t = Vector3::new(1.0e-6, 1.0e-6, 1.0e-5);
+        config.scale_factor = 2.0;
+
+        let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
+        // Identity attitude and identity sensor frame: sensed = (field + bias) * scale.
+        let sensed = run(Tam::new(config), Vector3::zeros(), field);
+        let expected = (field + Vector3::new(1.0e-6, 1.0e-6, 1.0e-5)) * 2.0;
+        assert!((sensed - expected).norm() < 1e-18, "got {sensed:?}, want {expected:?}");
+    }
+
+    #[test]
+    fn attitude_and_sensor_rotation() {
+        let mut config = noiseless_config("tam");
+        config.body_to_sensor_quaternion = UnitQuaternion::from_euler_angles(0.1, 1.0, 0.7854);
+        let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
+        let sigma_bn = Vector3::new(0.3, 0.2, 0.1);
+
+        let sensed = run(Tam::new(config.clone()), sigma_bn, field);
+
+        // Rotate field inertial -> body -> sensor frame.
+        let state = SpacecraftStateMsg {
+            sigma_bn,
+            ..Default::default()
+        };
+        let field_body = state.inertial_to_body().transform_vector(&field);
+        let expected = config.body_to_sensor_quaternion.transform_vector(&field_body);
+        assert!((sensed - expected).norm() < 1e-18, "got {sensed:?}, want {expected:?}");
+    }
+
+    #[test]
+    fn saturation_clamps_each_axis() {
+        let mut config = noiseless_config("tam");
+        config.scale_factor = 2.0;
+        config.min_output_t = -1.0e-5;
+        config.max_output_t = 1.0e-5;
+
+        let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
+        // (field)*2 exceeds max on every axis -> clamps to max.
+        let sensed = run(Tam::new(config), Vector3::zeros(), field);
+        assert!((sensed - Vector3::repeat(1.0e-5)).norm() < 1e-18, "got {sensed:?}");
+    }
+
+    #[test]
+    fn iid_noise_matches_configured_std() {
+        let mut config = noiseless_config("tam_noise");
+        let std = 3.0e-9;
+        config.p_matrix_sqrt_t = Matrix3::from_diagonal(&Vector3::repeat(std));
+        config.a_matrix = Matrix3::zeros(); // IID: no propagation of prior error
+        config.min_output_t = -1.0;
+        config.max_output_t = 1.0;
+
+        let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
+        let state_out = Output::new(SpacecraftStateMsg::default());
+        let field_out = Output::new(MagneticFieldMsg {
+            magnetic_field_inertial_t: field,
+        });
+        let mut tam = Tam::new(config);
+        tam.input_state_msg.connect(state_out.slot());
+        tam.input_magnetic_field_msg.connect(field_out.slot());
+        tam.init();
+
+        let n = 20_000;
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        for _ in 0..n {
+            tam.update(&dummy_context());
+            let noise = tam.output_tam_msg.read().magnetic_field_sensor_t.x - field.x;
+            sum += noise;
+            sum_sq += noise * noise;
+        }
+        let mean = sum / n as f64;
+        let sample_std = (sum_sq / n as f64 - mean * mean).sqrt();
+        assert!((sample_std - std).abs() < 0.05 * std, "std {sample_std} vs {std}");
+    }
+
+    #[test]
+    #[should_panic(expected = "min_output_t")]
+    fn rejects_min_above_max() {
+        let mut config = noiseless_config("tam");
+        config.min_output_t = 1.0;
+        config.max_output_t = -1.0;
+        let _ = Tam::new(config);
+    }
 }

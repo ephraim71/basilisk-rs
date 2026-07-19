@@ -15,9 +15,7 @@ use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
 use crate::environment::gravity::GravBodyData;
-use crate::messages::{
-    HingedRigidBodyMsg, Input, Output, ReactionWheelCommandMsg, SpacecraftStateMsg,
-};
+use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
 use crate::simulation::Simulation;
 
 const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
@@ -176,23 +174,22 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         initial_omega_radps: Vector3::zeros(),
     });
 
-    let mut reaction_wheel =
-        ReactionWheelStateEffector::new(ReactionWheelStateEffectorConfig::balanced(
-            "rw_x",
-            Vector3::zeros(),
-            Vector3::new(1.0, 0.0, 0.0),
-            1.0,
-            100.0,
-        ));
-    reaction_wheel.config.js_kg_m2 = wheel_js;
-    let command = Output::new(ReactionWheelCommandMsg {
-        motor_torque_nm: applied_torque_nm,
-    });
+    let mut wheel_config = ReactionWheelStateEffectorConfig::balanced(
+        "rw_x",
+        Vector3::zeros(),
+        Vector3::new(1.0, 0.0, 0.0),
+        1.0,
+        100.0,
+    );
+    wheel_config.js_kg_m2 = wheel_js;
+    let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
+    reaction_wheels.add_reaction_wheel(wheel_config);
+    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[applied_torque_nm]));
 
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&command, &mut reaction_wheel.command_in);
-        spacecraft.add_state_effector(reaction_wheel);
+        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        spacecraft.add_state_effector(reaction_wheels);
         sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
         sim.run_for(1_000_000_000);
     }
@@ -202,6 +199,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         .as_any()
         .downcast_ref::<ReactionWheelStateEffector>()
         .expect("expected reaction wheel state effector")
+        .wheels()[0]
         .omega_radps;
 
     let total_angular_momentum_x = locked_inertia_x * body_omega_x + wheel_js * wheel_omega_x;

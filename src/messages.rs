@@ -25,7 +25,8 @@ mod star_tracker;
 mod sun_ephemeris;
 mod sun_line;
 mod sun_sensor;
-mod tam;
+mod tam_sensor;
+mod tam_sensor_body;
 mod thruster_command;
 mod translation_reference;
 
@@ -54,7 +55,8 @@ pub use star_tracker::StarTrackerMsg;
 pub use sun_ephemeris::SunEphemerisMsg;
 pub use sun_line::SunLineMsg;
 pub use sun_sensor::SunSensorMsg;
-pub use tam::TamMsg;
+pub use tam_sensor::TamSensorMsg;
+pub use tam_sensor_body::TamSensorBodyMsg;
 pub use thruster_command::ThrusterCommandMsg;
 pub use translation_reference::TranslationReferenceMsg;
 

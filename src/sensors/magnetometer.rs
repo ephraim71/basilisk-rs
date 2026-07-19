@@ -6,7 +6,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamMsg};
+use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamSensorMsg};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -64,7 +64,7 @@ pub struct Magnetometer {
     pub config: MagnetometerConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
-    pub output_tam_msg: Output<TamMsg>,
+    pub output_tam_msg: Output<TamSensorMsg>,
     error_state_t: Vector3<f64>,
     rng: StdRng,
 }
@@ -73,7 +73,7 @@ impl Module for Magnetometer {
     fn init(&mut self) {
         // On reset, clear the accumulated Gauss-Markov walk state.
         self.error_state_t = Vector3::zeros();
-        self.output_tam_msg.write(TamMsg::default());
+        self.output_tam_msg.write(TamSensorMsg::default());
     }
 
     fn update(&mut self, _context: &SimulationContext) {
@@ -150,7 +150,7 @@ impl Magnetometer {
     }
 
     fn write_output_message(&mut self, magnetic_field_sensor_t: Vector3<f64>) {
-        self.output_tam_msg.write(TamMsg {
+        self.output_tam_msg.write(TamSensorMsg {
             magnetic_field_sensor_t,
         });
     }

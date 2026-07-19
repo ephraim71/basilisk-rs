@@ -5,18 +5,25 @@
 ///
 /// # Example
 ///
-/// ```
+/// Given an existing spacecraft, sun sensor, IMU, and simulation:
+///
+/// ```no_run
 /// use basilisk_rs::connect;
-/// use basilisk_rs::messages::{Input, Output};
+/// use basilisk_rs::imu::Imu;
 /// use basilisk_rs::simulation::Simulation;
-/// use hifitime::Epoch;
-///
-/// let sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
-/// let output = Output::new(42_u32);
-/// let mut input = Input::<u32>::default();
-///
-/// connect!(&sim, &output => &mut input);
-/// assert_eq!(input.read(), 42);
+/// use basilisk_rs::spacecraft::Spacecraft;
+/// use basilisk_rs::sun_sensor::SunSensor;
+/// # fn wire(
+/// #     sim: &Simulation<'_>,
+/// #     spacecraft: &Spacecraft,
+/// #     sun_sensor: &mut SunSensor,
+/// #     imu: &mut Imu,
+/// # ) {
+/// connect!(&sim,
+///     &spacecraft.state_out => &mut sun_sensor.input_state_msg,
+///     &spacecraft.state_out => &mut imu.input_state_msg,
+/// );
+/// # }
 /// ```
 #[macro_export]
 macro_rules! connect {
@@ -34,26 +41,27 @@ macro_rules! connect {
 /// # Example
 ///
 /// ```
-/// use basilisk_rs::{Module, SimulationContext, schedule};
+/// use basilisk_rs::eclipse::{Eclipse, EclipseConfig};
+/// use basilisk_rs::schedule;
 /// use basilisk_rs::simulation::Simulation;
+/// use basilisk_rs::solar_flux::{SolarFlux, SolarFluxConfig};
 /// use hifitime::Epoch;
 ///
-/// struct Noop;
-/// impl Module for Noop {
-///     fn init(&mut self) {}
-///     fn update(&mut self, _context: &SimulationContext) {}
-/// }
-///
-/// let mut first = Noop;
-/// let mut second = Noop;
+/// let mut eclipse = Eclipse::new(EclipseConfig {
+///     name: "eclipse".into(),
+///     occulting_body_radius_m: 6_371_000.0,
+/// });
+/// let mut solar_flux = SolarFlux::new(SolarFluxConfig {
+///     name: "solar_flux".into(),
+/// });
 /// let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
 ///
 /// schedule! { sim,
-///     "first" => &mut first, 10_000_000, 0;
-///     "second" => &mut second, 20_000_000, 10;
+///     "eclipse" => &mut eclipse, 10_000_000, 0;
+///     "solar_flux" => &mut solar_flux, 10_000_000, 10;
 /// }
 ///
-/// assert_eq!(sim.module_names(), vec!["first", "second"]);
+/// assert_eq!(sim.module_names(), vec!["eclipse", "solar_flux"]);
 /// ```
 #[macro_export]
 macro_rules! schedule {
@@ -65,51 +73,97 @@ macro_rules! schedule {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
-    use crate::messages::{Input, Output};
+    use crate::Module;
+    use crate::imu::{Imu, ImuConfig};
     use crate::simulation::Simulation;
-    use crate::{Module, SimulationContext};
-
-    struct Noop;
-
-    impl Module for Noop {
-        fn init(&mut self) {}
-
-        fn update(&mut self, _context: &SimulationContext) {}
-    }
+    use crate::spacecraft::{Spacecraft, SpacecraftConfig};
+    use crate::sun_sensor::{SunSensor, SunSensorConfig};
 
     fn simulation<'a>() -> Simulation<'a> {
         Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false)
     }
 
-    #[test]
-    fn connect_accepts_multiple_typed_connections() {
-        let sim = simulation();
-        let integer_output = Output::new(42_u32);
-        let text_output = Output::new(String::from("ready"));
-        let mut integer_input = Input::<u32>::default();
-        let mut text_input = Input::<String>::default();
+    fn spacecraft() -> Spacecraft {
+        Spacecraft::new(SpacecraftConfig {
+            mass_kg: 12.0,
+            hub_center_of_mass_body_m: Vector3::zeros(),
+            inertia_kg_m2: Matrix3::identity(),
+            integration_step_nanos: 10_000_000,
+            initial_position_m: Vector3::new(7_000_000.0, 0.0, 0.0),
+            initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
+            initial_sigma_bn: Vector3::zeros(),
+            initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
+        })
+    }
 
-        crate::connect!(&sim,
-            &integer_output => &mut integer_input,
-            &text_output => &mut text_input,
-        );
+    fn sun_sensor() -> SunSensor {
+        SunSensor::new(SunSensorConfig {
+            name: "sun_sensor".into(),
+            position_m: Vector3::zeros(),
+            body_to_sensor_quaternion: UnitQuaternion::identity(),
+            fov_half_angle_rad: std::f64::consts::PI,
+            scale_factor: 1.0,
+            kelly_factor: 0.0,
+            k_power: 1.0,
+            bias: 0.0,
+            noise_std: 0.0,
+            noise_prop: 0.0,
+            walk_bounds: 0.0,
+            min_output: 0.0,
+            max_output: 1.0,
+        })
+    }
 
-        assert_eq!(integer_input.read(), 42);
-        assert_eq!(text_input.read(), "ready");
+    fn imu() -> Imu {
+        Imu::new(ImuConfig {
+            name: "imu".into(),
+            position_m: Vector3::zeros(),
+            body_to_sensor_quaternion: UnitQuaternion::identity(),
+            rate_noise_std_radps: Vector3::zeros(),
+        })
     }
 
     #[test]
-    fn schedule_accepts_multiple_modules() {
-        let mut first = Noop;
-        let mut second = Noop;
+    fn connect_wires_spacecraft_state_to_multiple_sensor_modules() {
+        let mut spacecraft = spacecraft();
+        let mut sun_sensor = sun_sensor();
+        let mut imu = imu();
+        let sim = simulation();
+
+        crate::connect!(&sim,
+            &spacecraft.state_out => &mut sun_sensor.input_state_msg,
+            &spacecraft.state_out => &mut imu.input_state_msg,
+        );
+
+        spacecraft.init();
+
+        let sun_sensor_state = sun_sensor.input_state_msg.read();
+        let imu_state = imu.input_state_msg.read();
+        assert_eq!(
+            sun_sensor_state.position_m,
+            spacecraft.config.initial_position_m
+        );
+        assert_eq!(
+            sun_sensor_state.omega_radps,
+            spacecraft.config.initial_omega_radps
+        );
+        assert_eq!(imu_state.position_m, spacecraft.config.initial_position_m);
+        assert_eq!(imu_state.omega_radps, spacecraft.config.initial_omega_radps);
+    }
+
+    #[test]
+    fn schedule_accepts_existing_modules() {
+        let mut sun_sensor = sun_sensor();
+        let mut imu = imu();
         let mut sim = simulation();
 
         crate::schedule! { sim,
-            "first" => &mut first, 10_000_000, 0;
-            "second" => &mut second, 20_000_000, 10;
+            "sun_sensor" => &mut sun_sensor, 10_000_000, 0;
+            "imu" => &mut imu, 10_000_000, 10;
         }
 
-        assert_eq!(sim.module_names(), vec!["first", "second"]);
+        assert_eq!(sim.module_names(), vec!["sun_sensor", "imu"]);
     }
 }

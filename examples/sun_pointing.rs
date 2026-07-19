@@ -261,14 +261,14 @@ fn main() {
         &mut rw_y_cmd_recorder.input_msg,
     );
 
-    const PRIORITY_ENV: i32 = 0;
-    const PRIORITY_DYNAMICS: i32 = 10;
-    const PRIORITY_SENSORS: i32 = 20;
-    const PRIORITY_ESTIMATION: i32 = 30;
-    const PRIORITY_GUIDANCE: i32 = 40;
-    const PRIORITY_CONTROL: i32 = 50;
-    const PRIORITY_ALLOCATION: i32 = 60;
-    const PRIORITY_RECORD: i32 = 70;
+    const PRIORITY_ENV: i32 = 70;
+    const PRIORITY_DYNAMICS: i32 = 60;
+    const PRIORITY_SENSORS: i32 = 50;
+    const PRIORITY_ESTIMATION: i32 = 40;
+    const PRIORITY_GUIDANCE: i32 = 30;
+    const PRIORITY_CONTROL: i32 = 20;
+    const PRIORITY_ALLOCATION: i32 = 10;
+    const PRIORITY_RECORD: i32 = 0;
 
     sim.add_module(
         "sun_ephemeris",

@@ -91,4 +91,4 @@ SHOW_PROGRESS=1 PROFILE_SIM=1 cargo run --release --example full_satellite_stack
 
 ## Scheduler Model
 
-Modules with the same priority run in parallel. There is no Basilisk-style concept of processes or tasks in this library.
+Modules with higher numeric priority execute first. Equal-priority modules retain insertion order. There is no Basilisk-style concept of processes or tasks in this library.

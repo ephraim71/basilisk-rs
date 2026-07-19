@@ -1,15 +1,19 @@
 # basilisk-rs
 
-THIS LIBRARY IS CURRENTLY IN EXTREMELY EARLY STAGES AND NOT VALIDATED.
+THIS LIBRARY IS CURRENTLY IN DEVELOPMENT AND IS NOT MEANT TO BE USED IN PRODUCTION. 
+    
+A Rust port of the [Basilisk](https://github.com/AVSLab/basilisk) astrodynamics framework.          
+The goal is to port both simulation and fsw modules to Rust.              
+Python bindings will be supported in a future version.          
 
-A Rust port of Basilisk.
+## Reasons for porting : 
+- Memory safety throughout the full simulation framework, eliminitaing a whole class of bugs. 
+- Rust comes with great error messages. 
+- Small build size (<10MB), making it straightforward to run in the target directly. 
+- Faster run times
+- Faster build times
+- Easily supports multiple recorder backends
 
-## Advantages
-
-- Small build size
-- Fast run time
-- Fast build
-- Memory safe
 
 ## Install Rust
 

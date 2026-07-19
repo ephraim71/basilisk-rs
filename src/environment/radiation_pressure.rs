@@ -1,5 +1,3 @@
-pub mod facet;
-
 use nalgebra::Vector3;
 use std::any::Any;
 
@@ -11,21 +9,21 @@ const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1372.5398;
 const SPEED_OF_LIGHT_MPS: f64 = 299_792_458.0;
 
 #[derive(Clone, Debug)]
-pub struct SolarRadiationPressureConfig {
+pub struct RadiationPressureConfig {
     pub name: String,
     pub area_m2: f64,
     pub coefficient_reflection: f64,
 }
 
 #[derive(Clone, Debug)]
-pub struct SolarRadiationPressure {
-    pub config: SolarRadiationPressureConfig,
+pub struct RadiationPressure {
+    pub config: RadiationPressureConfig,
     pub input_sun_msg: Input<SunEphemerisMsg>,
     pub input_eclipse_msg: Input<EclipseMsg>,
 }
 
-impl SolarRadiationPressure {
-    pub fn new(config: SolarRadiationPressureConfig) -> Self {
+impl RadiationPressure {
+    pub fn new(config: RadiationPressureConfig) -> Self {
         Self {
             config,
             input_sun_msg: Input::default(),
@@ -57,13 +55,13 @@ impl SolarRadiationPressure {
     }
 }
 
-impl DynamicEffector for SolarRadiationPressure {
+impl DynamicEffector for RadiationPressure {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        SolarRadiationPressure::compute_output(self, state)
+        RadiationPressure::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -79,14 +77,14 @@ mod tests {
 
     use super::{
         ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS,
-        SolarRadiationPressure, SolarRadiationPressureConfig,
+        RadiationPressure, RadiationPressureConfig,
     };
 
     fn make_srp(
         area: f64,
         cr: f64,
     ) -> (
-        SolarRadiationPressure,
+        RadiationPressure,
         Output<SunEphemerisMsg>,
         Output<EclipseMsg>,
     ) {
@@ -94,7 +92,7 @@ mod tests {
         let eclipse_out = Output::new(EclipseMsg {
             illumination_factor: 1.0,
         });
-        let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+        let mut srp = RadiationPressure::new(RadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: area,
             coefficient_reflection: cr,
@@ -123,7 +121,7 @@ mod tests {
         let eclipse_out = Output::new(EclipseMsg {
             illumination_factor: 1.0,
         });
-        let mut srp2 = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+        let mut srp2 = RadiationPressure::new(RadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
             coefficient_reflection: 1.2,
@@ -144,7 +142,7 @@ mod tests {
         let eclipse_out = Output::new(EclipseMsg {
             illumination_factor: 0.0,
         });
-        let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+        let mut srp = RadiationPressure::new(RadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
             coefficient_reflection: 1.2,
@@ -171,7 +169,7 @@ mod tests {
         let eclipse_out = Output::new(EclipseMsg {
             illumination_factor: 1.0,
         });
-        let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+        let mut srp = RadiationPressure::new(RadiationPressureConfig {
             name: "srp".to_string(),
             area_m2: 4.0,
             coefficient_reflection: 1.2,
@@ -216,7 +214,7 @@ mod tests {
             let eclipse_out = Output::new(EclipseMsg {
                 illumination_factor: factor,
             });
-            let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+            let mut srp = RadiationPressure::new(RadiationPressureConfig {
                 name: "srp".to_string(),
                 area_m2: 4.0,
                 coefficient_reflection: 1.2,

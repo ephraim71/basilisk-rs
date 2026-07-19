@@ -18,7 +18,7 @@ const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
 const KELLY_FACTOR_EPSILON: f64 = 1.0e-10;
 
 #[derive(Clone, Debug)]
-pub struct SunSensorConfig {
+pub struct CoarseSunSensorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
     /// Sensor mounting orientation: rotation from body frame to sensor frame.
@@ -37,7 +37,7 @@ pub struct SunSensorConfig {
     pub max_output: f64,
 }
 
-impl SunSensorConfig {
+impl CoarseSunSensorConfig {
     /// Check physical and numeric invariants. Returns a description of the first
     /// violation, or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
@@ -89,8 +89,8 @@ impl SunSensorConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct SunSensor {
-    pub config: SunSensorConfig,
+pub struct CoarseSunSensor {
+    pub config: CoarseSunSensorConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_sun_msg: Input<SunEphemerisMsg>,
     pub input_eclipse_msg: Input<EclipseMsg>,
@@ -134,7 +134,7 @@ impl GaussMarkov {
     }
 }
 
-impl Module for SunSensor {
+impl Module for CoarseSunSensor {
     fn init(&mut self) {
         // On reset, (re)configure the noise model from the current config.
         self.noise_model = GaussMarkov::new(
@@ -156,10 +156,10 @@ impl Module for SunSensor {
     }
 }
 
-impl SunSensor {
-    pub fn new(config: SunSensorConfig) -> Self {
+impl CoarseSunSensor {
+    pub fn new(config: CoarseSunSensorConfig) -> Self {
         if let Err(msg) = config.validate() {
-            panic!("invalid SunSensorConfig: {msg}");
+            panic!("invalid CoarseSunSensorConfig: {msg}");
         }
         let noise_model = GaussMarkov::new(
             seed_from_name(&config.name),
@@ -278,7 +278,7 @@ mod tests {
     use crate::messages::{EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
     use crate::{Module, SimulationContext};
 
-    use super::{ASTRONOMICAL_UNIT_M, SunSensor, SunSensorConfig};
+    use super::{ASTRONOMICAL_UNIT_M, CoarseSunSensor, CoarseSunSensorConfig};
 
     fn dummy_context() -> SimulationContext {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
@@ -288,8 +288,8 @@ mod tests {
         }
     }
 
-    fn aligned_sensor() -> SunSensor {
-        SunSensor::new(SunSensorConfig {
+    fn aligned_sensor() -> CoarseSunSensor {
+        CoarseSunSensor::new(CoarseSunSensorConfig {
             name: "css".to_string(),
             position_m: Vector3::zeros(),
             body_to_sensor_quaternion: UnitQuaternion::identity(),
@@ -398,7 +398,7 @@ mod tests {
     }
 
     /// Drive a configured sensor with the sun at `sun_pos` and return the output.
-    fn run_with_sun(mut sensor: SunSensor, sun_pos: Vector3<f64>) -> super::SunSensorMsg {
+    fn run_with_sun(mut sensor: CoarseSunSensor, sun_pos: Vector3<f64>) -> super::SunSensorMsg {
         let state_out = Output::new(nominal_state());
         let sun_out = Output::new(SunEphemerisMsg {
             sun_position_inertial_m: sun_pos,
@@ -481,7 +481,9 @@ mod tests {
     }
 
     /// Connect a sensor to a boresight-aligned sun and return it ready to step.
-    fn connect_aligned(sensor: &mut SunSensor) -> (Output<SpacecraftStateMsg>, Output<SunEphemerisMsg>) {
+    fn connect_aligned(
+        sensor: &mut CoarseSunSensor,
+    ) -> (Output<SpacecraftStateMsg>, Output<SunEphemerisMsg>) {
         let state_out = Output::new(nominal_state());
         let sun_out = Output::new(SunEphemerisMsg {
             sun_position_inertial_m: Vector3::new(0.0, 0.0, ASTRONOMICAL_UNIT_M),
@@ -525,7 +527,7 @@ mod tests {
     fn rejects_fov_outside_range() {
         let mut config = aligned_sensor().config;
         config.fov_half_angle_rad = 4.0; // greater than PI
-        let _ = SunSensor::new(config);
+        let _ = CoarseSunSensor::new(config);
     }
 
     #[test]
@@ -534,7 +536,7 @@ mod tests {
         let mut config = aligned_sensor().config;
         config.min_output = 2.0;
         config.max_output = 1.0;
-        let _ = SunSensor::new(config);
+        let _ = CoarseSunSensor::new(config);
     }
 
     #[test]

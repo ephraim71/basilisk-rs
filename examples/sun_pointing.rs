@@ -1,15 +1,17 @@
 use std::path::{Path, PathBuf};
 
+use basilisk_rs::actuators::reaction_wheel_state_effector::{
+    ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
+};
 use basilisk_rs::fsw::css_wls_est::{CssWlsEst, CssWlsEstConfig};
 use basilisk_rs::fsw::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
 use basilisk_rs::fsw::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw::sun_safe_point::{SunSafePoint, SunSafePointConfig};
-use basilisk_rs::imu::{Imu, ImuConfig};
 use basilisk_rs::messages::{Output, SunEphemerisMsg};
-use basilisk_rs::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
+use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
+use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::sun_sensor::{SunSensor, SunSensorConfig};
 use basilisk_rs::telemetry::{CsvRecorder, CsvRecorderConfig};
 use basilisk_rs::{Module, SimulationContext};
 use hifitime::Epoch;
@@ -83,16 +85,26 @@ fn main() {
         wheel_spin_axes_body: wheel_axes.to_vec(),
     });
 
-    let mut rw_x_config =
-        ReactionWheelConfig::balanced("rw_x", Vector3::zeros(), wheel_axes[0], 0.002, 0.1);
+    let mut rw_x_config = ReactionWheelStateEffectorConfig::balanced(
+        "rw_x",
+        Vector3::zeros(),
+        wheel_axes[0],
+        0.002,
+        0.1,
+    );
     rw_x_config.js_kg_m2 = 0.002;
     rw_x_config.max_speed_radps = 500.0;
-    let mut rw_x = ReactionWheel::new(rw_x_config);
-    let mut rw_y_config =
-        ReactionWheelConfig::balanced("rw_y", Vector3::zeros(), wheel_axes[1], 0.002, 0.1);
+    let mut rw_x = ReactionWheelStateEffector::new(rw_x_config);
+    let mut rw_y_config = ReactionWheelStateEffectorConfig::balanced(
+        "rw_y",
+        Vector3::zeros(),
+        wheel_axes[1],
+        0.002,
+        0.1,
+    );
     rw_y_config.js_kg_m2 = 0.002;
     rw_y_config.max_speed_radps = 500.0;
-    let mut rw_y = ReactionWheel::new(rw_y_config);
+    let mut rw_y = ReactionWheelStateEffector::new(rw_y_config);
     sim.connect(
         &rw_allocator.rw_motor_torque_out_msgs[0],
         &mut rw_x.command_in,
@@ -105,7 +117,7 @@ fn main() {
     spacecraft.add_state_effector(rw_y);
 
     let mut sun_ephemeris = ConstantSunEphemeris::new(sun_position_inertial_m);
-    let mut imu = Imu::new(ImuConfig {
+    let mut imu = ImuSensor::new(ImuSensorConfig {
         name: "imu".to_string(),
         position_m: Vector3::zeros(),
         body_to_sensor_quaternion: UnitQuaternion::identity(),
@@ -421,8 +433,12 @@ fn main() {
     );
 }
 
-fn single_css(name: &str, position_m: Vector3<f64>, boresight_body: Vector3<f64>) -> SunSensor {
-    SunSensor::new(SunSensorConfig {
+fn single_css(
+    name: &str,
+    position_m: Vector3<f64>,
+    boresight_body: Vector3<f64>,
+) -> CoarseSunSensor {
+    CoarseSunSensor::new(CoarseSunSensorConfig {
         name: name.to_string(),
         position_m,
         body_to_sensor_quaternion: body_to_sensor_for_boresight(boresight_body),

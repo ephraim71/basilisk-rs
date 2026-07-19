@@ -7,7 +7,7 @@ use crate::messages::{ImuMsg, Input, Output, SpacecraftStateMsg};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
-pub struct ImuConfig {
+pub struct ImuSensorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
     pub body_to_sensor_quaternion: UnitQuaternion<f64>,
@@ -15,14 +15,14 @@ pub struct ImuConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct Imu {
-    pub config: ImuConfig,
+pub struct ImuSensor {
+    pub config: ImuSensorConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub output_imu_msg: Output<ImuMsg>,
     rng: StdRng,
 }
 
-impl Module for Imu {
+impl Module for ImuSensor {
     fn init(&mut self) {
         self.output_imu_msg.write(ImuMsg::default());
     }
@@ -37,8 +37,8 @@ impl Module for Imu {
     }
 }
 
-impl Imu {
-    pub fn new(config: ImuConfig) -> Self {
+impl ImuSensor {
+    pub fn new(config: ImuSensorConfig) -> Self {
         Self {
             config,
             input_state_msg: Input::default(),
@@ -90,7 +90,7 @@ mod tests {
     use crate::messages::{Output, SpacecraftStateMsg};
     use crate::{Module, SimulationContext};
 
-    use super::{Imu, ImuConfig};
+    use super::{ImuSensor, ImuSensorConfig};
 
     fn dummy_context() -> SimulationContext {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
@@ -100,7 +100,7 @@ mod tests {
         }
     }
 
-    fn run_imu(imu: &mut Imu, omega_radps: Vector3<f64>) -> Vector3<f64> {
+    fn run_imu(imu: &mut ImuSensor, omega_radps: Vector3<f64>) -> Vector3<f64> {
         let state_out = Output::new(SpacecraftStateMsg {
             position_m: Vector3::zeros(),
             velocity_mps: Vector3::zeros(),
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn identity_rotation_passes_through_omega() {
         let omega = Vector3::new(0.0, 0.15, 0.1);
-        let mut imu = Imu::new(ImuConfig {
+        let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu".to_string(),
             position_m: Vector3::zeros(),
             body_to_sensor_quaternion: UnitQuaternion::identity(),
@@ -139,7 +139,7 @@ mod tests {
         let q = UnitQuaternion::from_euler_angles(0.1, 1.0, 0.7854);
         let expected = q.transform_vector(&omega_body);
 
-        let mut imu = Imu::new(ImuConfig {
+        let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu".to_string(),
             position_m: Vector3::zeros(),
             body_to_sensor_quaternion: q,

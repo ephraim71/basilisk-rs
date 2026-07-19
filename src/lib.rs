@@ -18,47 +18,6 @@ pub mod simulation;
 pub mod spacecraft;
 pub mod telemetry;
 
-#[path = "environment/atmosphere/mod.rs"]
-pub mod atmosphere;
-#[path = "actuators/drag/mod.rs"]
-pub mod drag;
-#[path = "environment/eclipse/mod.rs"]
-pub mod eclipse;
-#[path = "environment/ephemeris/mod.rs"]
-pub mod ephemeris;
-#[path = "sensors/gps/mod.rs"]
-pub mod gps;
-#[path = "environment/gravity/mod.rs"]
-pub mod gravity;
-#[path = "actuators/hinged_rigid_body/mod.rs"]
-pub mod hinged_rigid_body;
-#[path = "sensors/imu/mod.rs"]
-pub mod imu;
-#[path = "environment/magnetic_field/mod.rs"]
-pub mod magnetic_field;
-#[path = "actuators/mtb/mod.rs"]
-pub mod mtb;
-#[path = "environment/nrlmsise.rs"]
-pub mod nrlmsise;
-#[path = "actuators/reaction_wheel/mod.rs"]
-pub mod reaction_wheel;
-#[path = "power/simple_battery/mod.rs"]
-pub mod simple_battery;
-#[path = "environment/solar_flux/mod.rs"]
-pub mod solar_flux;
-#[path = "environment/srp/mod.rs"]
-pub mod srp;
-#[path = "sensors/star_tracker/mod.rs"]
-pub mod star_tracker;
-#[path = "environment/sun_ephemeris/mod.rs"]
-pub mod sun_ephemeris;
-#[path = "sensors/sun_sensor/mod.rs"]
-pub mod sun_sensor;
-#[path = "sensors/tam/mod.rs"]
-pub mod tam;
-#[path = "actuators/thruster/mod.rs"]
-pub mod thruster;
-
 #[derive(Clone, Debug)]
 pub struct SimulationContext {
     pub current_sim_nanos: u64,
@@ -79,10 +38,12 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
-    use crate::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
-    use crate::imu::{Imu, ImuConfig};
+    use crate::actuators::reaction_wheel_state_effector::{
+        ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
+    };
+    use crate::environment::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
     use crate::messages::ReactionWheelCommandMsg;
-    use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
+    use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
 
@@ -106,17 +67,18 @@ mod tests {
             Vector3::zeros(),
         ));
 
-        let mut reaction_wheel = ReactionWheel::new(ReactionWheelConfig::balanced(
-            "rw_x",
-            Vector3::new(0.1, 0.0, 0.0),
-            Vector3::new(1.0, 0.0, 0.0),
-            0.02,
-            0.4,
-        ));
+        let mut reaction_wheel =
+            ReactionWheelStateEffector::new(ReactionWheelStateEffectorConfig::balanced(
+                "rw_x",
+                Vector3::new(0.1, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                0.02,
+                0.4,
+            ));
         let rw_command = crate::messages::Output::new(ReactionWheelCommandMsg {
             motor_torque_nm: 0.001,
         });
-        let mut imu = Imu::new(ImuConfig {
+        let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu_1".to_string(),
             position_m: Vector3::new(0.0, 0.0, 0.0),
             body_to_sensor_quaternion: UnitQuaternion::identity(),

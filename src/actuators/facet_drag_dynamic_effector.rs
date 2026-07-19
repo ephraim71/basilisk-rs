@@ -5,7 +5,7 @@ use crate::messages::{AtmosphereMsg, Input, SpacecraftStateMsg};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
-pub struct FacetDragConfig {
+pub struct FacetDragDynamicEffectorConfig {
     pub name: String,
     /// Planet spin rate used to model a rigidly co-rotating atmosphere via
     /// `v_air = omega x r`. NOTE: assumes `state.position_m` is planet-centered
@@ -16,7 +16,7 @@ pub struct FacetDragConfig {
     pub planet_rotation_rate_radps: Vector3<f64>,
 }
 
-impl FacetDragConfig {
+impl FacetDragDynamicEffectorConfig {
     /// Check numeric invariants. Returns a description of the first violation,
     /// or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
@@ -39,16 +39,16 @@ pub struct DragFacet {
 }
 
 #[derive(Clone, Debug)]
-pub struct FacetDrag {
-    pub config: FacetDragConfig,
+pub struct FacetDragDynamicEffector {
+    pub config: FacetDragDynamicEffectorConfig,
     pub input_atmosphere_msg: Input<AtmosphereMsg>,
     pub facets: Vec<DragFacet>,
 }
 
-impl FacetDrag {
-    pub fn new(config: FacetDragConfig) -> Self {
+impl FacetDragDynamicEffector {
+    pub fn new(config: FacetDragDynamicEffectorConfig) -> Self {
         if let Err(msg) = config.validate() {
-            panic!("invalid FacetDragConfig: {msg}");
+            panic!("invalid FacetDragDynamicEffectorConfig: {msg}");
         }
         Self {
             config,
@@ -137,13 +137,13 @@ impl FacetDrag {
     }
 }
 
-impl DynamicEffector for FacetDrag {
+impl DynamicEffector for FacetDragDynamicEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        FacetDrag::compute_output(self, state)
+        FacetDragDynamicEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -157,14 +157,14 @@ mod tests {
 
     use crate::messages::{AtmosphereMsg, Output, SpacecraftStateMsg};
 
-    use super::{FacetDrag, FacetDragConfig};
+    use super::{FacetDragDynamicEffector, FacetDragDynamicEffectorConfig};
 
-    fn make_drag(density: f64) -> (FacetDrag, Output<AtmosphereMsg>) {
+    fn make_drag(density: f64) -> (FacetDragDynamicEffector, Output<AtmosphereMsg>) {
         let atmo_out = Output::new(AtmosphereMsg {
             neutral_density_kgpm3: density,
             local_temp_k: 0.0,
         });
-        let mut drag = FacetDrag::new(FacetDragConfig {
+        let mut drag = FacetDragDynamicEffector::new(FacetDragDynamicEffectorConfig {
             name: "facet_drag".to_string(),
             planet_rotation_rate_radps: Vector3::zeros(),
         });
@@ -328,7 +328,7 @@ mod tests {
             neutral_density_kgpm3: density,
             local_temp_k: 0.0,
         });
-        let mut drag = FacetDrag::new(FacetDragConfig {
+        let mut drag = FacetDragDynamicEffector::new(FacetDragDynamicEffectorConfig {
             name: "facet_drag".to_string(),
             planet_rotation_rate_radps: omega,
         });

@@ -19,7 +19,7 @@ pub enum ReactionWheelModel {
 }
 
 #[derive(Clone, Debug)]
-pub struct ReactionWheelConfig {
+pub struct ReactionWheelStateEffectorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
     pub spin_axis_body: Vector3<f64>,
@@ -48,7 +48,7 @@ pub struct ReactionWheelConfig {
     pub initial_omega_radps: f64,
 }
 
-impl ReactionWheelConfig {
+impl ReactionWheelStateEffectorConfig {
     pub fn balanced(
         name: impl Into<String>,
         position_m: Vector3<f64>,
@@ -116,8 +116,8 @@ impl ReactionWheelConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct ReactionWheel {
-    pub config: ReactionWheelConfig,
+pub struct ReactionWheelStateEffector {
+    pub config: ReactionWheelStateEffectorConfig,
     pub command_in: Input<ReactionWheelCommandMsg>,
     pub state_out: Output<ReactionWheelStateMsg>,
     pub omega_radps: f64,
@@ -130,8 +130,8 @@ pub struct ReactionWheel {
     w3_hat_b: Vector3<f64>,
 }
 
-impl ReactionWheel {
-    pub fn new(config: ReactionWheelConfig) -> Self {
+impl ReactionWheelStateEffector {
+    pub fn new(config: ReactionWheelStateEffectorConfig) -> Self {
         let spin_axis = normalize_or_zero(config.spin_axis_body);
         let torque_axis = normalize_or_fallback(
             config.torque_axis_body,
@@ -375,7 +375,7 @@ impl ReactionWheel {
     }
 }
 
-impl StateEffector for ReactionWheel {
+impl StateEffector for ReactionWheelStateEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
@@ -412,7 +412,7 @@ impl StateEffector for ReactionWheel {
     }
 
     fn pre_integration(&mut self, _current_sim_nanos: u64, dt_seconds: f64) {
-        ReactionWheel::pre_integration(self, dt_seconds);
+        ReactionWheelStateEffector::pre_integration(self, dt_seconds);
     }
 
     fn update_contributions(
@@ -546,7 +546,7 @@ mod tests {
     use crate::messages::{Output, ReactionWheelCommandMsg};
     use crate::spacecraft::StateEffector;
 
-    use super::{ReactionWheel, ReactionWheelConfig};
+    use super::{ReactionWheelStateEffector, ReactionWheelStateEffectorConfig};
 
     fn rw_with_command(
         max_torque_nm: f64,
@@ -555,8 +555,8 @@ mod tests {
         max_power_w: f64,
         initial_omega_radps: f64,
         command_nm: f64,
-    ) -> ReactionWheel {
-        let mut config = ReactionWheelConfig::balanced(
+    ) -> ReactionWheelStateEffector {
+        let mut config = ReactionWheelStateEffectorConfig::balanced(
             "rw",
             Vector3::zeros(),
             Vector3::new(1.0, 0.0, 0.0),
@@ -566,7 +566,7 @@ mod tests {
         config.min_torque_nm = min_torque_nm;
         config.max_power_w = max_power_w;
         config.initial_omega_radps = initial_omega_radps;
-        let mut rw = ReactionWheel::new(config);
+        let mut rw = ReactionWheelStateEffector::new(config);
         let cmd = Output::new(ReactionWheelCommandMsg {
             motor_torque_nm: command_nm,
         });
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn jitter_simple_load_state_updates_imbalance_axes_with_theta() {
-        let mut config = ReactionWheelConfig::jitter_simple(
+        let mut config = ReactionWheelStateEffectorConfig::jitter_simple(
             "rw",
             Vector3::zeros(),
             Vector3::z(),
@@ -623,7 +623,7 @@ mod tests {
         );
         config.torque_axis_body = Vector3::x();
         config.gimbal_axis_body = Vector3::y();
-        let mut rw = ReactionWheel::new(config);
+        let mut rw = ReactionWheelStateEffector::new(config);
 
         rw.load_state(&[10.0, std::f64::consts::FRAC_PI_2]);
 
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn jitter_simple_phase_delay_lags_axes_by_omega_dt() {
-        let mut config = ReactionWheelConfig::jitter_simple(
+        let mut config = ReactionWheelStateEffectorConfig::jitter_simple(
             "rw",
             Vector3::zeros(),
             Vector3::z(),
@@ -645,7 +645,7 @@ mod tests {
         config.torque_axis_body = Vector3::x();
         config.gimbal_axis_body = Vector3::y();
         config.jitter_phase_delay_sec = std::f64::consts::FRAC_PI_2 / 10.0;
-        let mut rw = ReactionWheel::new(config);
+        let mut rw = ReactionWheelStateEffector::new(config);
 
         rw.load_state(&[10.0, std::f64::consts::FRAC_PI_2]);
 

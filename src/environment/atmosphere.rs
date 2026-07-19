@@ -8,7 +8,7 @@ use hifitime::Epoch;
 use nalgebra::Vector3;
 
 use crate::messages::{AtmosphereMsg, Input, Output, PlanetStateMsg, SpacecraftStateMsg};
-use crate::nrlmsise::nrlmsise_with_inputs;
+use crate::environment::nrlmsise::nrlmsise_with_inputs;
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]

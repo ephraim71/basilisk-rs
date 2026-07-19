@@ -9,15 +9,15 @@
 ///
 /// ```no_run
 /// use basilisk_rs::connect;
-/// use basilisk_rs::imu::Imu;
+/// use basilisk_rs::sensors::imu_sensor::ImuSensor;
 /// use basilisk_rs::simulation::Simulation;
 /// use basilisk_rs::spacecraft::Spacecraft;
-/// use basilisk_rs::sun_sensor::SunSensor;
+/// use basilisk_rs::sensors::coarse_sun_sensor::CoarseSunSensor;
 /// # fn wire(
 /// #     sim: &Simulation<'_>,
 /// #     spacecraft: &Spacecraft,
-/// #     sun_sensor: &mut SunSensor,
-/// #     imu: &mut Imu,
+/// #     sun_sensor: &mut CoarseSunSensor,
+/// #     imu: &mut ImuSensor,
 /// # ) {
 /// connect!(&sim,
 ///     &spacecraft.state_out => &mut sun_sensor.input_state_msg,
@@ -41,10 +41,10 @@ macro_rules! connect {
 /// # Example
 ///
 /// ```
-/// use basilisk_rs::eclipse::{Eclipse, EclipseConfig};
+/// use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
 /// use basilisk_rs::schedule;
 /// use basilisk_rs::simulation::Simulation;
-/// use basilisk_rs::solar_flux::{SolarFlux, SolarFluxConfig};
+/// use basilisk_rs::environment::solar_flux::{SolarFlux, SolarFluxConfig};
 /// use hifitime::Epoch;
 ///
 /// let mut eclipse = Eclipse::new(EclipseConfig {
@@ -76,10 +76,10 @@ mod tests {
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
     use crate::Module;
-    use crate::imu::{Imu, ImuConfig};
+    use crate::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
+    use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
-    use crate::sun_sensor::{SunSensor, SunSensorConfig};
 
     fn simulation<'a>() -> Simulation<'a> {
         Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false)
@@ -98,8 +98,8 @@ mod tests {
         })
     }
 
-    fn sun_sensor() -> SunSensor {
-        SunSensor::new(SunSensorConfig {
+    fn sun_sensor() -> CoarseSunSensor {
+        CoarseSunSensor::new(CoarseSunSensorConfig {
             name: "sun_sensor".into(),
             position_m: Vector3::zeros(),
             body_to_sensor_quaternion: UnitQuaternion::identity(),
@@ -116,8 +116,8 @@ mod tests {
         })
     }
 
-    fn imu() -> Imu {
-        Imu::new(ImuConfig {
+    fn imu() -> ImuSensor {
+        ImuSensor::new(ImuSensorConfig {
             name: "imu".into(),
             position_m: Vector3::zeros(),
             body_to_sensor_quaternion: UnitQuaternion::identity(),

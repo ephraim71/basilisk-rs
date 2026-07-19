@@ -1,5 +1,3 @@
-pub mod facet;
-
 use nalgebra::Vector3;
 use std::any::Any;
 
@@ -7,7 +5,7 @@ use crate::messages::{AtmosphereMsg, Input, SpacecraftStateMsg};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
-pub struct DragConfig {
+pub struct DragDynamicEffectorConfig {
     pub name: String,
     pub projected_area_m2: f64,
     pub drag_coeff: f64,
@@ -21,7 +19,7 @@ pub struct DragConfig {
     pub planet_rotation_rate_radps: Vector3<f64>,
 }
 
-impl DragConfig {
+impl DragDynamicEffectorConfig {
     /// Check physical and numeric invariants. Returns a description of the first
     /// violation, or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
@@ -54,15 +52,15 @@ impl DragConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct Drag {
-    pub config: DragConfig,
+pub struct DragDynamicEffector {
+    pub config: DragDynamicEffectorConfig,
     pub input_atmosphere_msg: Input<AtmosphereMsg>,
 }
 
-impl Drag {
-    pub fn new(config: DragConfig) -> Self {
+impl DragDynamicEffector {
+    pub fn new(config: DragDynamicEffectorConfig) -> Self {
         if let Err(msg) = config.validate() {
-            panic!("invalid DragConfig: {msg}");
+            panic!("invalid DragDynamicEffectorConfig: {msg}");
         }
         Self {
             config,
@@ -106,13 +104,13 @@ impl Drag {
     }
 }
 
-impl DynamicEffector for Drag {
+impl DynamicEffector for DragDynamicEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        Drag::compute_output(self, state)
+        DragDynamicEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -126,19 +124,19 @@ mod tests {
 
     use crate::messages::{AtmosphereMsg, Output, SpacecraftStateMsg};
 
-    use super::{Drag, DragConfig};
+    use super::{DragDynamicEffector, DragDynamicEffectorConfig};
 
     fn make_drag(
         density: f64,
         cd: f64,
         area: f64,
         com_offset: Vector3<f64>,
-    ) -> (Drag, Output<AtmosphereMsg>) {
+    ) -> (DragDynamicEffector, Output<AtmosphereMsg>) {
         let atmo_out = Output::new(AtmosphereMsg {
             neutral_density_kgpm3: density,
             local_temp_k: 0.0,
         });
-        let mut drag = Drag::new(DragConfig {
+        let mut drag = DragDynamicEffector::new(DragDynamicEffectorConfig {
             name: "drag".to_string(),
             projected_area_m2: area,
             drag_coeff: cd,
@@ -255,7 +253,7 @@ mod tests {
             neutral_density_kgpm3: density,
             local_temp_k: 0.0,
         });
-        let mut drag = Drag::new(DragConfig {
+        let mut drag = DragDynamicEffector::new(DragDynamicEffectorConfig {
             name: "drag".to_string(),
             projected_area_m2: area,
             drag_coeff: cd,

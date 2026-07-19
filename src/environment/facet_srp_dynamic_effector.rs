@@ -9,7 +9,7 @@ const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1368.0;
 const SPEED_OF_LIGHT_MPS: f64 = 299_792_458.0;
 
 #[derive(Clone, Debug)]
-pub struct FacetSolarRadiationPressureConfig {
+pub struct FacetSRPDynamicEffectorConfig {
     pub name: String,
 }
 
@@ -79,15 +79,15 @@ impl SolarRadiationPressureFacet {
 }
 
 #[derive(Clone, Debug)]
-pub struct FacetSolarRadiationPressure {
-    pub config: FacetSolarRadiationPressureConfig,
+pub struct FacetSRPDynamicEffector {
+    pub config: FacetSRPDynamicEffectorConfig,
     pub input_sun_msg: Input<SunEphemerisMsg>,
     pub input_eclipse_msg: Input<EclipseMsg>,
     pub facets: Vec<SolarRadiationPressureFacet>,
 }
 
-impl FacetSolarRadiationPressure {
-    pub fn new(config: FacetSolarRadiationPressureConfig) -> Self {
+impl FacetSRPDynamicEffector {
+    pub fn new(config: FacetSRPDynamicEffectorConfig) -> Self {
         Self {
             config,
             input_sun_msg: Input::default(),
@@ -189,13 +189,13 @@ impl FacetSolarRadiationPressure {
     }
 }
 
-impl DynamicEffector for FacetSolarRadiationPressure {
+impl DynamicEffector for FacetSRPDynamicEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        FacetSolarRadiationPressure::compute_output(self, state)
+        FacetSRPDynamicEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -235,15 +235,15 @@ mod tests {
 
     use super::{
         ASTRONOMICAL_UNIT_M, SOLAR_FLUX_AT_EARTH_WPM2, SPEED_OF_LIGHT_MPS,
-        FacetSolarRadiationPressure, FacetSolarRadiationPressureConfig, prv_to_dcm,
+        FacetSRPDynamicEffector, FacetSRPDynamicEffectorConfig, prv_to_dcm,
     };
 
-    fn make_faceted_srp() -> (FacetSolarRadiationPressure, Output<SunEphemerisMsg>) {
+    fn make_faceted_srp() -> (FacetSRPDynamicEffector, Output<SunEphemerisMsg>) {
         let sun_out = Output::new(SunEphemerisMsg {
             sun_position_inertial_m: Vector3::zeros(),
             sun_velocity_inertial_mps: Vector3::zeros(),
         });
-        let mut srp = FacetSolarRadiationPressure::new(FacetSolarRadiationPressureConfig {
+        let mut srp = FacetSRPDynamicEffector::new(FacetSRPDynamicEffectorConfig {
             name: "facet_srp".to_string(),
         });
         srp.input_sun_msg.connect(sun_out.slot());
@@ -351,7 +351,7 @@ mod tests {
     fn make_facet_srp_geometry(
         facet_rot_angle1_rad: f64,
         facet_rot_angle2_rad: f64,
-    ) -> (FacetSolarRadiationPressure, Output<SunEphemerisMsg>) {
+    ) -> (FacetSRPDynamicEffector, Output<SunEphemerisMsg>) {
         let (mut srp, sun_out) = make_faceted_srp();
         let facet_rot_angle1 = Output::new(HingedRigidBodyMsg {
             theta_rad: facet_rot_angle1_rad,

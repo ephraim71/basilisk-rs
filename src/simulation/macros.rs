@@ -57,8 +57,8 @@ macro_rules! connect {
 /// let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
 ///
 /// schedule! { sim,
-///     "eclipse" => &mut eclipse, 10_000_000, 0;
-///     "solar_flux" => &mut solar_flux, 10_000_000, 10;
+///     "eclipse" => &mut eclipse, 10_000_000, 10;
+///     "solar_flux" => &mut solar_flux, 10_000_000, 0;
 /// }
 ///
 /// assert_eq!(sim.module_names(), vec!["eclipse", "solar_flux"]);
@@ -75,11 +75,11 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
-    use crate::Module;
     use crate::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
     use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
+    use crate::Module;
 
     fn simulation<'a>() -> Simulation<'a> {
         Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false)

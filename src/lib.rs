@@ -91,8 +91,8 @@ mod tests {
             sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
             sim.connect(&rw_command, &mut reaction_wheel.command_in);
             spacecraft.add_state_effector(reaction_wheel);
-            sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 0);
-            sim.add_module("imu", &mut imu, 5_000_000, 10);
+            sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 10);
+            sim.add_module("imu", &mut imu, 5_000_000, 0);
             sim.run_for(0);
             sim.module_names()
         };

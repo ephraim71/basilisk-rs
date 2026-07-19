@@ -2,6 +2,7 @@ mod macros;
 
 use hifitime::{Duration, Epoch};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::cmp::Reverse;
 use std::time::Instant;
 
 use crate::messages::{Input, Output};
@@ -53,6 +54,8 @@ impl<'a> Simulation<'a> {
         self.collect_timings = enabled;
     }
 
+    /// Schedule a module. Higher numeric priorities execute first; equal
+    /// priorities retain insertion order, matching Basilisk task semantics.
     pub fn add_module(
         &mut self,
         name: impl Into<String>,
@@ -83,7 +86,7 @@ impl<'a> Simulation<'a> {
         }
 
         self.modules
-            .sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
+            .sort_by_key(|scheduled| (Reverse(scheduled.priority), scheduled.insertion_order));
 
         for scheduled in &mut self.modules {
             scheduled.module.init();
@@ -210,5 +213,75 @@ impl<'a> Simulation<'a> {
             .collect();
         timings.sort_by(|lhs, rhs| rhs.total_update_nanos.cmp(&lhs.total_update_nanos));
         timings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+
+    use crate::messages::{Input, Output};
+    use crate::{Module, SimulationContext};
+
+    use super::Simulation;
+
+    struct Producer {
+        output: Output<u32>,
+    }
+
+    impl Module for Producer {
+        fn init(&mut self) {}
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.output.write(1);
+        }
+    }
+
+    #[derive(Default)]
+    struct Consumer {
+        input: Input<u32>,
+        observed: u32,
+    }
+
+    impl Module for Consumer {
+        fn init(&mut self) {}
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.observed = self.input.read();
+        }
+    }
+
+    #[test]
+    fn higher_numeric_priority_executes_first_like_upstream() {
+        let mut producer = Producer {
+            output: Output::default(),
+        };
+        let mut consumer = Consumer::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.connect(&producer.output, &mut consumer.input);
+        simulation.add_module("consumer", &mut consumer, 1_000_000_000, 0);
+        simulation.add_module("producer", &mut producer, 1_000_000_000, 10);
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(consumer.observed, 1);
+    }
+
+    #[test]
+    fn equal_priorities_retain_insertion_order() {
+        let mut producer = Producer {
+            output: Output::default(),
+        };
+        let mut consumer = Consumer::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.connect(&producer.output, &mut consumer.input);
+        simulation.add_module("producer", &mut producer, 1_000_000_000, 0);
+        simulation.add_module("consumer", &mut consumer, 1_000_000_000, 0);
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(consumer.observed, 1);
     }
 }

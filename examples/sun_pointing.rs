@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use basilisk_rs::actuators::reaction_wheel_state_effector::{
+use basilisk_rs::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
-use basilisk_rs::fsw::css_wls_est::{CssWlsEst, CssWlsEstConfig};
-use basilisk_rs::fsw::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
-use basilisk_rs::fsw::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
-use basilisk_rs::fsw::sun_safe_point::{SunSafePoint, SunSafePointConfig};
+use basilisk_rs::fsw_algorithms::css_wls_est::{CssWlsEst, CssWlsEstConfig};
+use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
+use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
+use basilisk_rs::fsw_algorithms::sun_safe_point::{SunSafePoint, SunSafePointConfig};
 use basilisk_rs::messages::{Output, SunEphemerisMsg};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};

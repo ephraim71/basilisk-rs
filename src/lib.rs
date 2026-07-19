@@ -8,9 +8,10 @@
 
 use hifitime::Epoch;
 
-pub mod actuators;
+pub mod device_interface;
+pub mod dynamics;
 pub mod environment;
-pub mod fsw;
+pub mod fsw_algorithms;
 pub mod messages;
 pub mod power;
 pub mod sensors;
@@ -38,7 +39,7 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
-    use crate::actuators::reaction_wheel_state_effector::{
+    use crate::dynamics::reaction_wheel_state_effector::{
         ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
     };
     use crate::environment::gravity::{GravBodyData, SphericalHarmonicsGravityModel};

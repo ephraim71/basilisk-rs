@@ -41,7 +41,11 @@ impl DragDynamicEffectorConfig {
                 self.com_offset_m
             ));
         }
-        if !self.planet_rotation_rate_radps.iter().all(|v| v.is_finite()) {
+        if !self
+            .planet_rotation_rate_radps
+            .iter()
+            .all(|v| v.is_finite())
+        {
             return Err(format!(
                 "planet_rotation_rate_radps must be finite, got {:?}",
                 self.planet_rotation_rate_radps
@@ -275,7 +279,10 @@ mod tests {
         let expected = -f_mag * v_rel.normalize();
 
         // Sanity: co-rotation actually changed the relative velocity.
-        assert!((v_rel - velocity).norm() > 1.0, "omega x r should be non-trivial");
+        assert!(
+            (v_rel - velocity).norm() > 1.0,
+            "omega x r should be non-trivial"
+        );
 
         let rel_err = (out.force_inertial_n - expected).norm() / expected.norm();
         assert!(

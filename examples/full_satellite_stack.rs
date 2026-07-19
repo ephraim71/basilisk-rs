@@ -1,16 +1,18 @@
 use std::path::{Path, PathBuf};
 
 use anise::constants::frames::{EARTH_J2000, IAU_EARTH_FRAME, MOON_J2000};
-use basilisk_rs::actuators::drag_dynamic_effector::{
+use basilisk_rs::dynamics::drag_dynamic_effector::{
     DragDynamicEffector, DragDynamicEffectorConfig,
 };
-use basilisk_rs::environment::atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
+use basilisk_rs::dynamics::radiation_pressure::{RadiationPressure, RadiationPressureConfig};
+use basilisk_rs::environment::anise_planet_ephemeris::{
+    AnisePlanetEphemeris, AnisePlanetEphemerisConfig,
+};
+use basilisk_rs::environment::anise_sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
+use basilisk_rs::environment::atmosphere::msis_atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
 use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
-use basilisk_rs::environment::ephemeris::{AnisePlanetEphemeris, AnisePlanetEphemerisConfig};
 use basilisk_rs::environment::gravity::GravBodyData;
-use basilisk_rs::environment::magnetic_field::{IgrfField, IgrfFieldConfig};
-use basilisk_rs::environment::radiation_pressure::{RadiationPressure, RadiationPressureConfig};
-use basilisk_rs::environment::sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
+use basilisk_rs::environment::igrf_field::{IgrfField, IgrfFieldConfig};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::gps::{Gps, GpsConfig};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};

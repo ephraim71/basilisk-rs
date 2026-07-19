@@ -20,7 +20,11 @@ impl FacetDragDynamicEffectorConfig {
     /// Check numeric invariants. Returns a description of the first violation,
     /// or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.planet_rotation_rate_radps.iter().all(|v| v.is_finite()) {
+        if !self
+            .planet_rotation_rate_radps
+            .iter()
+            .all(|v| v.is_finite())
+        {
             return Err(format!(
                 "planet_rotation_rate_radps must be finite, got {:?}",
                 self.planet_rotation_rate_radps
@@ -96,7 +100,10 @@ impl FacetDragDynamicEffector {
         }
 
         let relative_velocity_inertial = state.velocity_mps
-            - self.config.planet_rotation_rate_radps.cross(&state.position_m);
+            - self
+                .config
+                .planet_rotation_rate_radps
+                .cross(&state.position_m);
         let relative_speed = relative_velocity_inertial.norm();
         if relative_speed == 0.0 {
             return EffectorOutput::default();
@@ -108,27 +115,27 @@ impl FacetDragDynamicEffector {
             .transform_vector(&relative_velocity_inertial)
             / relative_speed;
 
-        let (force_body, torque_body) =
-            self.facets
-                .iter()
-                .fold((Vector3::zeros(), Vector3::zeros()), |(f_sum, t_sum), facet| {
-                    let cos_theta = facet.normal_body.dot(&v_hat_body);
-                    let projected_area = facet.area_m2 * cos_theta;
-                    if projected_area <= 0.0 {
-                        return (f_sum, t_sum);
-                    }
-                    let facet_force = -0.5
-                        * atmosphere.neutral_density_kgpm3
-                        * facet.drag_coeff
-                        * projected_area
-                        * relative_speed
-                        * relative_speed
-                        * v_hat_body;
-                    (
-                        f_sum + facet_force,
-                        t_sum + facet.location_body_m.cross(&facet_force),
-                    )
-                });
+        let (force_body, torque_body) = self.facets.iter().fold(
+            (Vector3::zeros(), Vector3::zeros()),
+            |(f_sum, t_sum), facet| {
+                let cos_theta = facet.normal_body.dot(&v_hat_body);
+                let projected_area = facet.area_m2 * cos_theta;
+                if projected_area <= 0.0 {
+                    return (f_sum, t_sum);
+                }
+                let facet_force = -0.5
+                    * atmosphere.neutral_density_kgpm3
+                    * facet.drag_coeff
+                    * projected_area
+                    * relative_speed
+                    * relative_speed
+                    * v_hat_body;
+                (
+                    f_sum + facet_force,
+                    t_sum + facet.location_body_m.cross(&facet_force),
+                )
+            },
+        );
 
         EffectorOutput {
             force_inertial_n: body_to_inertial.transform_vector(&force_body),
@@ -190,7 +197,10 @@ mod tests {
             Vector3::new(1.0, 0.0, 0.0),
             Vector3::new(0.1, 0.0, 0.0),
         );
-        let out = drag.compute_output(&make_state(Vector3::zeros(), Vector3::new(0.0, 7788.0, 0.0)));
+        let out = drag.compute_output(&make_state(
+            Vector3::zeros(),
+            Vector3::new(0.0, 7788.0, 0.0),
+        ));
         assert_eq!(out.force_inertial_n, Vector3::zeros());
         assert_eq!(out.torque_body_nm, Vector3::zeros());
     }
@@ -213,7 +223,10 @@ mod tests {
             Vector3::new(0.0, -1.0, 0.0),
             Vector3::new(0.0, 0.1, 0.0),
         );
-        let out = drag.compute_output(&make_state(Vector3::zeros(), Vector3::new(0.0, 7788.0, 0.0)));
+        let out = drag.compute_output(&make_state(
+            Vector3::zeros(),
+            Vector3::new(0.0, 7788.0, 0.0),
+        ));
         assert_eq!(out.force_inertial_n, Vector3::zeros());
         assert_eq!(out.torque_body_nm, Vector3::zeros());
     }
@@ -228,8 +241,18 @@ mod tests {
         let v_inertial = Vector3::new(0.0_f64, 7788.0, 0.0);
 
         let (mut drag, _atmo) = make_drag(density);
-        drag.add_facet(1.0, 2.0, Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.1, 0.0, 0.0));
-        drag.add_facet(1.0, 2.0, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0));
+        drag.add_facet(
+            1.0,
+            2.0,
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.1, 0.0, 0.0),
+        );
+        drag.add_facet(
+            1.0,
+            2.0,
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.3, 0.0, 0.0),
+        );
 
         let out = drag.compute_output(&make_state(Vector3::zeros(), v_inertial));
 
@@ -279,8 +302,18 @@ mod tests {
         let v_hat_body = q_nb.inverse().transform_vector(&v_inertial) / v_mag;
 
         let facets = [
-            (1.5_f64, 2.0_f64, Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 0.5, 0.0)),
-            (1.0_f64, 1.5_f64, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0)),
+            (
+                1.5_f64,
+                2.0_f64,
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(0.0, 0.5, 0.0),
+            ),
+            (
+                1.0_f64,
+                1.5_f64,
+                Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(0.3, 0.0, 0.0),
+            ),
         ];
 
         // expected: facet drag force summed over facets
@@ -334,7 +367,12 @@ mod tests {
         });
         drag.input_atmosphere_msg.connect(atmo_out.slot());
         // Facet normal along +y so it faces the (mostly +y) relative flow.
-        drag.add_facet(1.0, 2.0, Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.3, 0.0, 0.0));
+        drag.add_facet(
+            1.0,
+            2.0,
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.3, 0.0, 0.0),
+        );
 
         // Identity attitude: body frame == inertial frame.
         let state = SpacecraftStateMsg {
@@ -346,9 +384,13 @@ mod tests {
         let v_rel = velocity - omega.cross(&position);
         let v_hat = v_rel.normalize();
         let cos_theta = Vector3::new(0.0, 1.0, 0.0).dot(&v_hat);
-        let expected = -0.5 * density * 2.0 * (1.0 * cos_theta) * v_rel.norm() * v_rel.norm() * v_hat;
+        let expected =
+            -0.5 * density * 2.0 * (1.0 * cos_theta) * v_rel.norm() * v_rel.norm() * v_hat;
 
-        assert!((v_rel - velocity).norm() > 1.0, "omega x r should be non-trivial");
+        assert!(
+            (v_rel - velocity).norm() > 1.0,
+            "omega x r should be non-trivial"
+        );
         let rel_err = (out.force_inertial_n - expected).norm() / expected.norm();
         assert!(
             rel_err < 1e-12,

@@ -141,7 +141,11 @@ mod tests {
         let out = mtb.compute_output(&state(Vector3::zeros()));
         let expected = Vector3::new(0.5, 0.0, 0.0).cross(&field);
         assert_eq!(out.force_inertial_n, Vector3::zeros());
-        assert!((out.torque_body_nm - expected).norm() < 1e-18, "got {:?}", out.torque_body_nm);
+        assert!(
+            (out.torque_body_nm - expected).norm() < 1e-18,
+            "got {:?}",
+            out.torque_body_nm
+        );
     }
 
     #[test]
@@ -151,7 +155,11 @@ mod tests {
         let out = mtb.compute_output(&state(Vector3::zeros()));
         // command 20 clamps to 10 -> m = [10,0,0].
         let expected = Vector3::new(10.0, 0.0, 0.0).cross(&field);
-        assert!((out.torque_body_nm - expected).norm() < 1e-15, "got {:?}", out.torque_body_nm);
+        assert!(
+            (out.torque_body_nm - expected).norm() < 1e-15,
+            "got {:?}",
+            out.torque_body_nm
+        );
     }
 
     #[test]
@@ -171,7 +179,10 @@ mod tests {
         let field_body = state(sigma_bn).inertial_to_body().transform_vector(&field);
         let net_dipole = Vector3::new(0.2, 0.2, 0.2);
         let expected = net_dipole.cross(&field_body);
-        assert!((total - expected).norm() < 1e-15, "got {total:?}, want {expected:?}");
+        assert!(
+            (total - expected).norm() < 1e-15,
+            "got {total:?}, want {expected:?}"
+        );
     }
 
     #[test]

@@ -1,10 +1,7 @@
+pub mod anise_planet_ephemeris;
+pub mod anise_sun_ephemeris;
 pub mod atmosphere;
 pub mod eclipse;
-pub mod ephemeris;
-pub mod facet_srp_dynamic_effector;
 pub mod gravity;
-pub mod magnetic_field;
-pub mod nrlmsise;
-pub mod radiation_pressure;
+pub mod igrf_field;
 pub mod solar_flux;
-pub mod sun_ephemeris;

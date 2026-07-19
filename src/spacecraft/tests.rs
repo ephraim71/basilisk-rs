@@ -8,8 +8,10 @@ use super::{
     mrp::body_to_inertial_dcm_from_sigma_bn,
 };
 use crate::Module;
-use crate::actuators::hinged_rigid_body::{HingedRigidBodyConfig, HingedRigidBodyStateEffector};
-use crate::actuators::reaction_wheel_state_effector::{
+use crate::dynamics::hinged_rigid_body_state_effector::{
+    HingedRigidBodyConfig, HingedRigidBodyStateEffector,
+};
+use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
 use crate::environment::gravity::GravBodyData;

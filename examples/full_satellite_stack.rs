@@ -48,6 +48,7 @@ fn main() {
         initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.01, 0.02, 0.015),
+        integrator: None
     });
     spacecraft.set_timing_enabled(profile_sim);
 

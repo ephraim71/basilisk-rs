@@ -12,7 +12,7 @@ pub struct ThrusterRampPoint {
 }
 
 #[derive(Clone, Debug)]
-pub struct ThrusterConfig {
+pub struct ThrusterDynamicEffectorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
     pub direction_body: Vector3<f64>,
@@ -30,7 +30,7 @@ pub struct ThrusterConfig {
     pub update_only: bool,
 }
 
-impl ThrusterConfig {
+impl ThrusterDynamicEffectorConfig {
     pub fn simple(
         name: impl Into<String>,
         position_m: Vector3<f64>,
@@ -107,15 +107,15 @@ impl Default for ThrusterOperation {
 }
 
 #[derive(Clone, Debug)]
-pub struct Thruster {
-    pub config: ThrusterConfig,
+pub struct ThrusterDynamicEffector {
+    pub config: ThrusterDynamicEffectorConfig,
     pub command_in: Input<ThrusterCommandMsg>,
     pub operation: ThrusterOperation,
     last_command_s: f64,
 }
 
-impl Thruster {
-    pub fn new(config: ThrusterConfig) -> Self {
+impl ThrusterDynamicEffector {
+    pub fn new(config: ThrusterDynamicEffectorConfig) -> Self {
         Self {
             config,
             command_in: Input::default(),
@@ -320,17 +320,17 @@ impl Thruster {
     }
 }
 
-impl DynamicEffector for Thruster {
+impl DynamicEffector for ThrusterDynamicEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn pre_integration(&mut self, current_sim_nanos: u64, _dt_seconds: f64) {
-        Thruster::pre_integration(self, current_sim_nanos);
+        ThrusterDynamicEffector::pre_integration(self, current_sim_nanos);
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        Thruster::compute_output(self, state)
+        ThrusterDynamicEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -416,11 +416,11 @@ mod tests {
 
     use crate::messages::{Output, SpacecraftStateMsg, ThrusterCommandMsg};
 
-    use super::{Thruster, ThrusterConfig};
+    use super::{ThrusterDynamicEffector, ThrusterDynamicEffectorConfig};
 
     /// Fire a simple thruster (no ramp) for 5 s starting at t=0 and return it ready for output.
     /// Config: max_thrust=1 N, Isp=226.7 s, position=[1.125, 0.5, 2.0] m, angles long=30° lat=15°.
-    fn fired_thruster() -> Thruster {
+    fn fired_thruster() -> ThrusterDynamicEffector {
         let long_rad = 30.0_f64.to_radians();
         let lat_rad = 15.0_f64.to_radians();
         let direction = Vector3::new(
@@ -428,11 +428,15 @@ mod tests {
             long_rad.sin() * lat_rad.cos(),
             lat_rad.sin(),
         );
-        let mut config =
-            ThrusterConfig::simple("thr", Vector3::new(1.125, 0.5, 2.0), direction, 1.0);
+        let mut config = ThrusterDynamicEffectorConfig::simple(
+            "thr",
+            Vector3::new(1.125, 0.5, 2.0),
+            direction,
+            1.0,
+        );
         config.steady_isp_s = 226.7;
 
-        let mut thr = Thruster::new(config);
+        let mut thr = ThrusterDynamicEffector::new(config);
         let cmd = Output::new(ThrusterCommandMsg { on_time_s: 5.0 });
         thr.command_in.connect(cmd.slot());
         thr.pre_integration(0); // fires immediately at t=0

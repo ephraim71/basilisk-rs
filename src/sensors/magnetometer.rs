@@ -10,7 +10,7 @@ use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamMs
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
-pub struct TamConfig {
+pub struct MagnetometerConfig {
     pub name: String,
     pub body_to_sensor_quaternion: nalgebra::UnitQuaternion<f64>,
     pub bias_t: Vector3<f64>,
@@ -22,7 +22,7 @@ pub struct TamConfig {
     pub max_output_t: f64,
 }
 
-impl TamConfig {
+impl MagnetometerConfig {
     /// Check numeric invariants. Returns a description of the first violation,
     /// or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
@@ -60,8 +60,8 @@ impl TamConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct Tam {
-    pub config: TamConfig,
+pub struct Magnetometer {
+    pub config: MagnetometerConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
     pub output_tam_msg: Output<TamMsg>,
@@ -69,7 +69,7 @@ pub struct Tam {
     rng: StdRng,
 }
 
-impl Module for Tam {
+impl Module for Magnetometer {
     fn init(&mut self) {
         // On reset, clear the accumulated Gauss-Markov walk state.
         self.error_state_t = Vector3::zeros();
@@ -87,10 +87,10 @@ impl Module for Tam {
     }
 }
 
-impl Tam {
-    pub fn new(config: TamConfig) -> Self {
+impl Magnetometer {
+    pub fn new(config: MagnetometerConfig) -> Self {
         if let Err(msg) = config.validate() {
-            panic!("invalid TamConfig: {msg}");
+            panic!("invalid MagnetometerConfig: {msg}");
         }
         Self {
             rng: StdRng::seed_from_u64(seed_from_name(&config.name)),
@@ -169,7 +169,7 @@ mod tests {
     use crate::messages::{MagneticFieldMsg, Output, SpacecraftStateMsg};
     use crate::{Module, SimulationContext};
 
-    use super::{Tam, TamConfig};
+    use super::{Magnetometer, MagnetometerConfig};
 
     fn dummy_context() -> SimulationContext {
         SimulationContext {
@@ -180,8 +180,8 @@ mod tests {
 
     /// A noiseless config: zero process-noise sqrt and zero walk, so the error
     /// state stays at zero and the output is deterministic.
-    fn noiseless_config(name: &str) -> TamConfig {
-        TamConfig {
+    fn noiseless_config(name: &str) -> MagnetometerConfig {
+        MagnetometerConfig {
             name: name.to_string(),
             body_to_sensor_quaternion: UnitQuaternion::identity(),
             bias_t: Vector3::zeros(),
@@ -194,7 +194,11 @@ mod tests {
         }
     }
 
-    fn run(mut tam: Tam, sigma_bn: Vector3<f64>, field_inertial_t: Vector3<f64>) -> Vector3<f64> {
+    fn run(
+        mut tam: Magnetometer,
+        sigma_bn: Vector3<f64>,
+        field_inertial_t: Vector3<f64>,
+    ) -> Vector3<f64> {
         let state_out = Output::new(SpacecraftStateMsg {
             sigma_bn,
             ..Default::default()
@@ -217,7 +221,7 @@ mod tests {
 
         let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
         // Identity attitude and identity sensor frame: sensed = (field + bias) * scale.
-        let sensed = run(Tam::new(config), Vector3::zeros(), field);
+        let sensed = run(Magnetometer::new(config), Vector3::zeros(), field);
         let expected = (field + Vector3::new(1.0e-6, 1.0e-6, 1.0e-5)) * 2.0;
         assert!((sensed - expected).norm() < 1e-18, "got {sensed:?}, want {expected:?}");
     }
@@ -229,7 +233,7 @@ mod tests {
         let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
         let sigma_bn = Vector3::new(0.3, 0.2, 0.1);
 
-        let sensed = run(Tam::new(config.clone()), sigma_bn, field);
+        let sensed = run(Magnetometer::new(config.clone()), sigma_bn, field);
 
         // Rotate field inertial -> body -> sensor frame.
         let state = SpacecraftStateMsg {
@@ -250,7 +254,7 @@ mod tests {
 
         let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
         // (field)*2 exceeds max on every axis -> clamps to max.
-        let sensed = run(Tam::new(config), Vector3::zeros(), field);
+        let sensed = run(Magnetometer::new(config), Vector3::zeros(), field);
         assert!((sensed - Vector3::repeat(1.0e-5)).norm() < 1e-18, "got {sensed:?}");
     }
 
@@ -268,7 +272,7 @@ mod tests {
         let field_out = Output::new(MagneticFieldMsg {
             magnetic_field_inertial_t: field,
         });
-        let mut tam = Tam::new(config);
+        let mut tam = Magnetometer::new(config);
         tam.input_state_msg.connect(state_out.slot());
         tam.input_magnetic_field_msg.connect(field_out.slot());
         tam.init();
@@ -293,6 +297,6 @@ mod tests {
         let mut config = noiseless_config("tam");
         config.min_output_t = 1.0;
         config.max_output_t = -1.0;
-        let _ = Tam::new(config);
+        let _ = Magnetometer::new(config);
     }
 }

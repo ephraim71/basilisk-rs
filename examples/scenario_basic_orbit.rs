@@ -12,7 +12,7 @@
 //!   cargo run --example scenario_basic_orbit -- leo sh       # LEO, J2 spherical harmonics
 //!   cargo run --example scenario_basic_orbit -- gto sh       # GTO, J2 spherical harmonics
 
-use basilisk_rs::gravity::GravBodyData;
+use basilisk_rs::environment::gravity::GravBodyData;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use hifitime::Epoch;

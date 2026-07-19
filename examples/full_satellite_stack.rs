@@ -1,21 +1,25 @@
 use std::path::{Path, PathBuf};
 
 use anise::constants::frames::{EARTH_J2000, IAU_EARTH_FRAME, MOON_J2000};
-use basilisk_rs::atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
-use basilisk_rs::drag::{Drag, DragConfig};
-use basilisk_rs::eclipse::{Eclipse, EclipseConfig};
-use basilisk_rs::ephemeris::{AnisePlanetEphemeris, AnisePlanetEphemerisConfig};
-use basilisk_rs::gps::{Gps, GpsConfig};
-use basilisk_rs::gravity::GravBodyData;
-use basilisk_rs::imu::{Imu, ImuConfig};
-use basilisk_rs::magnetic_field::{IgrfField, IgrfFieldConfig};
+use basilisk_rs::dynamics::drag_dynamic_effector::{
+    DragDynamicEffector, DragDynamicEffectorConfig,
+};
+use basilisk_rs::dynamics::radiation_pressure::{RadiationPressure, RadiationPressureConfig};
+use basilisk_rs::environment::anise_planet_ephemeris::{
+    AnisePlanetEphemeris, AnisePlanetEphemerisConfig,
+};
+use basilisk_rs::environment::anise_sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
+use basilisk_rs::environment::atmosphere::msis_atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
+use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
+use basilisk_rs::environment::gravity::GravBodyData;
+use basilisk_rs::environment::igrf_field::{IgrfField, IgrfFieldConfig};
+use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
+use basilisk_rs::sensors::gps::{Gps, GpsConfig};
+use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
+use basilisk_rs::sensors::magnetometer::{Magnetometer, MagnetometerConfig};
+use basilisk_rs::sensors::star_tracker::{StarTracker, StarTrackerConfig};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::srp::{SolarRadiationPressure, SolarRadiationPressureConfig};
-use basilisk_rs::star_tracker::{StarTracker, StarTrackerConfig};
-use basilisk_rs::sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
-use basilisk_rs::sun_sensor::{SunSensor, SunSensorConfig};
-use basilisk_rs::tam::{Tam, TamConfig};
 use basilisk_rs::telemetry::{CsvRecorder, CsvRecorderConfig};
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Rotation3, SMatrix, SVector, UnitQuaternion, Vector3};
@@ -129,13 +133,13 @@ fn main() {
     });
     magnetic_field.set_timing_enabled(profile_sim);
 
-    let mut imu_1 = Imu::new(ImuConfig {
+    let mut imu_1 = ImuSensor::new(ImuSensorConfig {
         name: "imu_1".to_string(),
         position_m: Vector3::new(0.0, 0.0, 0.0),
         body_to_sensor_quaternion: UnitQuaternion::identity(),
         rate_noise_std_radps: Vector3::new(1.0e-4, 1.0e-4, 1.0e-4),
     });
-    let mut imu_2 = Imu::new(ImuConfig {
+    let mut imu_2 = ImuSensor::new(ImuSensorConfig {
         name: "imu_2".to_string(),
         position_m: Vector3::new(0.05, 0.0, 0.0),
         body_to_sensor_quaternion: UnitQuaternion::from_euler_angles(
@@ -146,7 +150,7 @@ fn main() {
         rate_noise_std_radps: Vector3::new(1.0e-4, 1.0e-4, 1.0e-4),
     });
 
-    let mut tam_1 = Tam::new(TamConfig {
+    let mut tam_1 = Magnetometer::new(MagnetometerConfig {
         name: "tam_1".to_string(),
         body_to_sensor_quaternion: UnitQuaternion::identity(),
         bias_t: Vector3::zeros(),
@@ -157,7 +161,7 @@ fn main() {
         min_output_t: -1.0,
         max_output_t: 1.0,
     });
-    let mut tam_2 = Tam::new(TamConfig {
+    let mut tam_2 = Magnetometer::new(MagnetometerConfig {
         name: "tam_2".to_string(),
         body_to_sensor_quaternion: UnitQuaternion::from_euler_angles(
             0.0,
@@ -232,14 +236,14 @@ fn main() {
         a_matrix: Matrix3::identity(),
         walk_bounds_rad: Vector3::new(1.0e-3, 1.0e-3, 1.0e-3),
     });
-    let mut drag = Drag::new(DragConfig {
+    let mut drag = DragDynamicEffector::new(DragDynamicEffectorConfig {
         name: "drag".to_string(),
         projected_area_m2: 0.18,
         drag_coeff: 2.2,
         com_offset_m: Vector3::new(0.01, 0.0, 0.0),
         planet_rotation_rate_radps: Vector3::new(0.0, 0.0, 7.292_115_9e-5),
     });
-    let mut srp = SolarRadiationPressure::new(SolarRadiationPressureConfig {
+    let mut srp = RadiationPressure::new(RadiationPressureConfig {
         name: "srp".to_string(),
         area_m2: 0.18,
         coefficient_reflection: 1.2,
@@ -809,8 +813,8 @@ fn single_sun_sensor(
     name: &str,
     position_m: Vector3<f64>,
     boresight_body: Vector3<f64>,
-) -> SunSensor {
-    SunSensor::new(SunSensorConfig {
+) -> CoarseSunSensor {
+    CoarseSunSensor::new(CoarseSunSensorConfig {
         name: name.to_string(),
         position_m,
         body_to_sensor_quaternion: body_to_sensor_for_boresight(boresight_body),

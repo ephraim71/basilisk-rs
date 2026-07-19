@@ -1,4 +1,4 @@
-use crate::gravity::GravityEffector;
+use crate::environment::gravity::GravityEffector;
 use crate::messages::{
     Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg, SpacecraftMassPropsMsg,
     SpacecraftStateMsg,
@@ -172,7 +172,7 @@ impl Spacecraft {
         self.dynamic_effectors.push(Box::new(effector));
     }
 
-    pub fn add_grav_body(&mut self, grav_body: crate::gravity::GravBodyData) {
+    pub fn add_grav_body(&mut self, grav_body: crate::environment::gravity::GravBodyData) {
         self.gravity.add_grav_body(grav_body);
     }
 

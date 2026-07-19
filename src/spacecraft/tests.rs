@@ -8,12 +8,16 @@ use super::{
     mrp::body_to_inertial_dcm_from_sigma_bn,
 };
 use crate::Module;
-use crate::gravity::GravBodyData;
+use crate::dynamics::hinged_rigid_body_state_effector::{
+    HingedRigidBodyConfig, HingedRigidBodyStateEffector,
+};
+use crate::dynamics::reaction_wheel_state_effector::{
+    ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
+};
+use crate::environment::gravity::GravBodyData;
 use crate::messages::{
     HingedRigidBodyMsg, Input, Output, ReactionWheelCommandMsg, SpacecraftStateMsg,
 };
-use crate::hinged_rigid_body::{HingedRigidBodyConfig, HingedRigidBodyStateEffector};
-use crate::reaction_wheel::{ReactionWheel, ReactionWheelConfig};
 use crate::simulation::Simulation;
 
 const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
@@ -172,13 +176,14 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         initial_omega_radps: Vector3::zeros(),
     });
 
-    let mut reaction_wheel = ReactionWheel::new(ReactionWheelConfig::balanced(
-        "rw_x",
-        Vector3::zeros(),
-        Vector3::new(1.0, 0.0, 0.0),
-        1.0,
-        100.0,
-    ));
+    let mut reaction_wheel =
+        ReactionWheelStateEffector::new(ReactionWheelStateEffectorConfig::balanced(
+            "rw_x",
+            Vector3::zeros(),
+            Vector3::new(1.0, 0.0, 0.0),
+            1.0,
+            100.0,
+        ));
     reaction_wheel.config.js_kg_m2 = wheel_js;
     let command = Output::new(ReactionWheelCommandMsg {
         motor_torque_nm: applied_torque_nm,
@@ -195,7 +200,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
     let body_omega_x = spacecraft.state_out.read().omega_radps.x;
     let wheel_omega_x = spacecraft.state_effectors[0]
         .as_any()
-        .downcast_ref::<ReactionWheel>()
+        .downcast_ref::<ReactionWheelStateEffector>()
         .expect("expected reaction wheel state effector")
         .omega_radps;
 

@@ -5,13 +5,13 @@ use crate::messages::{Input, MagneticFieldMsg, MtbCommandMsg, SpacecraftStateMsg
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
-pub struct MtbConfig {
+pub struct MtbEffectorConfig {
     pub name: String,
     pub dipole_axis_body: Vector3<f64>,
     pub max_dipole_am2: f64,
 }
 
-impl MtbConfig {
+impl MtbEffectorConfig {
     /// Check numeric invariants. Returns a description of the first violation,
     /// or `Ok(())` when the configuration is usable.
     pub fn validate(&self) -> Result<(), String> {
@@ -32,16 +32,16 @@ impl MtbConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct Mtb {
-    pub config: MtbConfig,
+pub struct MtbEffector {
+    pub config: MtbEffectorConfig,
     pub command_in: Input<MtbCommandMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
 }
 
-impl Mtb {
-    pub fn new(config: MtbConfig) -> Self {
+impl MtbEffector {
+    pub fn new(config: MtbEffectorConfig) -> Self {
         if let Err(msg) = config.validate() {
-            panic!("invalid MtbConfig: {msg}");
+            panic!("invalid MtbEffectorConfig: {msg}");
         }
         Self {
             config,
@@ -73,13 +73,13 @@ impl Mtb {
     }
 }
 
-impl DynamicEffector for Mtb {
+impl DynamicEffector for MtbEffector {
     fn name(&self) -> &str {
         &self.config.name
     }
 
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
-        Mtb::compute_output(self, state)
+        MtbEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -101,7 +101,7 @@ mod tests {
 
     use crate::messages::{MagneticFieldMsg, MtbCommandMsg, Output, SpacecraftStateMsg};
 
-    use super::{Mtb, MtbConfig};
+    use super::{MtbEffector, MtbEffectorConfig};
 
     #[allow(clippy::type_complexity)]
     fn make_mtb(
@@ -110,12 +110,12 @@ mod tests {
         dipole_cmd_am2: f64,
         max_dipole_am2: f64,
         field_inertial_t: Vector3<f64>,
-    ) -> (Mtb, Output<MtbCommandMsg>, Output<MagneticFieldMsg>) {
+    ) -> (MtbEffector, Output<MtbCommandMsg>, Output<MagneticFieldMsg>) {
         let cmd_out = Output::new(MtbCommandMsg { dipole_cmd_am2 });
         let field_out = Output::new(MagneticFieldMsg {
             magnetic_field_inertial_t: field_inertial_t,
         });
-        let mut mtb = Mtb::new(MtbConfig {
+        let mut mtb = MtbEffector::new(MtbEffectorConfig {
             name: name.to_string(),
             dipole_axis_body: axis,
             max_dipole_am2,
@@ -141,7 +141,11 @@ mod tests {
         let out = mtb.compute_output(&state(Vector3::zeros()));
         let expected = Vector3::new(0.5, 0.0, 0.0).cross(&field);
         assert_eq!(out.force_inertial_n, Vector3::zeros());
-        assert!((out.torque_body_nm - expected).norm() < 1e-18, "got {:?}", out.torque_body_nm);
+        assert!(
+            (out.torque_body_nm - expected).norm() < 1e-18,
+            "got {:?}",
+            out.torque_body_nm
+        );
     }
 
     #[test]
@@ -151,7 +155,11 @@ mod tests {
         let out = mtb.compute_output(&state(Vector3::zeros()));
         // command 20 clamps to 10 -> m = [10,0,0].
         let expected = Vector3::new(10.0, 0.0, 0.0).cross(&field);
-        assert!((out.torque_body_nm - expected).norm() < 1e-15, "got {:?}", out.torque_body_nm);
+        assert!(
+            (out.torque_body_nm - expected).norm() < 1e-15,
+            "got {:?}",
+            out.torque_body_nm
+        );
     }
 
     #[test]
@@ -171,13 +179,16 @@ mod tests {
         let field_body = state(sigma_bn).inertial_to_body().transform_vector(&field);
         let net_dipole = Vector3::new(0.2, 0.2, 0.2);
         let expected = net_dipole.cross(&field_body);
-        assert!((total - expected).norm() < 1e-15, "got {total:?}, want {expected:?}");
+        assert!(
+            (total - expected).norm() < 1e-15,
+            "got {total:?}, want {expected:?}"
+        );
     }
 
     #[test]
     #[should_panic(expected = "max_dipole_am2")]
     fn rejects_negative_max_dipole() {
-        let _ = Mtb::new(MtbConfig {
+        let _ = MtbEffector::new(MtbEffectorConfig {
             name: "mtb".to_string(),
             dipole_axis_body: Vector3::x(),
             max_dipole_am2: -1.0,

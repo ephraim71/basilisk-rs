@@ -1,4 +1,4 @@
-name: PR Benchmarks
+name: PR CI
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pr-benchmarks-${{ github.event.pull_request.number }}
+  group: pr-ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -23,7 +23,7 @@ env:
   CARGO_TERM_PROGRESS_WHEN: never
 
 jobs:
-  pr-benchmarks:
+  test-and-benchmark:
     runs-on: ubuntu-latest
 
     steps:
@@ -38,6 +38,41 @@ jobs:
 
       - name: Fetch Rust dependencies
         run: cargo fetch
+
+      - name: Run tests
+        id: tests
+        shell: bash
+        run: |
+          mkdir -p .github/tmp
+
+          set +e
+          cargo test --no-fail-fast 2>&1 | tee .github/tmp/cargo-test-output.txt
+          test_exit_code="${PIPESTATUS[0]}"
+          set -e
+
+          read -r passed failed < <(awk '
+            /^test result: / {
+              for (i = 1; i <= NF; i++) {
+                if ($i == "passed;") {
+                  passed += $(i - 1)
+                } else if ($i == "failed;") {
+                  failed += $(i - 1)
+                }
+              }
+            }
+            END { print passed + 0, failed + 0 }
+          ' .github/tmp/cargo-test-output.txt)
+
+          if [[ "${test_exit_code}" == "0" ]]; then
+            result='Passed'
+          else
+            result='Failed'
+          fi
+
+          printf 'exit_code=%s\n' "${test_exit_code}" >> "${GITHUB_OUTPUT}"
+          printf 'result=%s\n' "${result}" >> "${GITHUB_OUTPUT}"
+          printf 'passed=%s\n' "${passed}" >> "${GITHUB_OUTPUT}"
+          printf 'failed=%s\n' "${failed}" >> "${GITHUB_OUTPUT}"
 
       - name: Measure build and run
         run: |
@@ -122,14 +157,17 @@ jobs:
 
           {
             printf '%s\n' "${marker}"
+            printf 'Cargo test: **%s**\n' '${{ steps.tests.outputs.result }}'
+            printf 'Passed: `%s`\n' '${{ steps.tests.outputs.passed }}'
+            printf 'Failed: `%s`\n' '${{ steps.tests.outputs.failed }}'
             printf 'Build size: `%s`\n' "${build_size}"
             printf 'full_satellite_stack runtime speedup: `%s`\n' "${speedup}"
             printf 'Cold build time: `%s`\n' "${cold_build_time}"
             printf 'Warm build time: `%s`\n' "${warm_build_time}"
-          } > .github/tmp/pr-benchmark-comment.md
+          } > .github/tmp/pr-comment.md
 
-      - name: Write benchmark summary
-        run: cat .github/tmp/pr-benchmark-comment.md >> "${GITHUB_STEP_SUMMARY}"
+      - name: Write PR summary
+        run: cat .github/tmp/pr-comment.md >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Post PR comment
         if: ${{ !github.event.pull_request.head.repo.fork }}
@@ -138,7 +176,7 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- basilisk-rs-pr-benchmarks -->';
-            const body = fs.readFileSync('.github/tmp/pr-benchmark-comment.md', 'utf8').trim();
+            const body = fs.readFileSync('.github/tmp/pr-comment.md', 'utf8').trim();
             const issue_number = context.payload.pull_request.number;
             const { owner, repo } = context.repo;
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -166,3 +204,7 @@ jobs:
                 body,
               });
             }
+
+      - name: Enforce test result
+        if: ${{ steps.tests.outputs.exit_code != '0' }}
+        run: exit 1

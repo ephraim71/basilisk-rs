@@ -2,12 +2,13 @@ use nalgebra::Vector3;
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
+/// Three-axis magnetometer measurement expressed in the sensor frame.
 #[derive(Clone, Debug, Default)]
-pub struct TamMsg {
+pub struct TamSensorMsg {
     pub magnetic_field_sensor_t: Vector3<f64>,
 }
 
-impl TelemetryMessage for TamMsg {
+impl TelemetryMessage for TamSensorMsg {
     fn flatten(&self) -> Vec<TelemetryField> {
         vec![
             TelemetryField {

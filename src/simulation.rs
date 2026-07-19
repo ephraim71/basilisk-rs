@@ -2,6 +2,7 @@ mod macros;
 
 use hifitime::{Duration, Epoch};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::cmp::Reverse;
 use std::time::Instant;
 
 use crate::messages::{Input, Output};
@@ -53,6 +54,8 @@ impl<'a> Simulation<'a> {
         self.collect_timings = enabled;
     }
 
+    /// Schedule a module. Higher numeric priorities execute first; equal
+    /// priorities retain insertion order, matching Basilisk task semantics.
     pub fn add_module(
         &mut self,
         name: impl Into<String>,
@@ -83,7 +86,7 @@ impl<'a> Simulation<'a> {
         }
 
         self.modules
-            .sort_by_key(|scheduled| (scheduled.priority, scheduled.insertion_order));
+            .sort_by_key(|scheduled| (Reverse(scheduled.priority), scheduled.insertion_order));
 
         for scheduled in &mut self.modules {
             scheduled.module.init();
@@ -114,16 +117,9 @@ impl<'a> Simulation<'a> {
         while self.current_sim_nanos <= stop_nanos {
             let context = self.context();
             let current = self.current_sim_nanos;
-            // A module fires if it is scheduled at this tick, OR if this is the final
-            // stop time and the module is mid-period (partial final step, matches Basilisk
-            // behaviour when stop time is not a multiple of the task rate).
-            let is_final_tick = current == stop_nanos;
-            let should_fire = move |s: &&mut ScheduledModule| {
-                s.next_run_nanos == current
-                    || (is_final_tick
-                        && s.next_run_nanos > current
-                        && s.next_run_nanos - s.period_nanos < current)
-            };
+            // Basilisk executes a task only at its scheduled tick; stopping
+            // between task ticks does not synthesize a partial final update.
+            let should_fire = move |s: &&mut ScheduledModule| s.next_run_nanos == current;
 
             for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) {
                 group.iter_mut().filter(should_fire).for_each(|scheduled| {
@@ -183,10 +179,18 @@ impl<'a> Simulation<'a> {
     }
 
     pub fn reset(&mut self) {
-        self.initialized = false;
         self.current_sim_nanos = 0;
         for m in &mut self.modules {
             m.next_run_nanos = 0;
+        }
+        if self.initialized {
+            let context = SimulationContext {
+                current_sim_nanos: 0,
+                current_epoch: self.start_epoch,
+            };
+            for scheduled in &mut self.modules {
+                scheduled.module.reset(&context);
+            }
         }
     }
 
@@ -210,5 +214,97 @@ impl<'a> Simulation<'a> {
             .collect();
         timings.sort_by(|lhs, rhs| rhs.total_update_nanos.cmp(&lhs.total_update_nanos));
         timings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+
+    use crate::messages::{Input, Output};
+    use crate::{Module, SimulationContext};
+
+    use super::Simulation;
+
+    #[derive(Default)]
+    struct LifecycleProbe {
+        init_count: usize,
+        reset_count: usize,
+        update_count: usize,
+    }
+
+    struct Producer {
+        output: Output<u32>,
+    }
+
+    impl Module for Producer {
+        fn init(&mut self) {
+            self.output.write(0);
+        }
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.output.write(1);
+        }
+    }
+
+    #[derive(Default)]
+    struct Consumer {
+        input: Input<u32>,
+        observed: u32,
+    }
+
+    impl Module for Consumer {
+        fn init(&mut self) {}
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.observed = self.input.read();
+        }
+    }
+
+    impl Module for LifecycleProbe {
+        fn init(&mut self) {
+            self.init_count += 1;
+        }
+
+        fn reset(&mut self, _context: &SimulationContext) {
+            self.reset_count += 1;
+        }
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.update_count += 1;
+        }
+    }
+
+    #[test]
+    fn reset_uses_reset_hook_without_repeating_initialization() {
+        let mut probe = LifecycleProbe::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.add_module("probe", &mut probe, 1_000_000_000, 0);
+        simulation.run_for(0);
+        simulation.reset();
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(probe.init_count, 1);
+        assert_eq!(probe.reset_count, 1);
+        assert_eq!(probe.update_count, 2);
+    }
+
+    #[test]
+    fn higher_numeric_priority_executes_first_like_upstream() {
+        let mut producer = Producer {
+            output: Output::default(),
+        };
+        let mut consumer = Consumer::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.connect(&producer.output, &mut consumer.input);
+        simulation.add_module("consumer", &mut consumer, 1_000_000_000, 0);
+        simulation.add_module("producer", &mut producer, 1_000_000_000, 10);
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(consumer.observed, 1);
     }
 }

@@ -12,12 +12,17 @@ pub mod device_interface;
 pub mod dynamics;
 pub mod environment;
 pub mod fsw_algorithms;
+mod kinematics;
 pub mod messages;
 pub mod power;
 pub mod sensors;
 pub mod simulation;
 pub mod spacecraft;
 pub mod telemetry;
+mod time;
+
+#[cfg(test)]
+mod test_utils;
 
 #[derive(Clone, Debug)]
 pub struct SimulationContext {
@@ -27,6 +32,12 @@ pub struct SimulationContext {
 
 pub trait Module: Send {
     fn init(&mut self);
+    /// Reset retained runtime state without repeating one-time output initialization.
+    fn reset(&mut self, _context: &SimulationContext) {
+        // Existing modules historically used `init` for both lifecycle events.
+        // They retain that behavior unless they provide a distinct reset hook.
+        self.init();
+    }
     fn update(&mut self, context: &SimulationContext);
 }
 
@@ -91,8 +102,8 @@ mod tests {
             sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
             sim.connect(&rw_command, &mut reaction_wheel.command_in);
             spacecraft.add_state_effector(reaction_wheel);
-            sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 0);
-            sim.add_module("imu", &mut imu, 5_000_000, 10);
+            sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 10);
+            sim.add_module("imu", &mut imu, 5_000_000, 0);
             sim.run_for(0);
             sim.module_names()
         };

@@ -29,10 +29,10 @@ fn main() {
     let enable_recording = std::env::var_os("ENABLE_RECORDING").is_some();
     let show_progress = std::env::var_os("SHOW_PROGRESS").is_some();
     let profile_sim = std::env::var_os("PROFILE_SIM").is_some();
-    const PRIORITY_ENVIRONMENT: i32 = 0;
-    const PRIORITY_SENSORS: i32 = 10;
-    const PRIORITY_ACTUATORS: i32 = 20;
-    const PRIORITY_RECORDERS: i32 = 30;
+    const PRIORITY_ENVIRONMENT: i32 = 30;
+    const PRIORITY_SENSORS: i32 = 20;
+    const PRIORITY_ACTUATORS: i32 = 10;
+    const PRIORITY_RECORDERS: i32 = 0;
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let output_dir = repo_root.join("examples/output/full_satellite_stack");
     if enable_recording && output_dir.exists() {

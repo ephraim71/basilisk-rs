@@ -7,7 +7,10 @@ use basilisk_rs::fsw_algorithms::css_wls_est::{CssWlsEst, CssWlsEstConfig};
 use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw_algorithms::sun_safe_point::{SunSafePoint, SunSafePointConfig};
-use basilisk_rs::messages::{Output, SunEphemerisMsg};
+use basilisk_rs::messages::{
+    ArrayMotorTorqueMsg, Input, Output, ReactionWheelCommandMsg, RwArrayConfigMsg, SunEphemerisMsg,
+    VehicleConfigMsg,
+};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
@@ -51,6 +54,38 @@ impl Module for ConstantSunEphemeris {
     }
 }
 
+struct RwCommandAdapter {
+    input_msg: Input<ArrayMotorTorqueMsg>,
+    output_msg: Output<ReactionWheelCommandMsg>,
+    wheel_index: usize,
+}
+
+impl RwCommandAdapter {
+    fn new(wheel_index: usize) -> Self {
+        Self {
+            input_msg: Input::default(),
+            output_msg: Output::default(),
+            wheel_index,
+        }
+    }
+
+    fn write_current_command(&self) {
+        self.output_msg.write(ReactionWheelCommandMsg {
+            motor_torque_nm: self.input_msg.read().motor_torque_nm[self.wheel_index],
+        });
+    }
+}
+
+impl Module for RwCommandAdapter {
+    fn init(&mut self) {
+        self.output_msg.write(ReactionWheelCommandMsg::default());
+    }
+
+    fn update(&mut self, _context: &SimulationContext) {
+        self.write_current_command();
+    }
+}
+
 fn main() {
     let show_progress = std::env::var_os("SHOW_PROGRESS").is_some();
     let profile_sim = std::env::var_os("PROFILE_SIM").is_some();
@@ -82,8 +117,16 @@ fn main() {
     let mut rw_allocator = RwMotorTorque::new(RwMotorTorqueConfig {
         name: "rwMotorTorque".to_string(),
         control_axes_body: wheel_axes.to_vec(),
-        wheel_spin_axes_body: wheel_axes.to_vec(),
     });
+    let mut rw_array_config = RwArrayConfigMsg {
+        num_rw: wheel_axes.len(),
+        ..Default::default()
+    };
+    rw_array_config.spin_axes_body[..wheel_axes.len()].copy_from_slice(&wheel_axes);
+    rw_array_config.spin_axis_inertias_kg_m2[..wheel_axes.len()].fill(0.002);
+    rw_array_config.max_motor_torques_nm[..wheel_axes.len()].fill(0.1);
+    let rw_array_config_output = Output::new(rw_array_config);
+    sim.connect(&rw_array_config_output, &mut rw_allocator.rw_params_in_msg);
 
     let mut rw_x_config = ReactionWheelStateEffectorConfig::balanced(
         "rw_x",
@@ -105,14 +148,18 @@ fn main() {
     rw_y_config.js_kg_m2 = 0.002;
     rw_y_config.max_speed_radps = 500.0;
     let mut rw_y = ReactionWheelStateEffector::new(rw_y_config);
+    let mut rw_x_command_adapter = RwCommandAdapter::new(0);
+    let mut rw_y_command_adapter = RwCommandAdapter::new(1);
     sim.connect(
-        &rw_allocator.rw_motor_torque_out_msgs[0],
-        &mut rw_x.command_in,
+        &rw_allocator.rw_motor_torque_out_msg,
+        &mut rw_x_command_adapter.input_msg,
     );
     sim.connect(
-        &rw_allocator.rw_motor_torque_out_msgs[1],
-        &mut rw_y.command_in,
+        &rw_allocator.rw_motor_torque_out_msg,
+        &mut rw_y_command_adapter.input_msg,
     );
+    sim.connect(&rw_x_command_adapter.output_msg, &mut rw_x.command_in);
+    sim.connect(&rw_y_command_adapter.output_msg, &mut rw_y.command_in);
     spacecraft.add_state_effector(rw_x);
     spacecraft.add_state_effector(rw_y);
 
@@ -155,7 +202,6 @@ fn main() {
     });
     let mut mrp_feedback = MrpFeedback::new(MrpFeedbackConfig {
         name: "mrpFeedback".to_string(),
-        inertia_kg_m2: Matrix3::new(0.16, 0.0, 0.0, 0.0, 0.18, 0.0, 0.0, 0.0, 0.22),
         k: 0.08,
         ki: -1.0,
         p: 0.8,
@@ -163,6 +209,12 @@ fn main() {
         known_torque_body_nm: Vector3::zeros(),
         control_law_type: 0,
     });
+    let vehicle_config_output = Output::new(VehicleConfigMsg {
+        inertia_about_point_b_kg_m2: Matrix3::new(0.16, 0.0, 0.0, 0.0, 0.18, 0.0, 0.0, 0.0, 0.22),
+        mass_kg: 12.0,
+        ..Default::default()
+    });
+    sim.connect(&vehicle_config_output, &mut mrp_feedback.veh_config_in_msg);
 
     let mut spacecraft_recorder = csv_recorder("spacecraft_state", &output_dir);
     let mut imu_recorder = csv_recorder("imu", &output_dir);
@@ -253,22 +305,23 @@ fn main() {
         &mut body_torque_recorder.input_msg,
     );
     sim.connect(
-        &rw_allocator.rw_motor_torque_out_msgs[0],
+        &rw_x_command_adapter.output_msg,
         &mut rw_x_cmd_recorder.input_msg,
     );
     sim.connect(
-        &rw_allocator.rw_motor_torque_out_msgs[1],
+        &rw_y_command_adapter.output_msg,
         &mut rw_y_cmd_recorder.input_msg,
     );
 
-    const PRIORITY_ENV: i32 = 0;
-    const PRIORITY_DYNAMICS: i32 = 10;
-    const PRIORITY_SENSORS: i32 = 20;
-    const PRIORITY_ESTIMATION: i32 = 30;
-    const PRIORITY_GUIDANCE: i32 = 40;
-    const PRIORITY_CONTROL: i32 = 50;
-    const PRIORITY_ALLOCATION: i32 = 60;
-    const PRIORITY_RECORD: i32 = 70;
+    const PRIORITY_ENV: i32 = 70;
+    const PRIORITY_DYNAMICS: i32 = 60;
+    const PRIORITY_SENSORS: i32 = 50;
+    const PRIORITY_ESTIMATION: i32 = 40;
+    const PRIORITY_GUIDANCE: i32 = 30;
+    const PRIORITY_CONTROL: i32 = 20;
+    const PRIORITY_ALLOCATION: i32 = 10;
+    const PRIORITY_ADAPTER: i32 = 5;
+    const PRIORITY_RECORD: i32 = 0;
 
     sim.add_module(
         "sun_ephemeris",
@@ -307,6 +360,18 @@ fn main() {
         &mut rw_allocator,
         STEP_NANOS,
         PRIORITY_ALLOCATION,
+    );
+    sim.add_module(
+        "rw_x_command_adapter",
+        &mut rw_x_command_adapter,
+        STEP_NANOS,
+        PRIORITY_ADAPTER,
+    );
+    sim.add_module(
+        "rw_y_command_adapter",
+        &mut rw_y_command_adapter,
+        STEP_NANOS,
+        PRIORITY_ADAPTER,
     );
 
     sim.add_module(

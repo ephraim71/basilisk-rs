@@ -1,3 +1,5 @@
+mod macros;
+
 use hifitime::{Duration, Epoch};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Instant;

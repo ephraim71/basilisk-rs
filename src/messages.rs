@@ -50,7 +50,7 @@ pub use magnetic_field::MagneticFieldMsg;
 pub use mtb_array_command::MtbArrayCommandMsg;
 pub use mtb_array_config::MtbArrayConfigMsg;
 pub use navigation_attitude::NavigationAttitudeMsg;
-pub use planet_state::PlanetStateMsg;
+pub use planet_state::{PlanetOrientation, PlanetStateMsg};
 pub use power_node_usage::PowerNodeUsageMsg;
 pub use power_storage_fault::PowerStorageFaultMsg;
 pub use power_storage_status::PowerStorageStatusMsg;

@@ -8,13 +8,13 @@ use super::{
     mrp::body_to_inertial_dcm_from_sigma_bn,
 };
 use crate::Module;
+use crate::dynamics::gravity::GravBodyData;
 use crate::dynamics::hinged_rigid_body_state_effector::{
     HingedRigidBodyConfig, HingedRigidBodyStateEffector,
 };
 use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
-use crate::environment::gravity::GravBodyData;
 use crate::integrators::propagate_rk4;
 use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
 use crate::simulation::Simulation;
@@ -43,13 +43,17 @@ fn circular_orbit_spacecraft(radius_m: f64) -> Spacecraft {
         initial_omega_radps: Vector3::zeros(),
         integrator: None,
     });
-    sc.add_grav_body(GravBodyData::point_mass(
-        "earth",
-        MU_EARTH_M3PS2,
-        true,
-        Vector3::zeros(),
-        Vector3::zeros(),
-    ));
+    sc.add_grav_body(
+        GravBodyData::point_mass(
+            "earth",
+            MU_EARTH_M3PS2,
+            true,
+            Vector3::zeros(),
+            Vector3::zeros(),
+        )
+        .expect("valid Earth gravity body"),
+    )
+    .expect("unique central gravity body");
     sc
 }
 
@@ -104,9 +108,13 @@ fn keplerian_orbit_conserves_energy() {
     let e_initial = orbital_energy(pos0, vel0);
 
     let mut sc = circular_orbit_spacecraft(radius_m);
+    let diagnostics = sc.diagnostics_out.clone();
+    let diagnostics_initial;
     {
         let mut sim = Simulation::new(start_epoch(), false);
         sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(0);
+        diagnostics_initial = diagnostics.read();
         sim.run_for(DURATION_NANOS);
     }
 
@@ -120,6 +128,27 @@ fn keplerian_orbit_conserves_energy() {
         e_initial,
         e_final,
         rel_err
+    );
+
+    let diagnostics_final = diagnostics.read();
+    let expected_total_energy_j = 100.0 * e_initial;
+    assert!(
+        (diagnostics_initial.orbital_energy_j - expected_total_energy_j).abs()
+            / expected_total_energy_j.abs()
+            < 1.0e-12,
+        "initial diagnostic orbital energy does not match the closed form"
+    );
+    assert!(
+        (diagnostics_final.orbital_energy_j - diagnostics_initial.orbital_energy_j).abs()
+            / diagnostics_initial.orbital_energy_j.abs()
+            < 1.0e-10,
+        "diagnostic orbital total energy was not conserved"
+    );
+    let expected_initial_acceleration = Vector3::new(-MU_EARTH_M3PS2 / radius_m.powi(2), 0.0, 0.0);
+    assert!(
+        (diagnostics_initial.gravity_accel_inertial_mps2 - expected_initial_acceleration).norm()
+            < 1.0e-12,
+        "diagnostic gravity acceleration does not match point-mass truth"
     );
 }
 

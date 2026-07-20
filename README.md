@@ -1,6 +1,6 @@
 # basilisk-rs
 
-[Docs](https://ephraim71.github.io/basilisk-rs/basilisk_rs/index.html) 
+[Docs](https://ephraim71.github.io/basilisk-rs/basilisk_rs/index.html)
 
 THIS LIBRARY IS CURRENTLY IN DEVELOPMENT AND IS NOT MEANT TO BE USED IN PRODUCTION. 
     

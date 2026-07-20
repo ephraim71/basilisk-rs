@@ -49,11 +49,11 @@ use basilisk_rs::Module;
 use basilisk_rs::dynamics::drag_dynamic_effector::{
     DragDynamicEffector, DragDynamicEffectorConfig,
 };
+use basilisk_rs::dynamics::gravity::GravBodyData;
 use basilisk_rs::environment::atmosphere::exponential_atmosphere::{
     ExponentialAtmosphere, ExponentialAtmosphereConfig,
 };
 use basilisk_rs::environment::atmosphere::msis_atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
-use basilisk_rs::environment::gravity::GravBodyData;
 use basilisk_rs::messages::{AtmosphereMsg, Input, Output, SpacecraftStateMsg};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -175,13 +175,18 @@ fn main() {
         integrator: None,
     });
     spacecraft.set_timing_enabled(profile_sim);
-    spacecraft.add_grav_body(GravBodyData::point_mass(
-        "earth",
-        MU_EARTH_M3PS2,
-        true,
-        Vector3::zeros(),
-        Vector3::zeros(),
-    ));
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "earth",
+                MU_EARTH_M3PS2,
+                true,
+                Vector3::zeros(),
+                Vector3::zeros(),
+            )
+            .expect("failed to configure Earth gravity"),
+        )
+        .expect("failed to add Earth gravity body");
 
     // --- Atmosphere model (exponential or MSIS) --------------------------------
     let mut atmosphere: Box<dyn AtmosphereModule> = match model {

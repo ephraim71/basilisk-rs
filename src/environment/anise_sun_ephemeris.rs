@@ -78,9 +78,7 @@ impl Module for AniseSunEphemeris {
                 sun_state.velocity_km_s.y * 1.0e3,
                 sun_state.velocity_km_s.z * 1.0e3,
             ),
-            has_orientation: false,
-            inertial_to_fixed: nalgebra::Matrix3::zeros(),
-            inertial_to_fixed_dot: nalgebra::Matrix3::zeros(),
+            orientation: None,
         });
         if let Some(started) = phase_started {
             self.timing_stats.write_planet_msg_nanos += started.elapsed().as_nanos();

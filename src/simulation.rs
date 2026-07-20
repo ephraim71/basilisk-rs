@@ -96,6 +96,11 @@ impl<'a> Simulation<'a> {
         self.initialized = true;
     }
 
+    /// Runs every module update scheduled at or before the requested stop time.
+    ///
+    /// As in AVS Basilisk, a stop time between task ticks does not cause an
+    /// unscheduled partial update; the simulation time remains at the most
+    /// recent executed task tick.
     pub fn run_for(&mut self, duration_nanos: u64) {
         self.initialize();
 
@@ -114,30 +119,25 @@ impl<'a> Simulation<'a> {
             progress_bar
         });
 
-        while self.current_sim_nanos <= stop_nanos {
+        loop {
             let context = self.context();
             let current = self.current_sim_nanos;
             // Basilisk executes a task only at its scheduled tick; stopping
             // between task ticks does not synthesize a partial final update.
-            let should_fire = move |s: &&mut ScheduledModule| s.next_run_nanos == current;
 
             for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) {
-                group.iter_mut().filter(should_fire).for_each(|scheduled| {
-                    let started_at = Instant::now();
-                    scheduled.module.update(&context);
-                    if self.collect_timings {
-                        scheduled.total_update_nanos += started_at.elapsed().as_nanos();
-                    }
-                    scheduled.num_updates += 1;
-                    scheduled.next_run_nanos += scheduled.period_nanos;
-                });
-            }
-
-            if self.current_sim_nanos == stop_nanos {
-                if let Some(progress_bar) = &progress_bar {
-                    progress_bar.set_position(duration_nanos);
-                }
-                break;
+                group
+                    .iter_mut()
+                    .filter(|scheduled| scheduled.next_run_nanos == current)
+                    .for_each(|scheduled| {
+                        let started_at = Instant::now();
+                        scheduled.module.update(&context);
+                        if self.collect_timings {
+                            scheduled.total_update_nanos += started_at.elapsed().as_nanos();
+                        }
+                        scheduled.num_updates += 1;
+                        scheduled.next_run_nanos += scheduled.period_nanos;
+                    });
             }
 
             let next_nanos = self
@@ -146,12 +146,17 @@ impl<'a> Simulation<'a> {
                 .map(|scheduled| scheduled.next_run_nanos)
                 .min()
                 .expect("simulation has no modules");
-            if let Some(progress_bar) = &progress_bar {
-                progress_bar.set_position(next_nanos.min(stop_nanos) - start_nanos);
+            if next_nanos > stop_nanos {
+                if let Some(progress_bar) = &progress_bar {
+                    progress_bar.set_position(duration_nanos);
+                }
+                break;
             }
 
-            // Cap to stop_nanos so the final partial step lands exactly at the target time.
-            self.current_sim_nanos = next_nanos.min(stop_nanos);
+            if let Some(progress_bar) = &progress_bar {
+                progress_bar.set_position(next_nanos - start_nanos);
+            }
+            self.current_sim_nanos = next_nanos;
         }
 
         if let Some(progress_bar) = progress_bar {
@@ -253,6 +258,19 @@ mod tests {
         observed: u32,
     }
 
+    #[derive(Default)]
+    struct UpdateTimes {
+        times_nanos: Vec<u64>,
+    }
+
+    impl Module for UpdateTimes {
+        fn init(&mut self) {}
+
+        fn update(&mut self, context: &SimulationContext) {
+            self.times_nanos.push(context.current_sim_nanos);
+        }
+    }
+
     impl Module for Consumer {
         fn init(&mut self) {}
 
@@ -323,5 +341,18 @@ mod tests {
         drop(simulation);
 
         assert_eq!(consumer.observed, 1);
+    }
+
+    #[test]
+    fn stop_between_task_ticks_does_not_execute_a_partial_update() {
+        let mut updates = UpdateTimes::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.add_module("updates", &mut updates, 10_000_000_000, 0);
+        simulation.run_for(25_000_000_000);
+
+        assert_eq!(simulation.current_sim_nanos(), 20_000_000_000);
+        drop(simulation);
+        assert_eq!(updates.times_nanos, vec![0, 10_000_000_000, 20_000_000_000]);
     }
 }

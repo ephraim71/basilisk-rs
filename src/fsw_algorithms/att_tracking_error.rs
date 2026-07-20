@@ -118,7 +118,8 @@ mod tests {
         simulation.add_module("attTrackingError", &mut module, 500_000_000, 0);
         simulation.add_module("recorder", &mut recorder, 500_000_000, 0);
         simulation.run_for(300_000_000);
-        simulation.run_for(300_000_000);
+        assert_eq!(simulation.current_sim_nanos(), 0);
+        simulation.run_for(600_000_000);
         drop(simulation);
 
         assert_eq!(recorder.samples.len(), 2);

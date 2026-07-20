@@ -4,6 +4,7 @@ use anise::constants::frames::{EARTH_J2000, IAU_EARTH_FRAME, MOON_J2000};
 use basilisk_rs::dynamics::drag_dynamic_effector::{
     DragDynamicEffector, DragDynamicEffectorConfig,
 };
+use basilisk_rs::dynamics::gravity::GravBodyData;
 use basilisk_rs::dynamics::radiation_pressure::{RadiationPressure, RadiationPressureConfig};
 use basilisk_rs::environment::anise_planet_ephemeris::{
     AnisePlanetEphemeris, AnisePlanetEphemerisConfig,
@@ -11,7 +12,6 @@ use basilisk_rs::environment::anise_planet_ephemeris::{
 use basilisk_rs::environment::anise_sun_ephemeris::{AniseSunEphemeris, AniseSunEphemerisConfig};
 use basilisk_rs::environment::atmosphere::msis_atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
 use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
-use basilisk_rs::environment::gravity::GravBodyData;
 use basilisk_rs::environment::igrf_field::{IgrfField, IgrfFieldConfig};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::gps::{Gps, GpsConfig};
@@ -48,40 +48,47 @@ fn main() {
         initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.01, 0.02, 0.015),
-        integrator: None
+        integrator: None,
     });
     spacecraft.set_timing_enabled(profile_sim);
 
-    spacecraft.add_grav_body(
-        GravBodyData::spherical_harmonics_from_file(
-            "earth",
-            "assets/gravity/GGM03S.txt",
-            20,
-            true,
-            Vector3::zeros(),
-            Vector3::zeros(),
+    spacecraft
+        .add_grav_body(
+            GravBodyData::spherical_harmonics_from_file(
+                "earth",
+                "assets/gravity/GGM03S.txt",
+                20,
+                true,
+                Vector3::zeros(),
+                Vector3::zeros(),
+            )
+            .expect("failed to configure Earth gravity"),
         )
-        .with_anise_orientation(
-            repo_root.join("assets/anise/pck11.pca"),
-            &[repo_root.join("assets/anise/earth_latest_high_prec.bpc")],
-            EARTH_J2000,
-            IAU_EARTH_FRAME,
-        ),
-    );
-    spacecraft.add_grav_body(GravBodyData::point_mass(
-        "sun",
-        1.327_124_400_18e20,
-        false,
-        Vector3::zeros(),
-        Vector3::zeros(),
-    ));
-    spacecraft.add_grav_body(GravBodyData::point_mass(
-        "moon",
-        4.904_869_5e12,
-        false,
-        Vector3::zeros(),
-        Vector3::zeros(),
-    ));
+        .expect("failed to add Earth gravity body");
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "sun",
+                1.327_124_400_18e20,
+                false,
+                Vector3::zeros(),
+                Vector3::zeros(),
+            )
+            .expect("failed to configure Sun gravity"),
+        )
+        .expect("failed to add Sun gravity body");
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "moon",
+                4.904_869_5e12,
+                false,
+                Vector3::zeros(),
+                Vector3::zeros(),
+            )
+            .expect("failed to configure Moon gravity"),
+        )
+        .expect("failed to add Moon gravity body");
 
     let mut sun_ephemeris = AniseSunEphemeris::new(AniseSunEphemerisConfig {
         name: "sun_ephemeris".to_string(),
@@ -630,16 +637,6 @@ fn main() {
             "  {:>24}  total_ms={:>10.3}",
             "cache_state_read",
             grav.update_cache_state_read_nanos as f64 * 1.0e-6,
-        );
-        println!(
-            "  {:>24}  total_ms={:>10.3}",
-            "cache_orientation_now",
-            grav.update_cache_orientation_current_nanos as f64 * 1.0e-6,
-        );
-        println!(
-            "  {:>24}  total_ms={:>10.3}",
-            "cache_orientation_prev",
-            grav.update_cache_orientation_previous_nanos as f64 * 1.0e-6,
         );
         println!(
             "  {:>24}  calls={:>6}  total_ms={:>10.3}",

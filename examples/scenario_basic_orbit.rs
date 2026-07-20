@@ -1,277 +1,116 @@
-//! Scenario: Basic Orbit
+//! Basilisk `scenarioBasicOrbit.py` parity case: LEO, point-mass Earth.
 //!
-//! Port of Basilisk's `scenarioBasicOrbit.py`.
-//!
-//! Supports LEO / GTO / GEO orbit cases with point-mass or J2 spherical harmonics gravity,
-//! matching Basilisk's `orbitCase` and `useSphericalHarmonics` parameters.
-//!
-//! Run with:
-//!   cargo run --example scenario_basic_orbit                 # LEO, point-mass
-//!   cargo run --example scenario_basic_orbit -- gto          # GTO, point-mass
-//!   cargo run --example scenario_basic_orbit -- geo          # GEO, point-mass
-//!   cargo run --example scenario_basic_orbit -- leo sh       # LEO, J2 spherical harmonics
-//!   cargo run --example scenario_basic_orbit -- gto sh       # GTO, J2 spherical harmonics
+//! The binary intentionally performs no plotting. It writes the deterministic
+//! simulation result to `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv`.
+
+mod common;
 
 use basilisk_rs::dynamics::gravity::GravBodyData;
-use basilisk_rs::messages::PlanetOrientation;
+use basilisk_rs::messages::{Input, Output, SpacecraftStateMsg};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
+use basilisk_rs::telemetry::{
+    CsvFormat, CsvRecorder, CsvRecorderConfig, TelemetryField, TelemetryMessage,
+};
+use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use common::{MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds, vector_fields};
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
 
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-enum Orbit {
-    /// a = 7 000 km, e = 0.0001, i = 33.3°  (default LEO case)
-    Leo,
-    /// a = 42 000 km, e = 0.00001, i = 0°
-    Geo,
-    /// a = (R_LEO + R_GEO) / 2, e = 1 − R_LEO/a, i = 0°
-    Gto,
+const SPACECRAFT_PERIOD_NANOS: u64 = seconds(10);
+const SAMPLE_PERIOD_NANOS: u64 = seconds(40);
+
+#[derive(Clone, Debug, Default)]
+struct BasicOrbitTelemetry {
+    state: SpacecraftStateMsg,
 }
 
-const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
-const R_LEO_M: f64 = 7_000_000.0;
-const R_GEO_M: f64 = 42_000_000.0;
+impl TelemetryMessage for BasicOrbitTelemetry {
+    fn flatten(&self) -> Vec<TelemetryField> {
+        let mut fields = vector_fields("r_BN_N_m", self.state.position_m);
+        fields.extend(vector_fields("v_BN_N_m_per_s", self.state.velocity_mps));
+        fields
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct BasicOrbitCollector {
+    state_in_msg: Input<SpacecraftStateMsg>,
+    telemetry_out_msg: Output<BasicOrbitTelemetry>,
+}
+
+impl Module for BasicOrbitCollector {
+    fn init(&mut self) {
+        self.telemetry_out_msg.write(BasicOrbitTelemetry::default());
+    }
+
+    fn update(&mut self, _context: &SimulationContext) {
+        self.telemetry_out_msg.write(BasicOrbitTelemetry {
+            state: self.state_in_msg.read(),
+        });
+    }
+}
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let orbit_case = args
-        .iter()
-        .find_map(|a| match a.to_lowercase().as_str() {
-            "geo" => Some(Orbit::Geo),
-            "gto" => Some(Orbit::Gto),
-            _ => None,
-        })
-        .unwrap_or(Orbit::Leo);
-    let use_sh = args.iter().any(|a| a.eq_ignore_ascii_case("sh"));
-
-    let deg = std::f64::consts::PI / 180.0;
-
-    // Common orbital angles — identical for all orbit cases (matches Basilisk)
-    let raan = 48.2 * deg;
-    let aop = 347.8 * deg;
-    let ta0 = 85.3 * deg;
-
-    let (a, e, inc) = match orbit_case {
-        Orbit::Leo => (R_LEO_M, 0.0001, 33.3 * deg),
-        Orbit::Geo => (R_GEO_M, 0.00001, 0.0_f64),
-        Orbit::Gto => {
-            let a = (R_LEO_M + R_GEO_M) / 2.0;
-            let e = 1.0 - R_LEO_M / a;
-            (a, e, 0.0_f64)
-        }
-    };
-
-    let (r0, v0) = elem2rv(MU_EARTH_M3PS2, a, e, inc, raan, aop, ta0);
-    let n = (MU_EARTH_M3PS2 / a.powi(3)).sqrt();
-    let period = 2.0 * std::f64::consts::PI / n;
-
-    let step_nanos: u64 = 10_000_000_000; // 10 s — matches Basilisk simulationTimeStep
-    let num_orbits = if use_sh { 3.0 } else { 0.75 };
-    let duration_nanos = (num_orbits * period * 1e9) as u64;
-    let requested_t_sim = duration_nanos as f64 * 1e-9;
-
-    let gravity_label = if use_sh {
-        "J2 spherical harmonics (GGM03S deg-2)"
-    } else {
-        "point-mass"
-    };
-    println!("=== scenario_basic_orbit ===");
-    println!("Orbit:   {:?}  gravity: {}", orbit_case, gravity_label);
-    println!(
-        "         a = {:.1} km  e = {:.5}  i = {:.1}°",
-        a / 1e3,
-        e,
-        inc / deg
+    let degrees = std::f64::consts::PI / 180.0;
+    let semimajor_axis_m = 7_000_000.0;
+    let eccentricity = 0.0001;
+    let (initial_position_m, initial_velocity_mps) = elem2rv(
+        MU_EARTH_M3PS2,
+        semimajor_axis_m,
+        eccentricity,
+        33.3 * degrees,
+        48.2 * degrees,
+        347.8 * degrees,
+        85.3 * degrees,
     );
-    println!(
-        "         Ω = {:.1}°  ω = {:.1}°  f₀ = {:.1}°",
-        48.2, 347.8, 85.3
-    );
-    println!(
-        "Period:  {:.2} s  ({:.4} orbits requested)",
-        period,
-        requested_t_sim / period
-    );
-    println!("Steps:   {} × 10 s", duration_nanos / step_nanos);
-    println!();
-    println!("  t [s]      |r| [km]    r_x [km]    r_y [km]    r_z [km]");
-    println!("{}", "-".repeat(65));
-
-    println!(
-        "{:10.1}   {:9.3}   {:10.3}   {:10.3}   {:10.3}",
-        0.0,
-        r0.norm() / 1e3,
-        r0.x / 1e3,
-        r0.y / 1e3,
-        r0.z / 1e3,
-    );
+    let orbit_period_s =
+        2.0 * std::f64::consts::PI * (semimajor_axis_m.powi(3) / MU_EARTH_M3PS2).sqrt();
+    let duration_nanos = (0.75 * orbit_period_s * 1.0e9) as u64;
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 100.0,
         hub_center_of_mass_body_m: Vector3::zeros(),
         inertia_kg_m2: Matrix3::identity(),
-        integration_step_nanos: step_nanos,
-        initial_position_m: r0,
-        initial_velocity_mps: v0,
+        integration_step_nanos: SPACECRAFT_PERIOD_NANOS,
+        initial_position_m,
+        initial_velocity_mps,
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
         integrator: None,
     });
-
-    if use_sh {
-        spacecraft
-            .add_grav_body(
-                GravBodyData::spherical_harmonics_from_file(
-                    "earth",
-                    "assets/gravity/GGM03S.txt",
-                    2, // J2 only — degree 2, matches Basilisk useSphericalHarmonicsGravityModel(..., 2)
-                    true,
-                    Vector3::zeros(),
-                    Vector3::zeros(),
-                )
-                .expect("failed to configure Earth gravity")
-                // J2 is axisymmetric, so an explicit identity frame is sufficient here.
-                .with_static_orientation(PlanetOrientation::identity()),
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "earth",
+                MU_EARTH_M3PS2,
+                true,
+                Vector3::zeros(),
+                Vector3::zeros(),
             )
-            .expect("failed to add Earth gravity body");
-    } else {
-        spacecraft
-            .add_grav_body(
-                GravBodyData::point_mass(
-                    "earth",
-                    MU_EARTH_M3PS2,
-                    true,
-                    Vector3::zeros(),
-                    Vector3::zeros(),
-                )
-                .expect("failed to configure Earth gravity"),
-            )
-            .expect("failed to add Earth gravity body");
-    }
+            .expect("valid point-mass Earth"),
+        )
+        .expect("unique central gravity body");
 
-    let final_sim_nanos = {
-        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
-        let mut sim = Simulation::new(epoch, false);
-        sim.add_module("spacecraft", &mut spacecraft, step_nanos, 0);
-        sim.run_for(duration_nanos);
-        sim.current_sim_nanos()
-    };
-    let t_sim = final_sim_nanos as f64 * 1.0e-9;
+    let mut collector = BasicOrbitCollector::default();
+    let output_path = scenario_output_path("scenarioBasicOrbitLEO0Earth.csv");
+    let mut recorder = CsvRecorder::new(CsvRecorderConfig {
+        topic: "scenarioBasicOrbitLEO0Earth".to_string(),
+        output_path: output_path.clone(),
+    })
+    .with_format(CsvFormat::BasiliskReference);
 
-    let r_sim = spacecraft.state_out.read().position_m;
-    let v_sim = spacecraft.state_out.read().velocity_mps;
-
-    println!(
-        "{:10.1}   {:9.3}   {:10.3}   {:10.3}   {:10.3}",
-        t_sim,
-        r_sim.norm() / 1e3,
-        r_sim.x / 1e3,
-        r_sim.y / 1e3,
-        r_sim.z / 1e3,
+    let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
+    connect!(&simulation,
+        &spacecraft.state_out => &mut collector.state_in_msg,
+        &collector.telemetry_out_msg => &mut recorder.input_msg,
     );
-
-    println!();
-
-    if use_sh {
-        // Basilisk SH case: track semi-major axis deviation over 3 orbits.
-        // J2 causes RAAN/AoP precession but SMA should stay approximately constant.
-        let a_final = sma_from_rv(MU_EARTH_M3PS2, r_sim, v_sim);
-        println!("Initial SMA: {:.3} km", a / 1e3);
-        println!(
-            "Final SMA:   {:.3} km  (Δa = {:.3} km)",
-            a_final / 1e3,
-            (a_final - a) / 1e3
-        );
-    } else {
-        // Basilisk point-mass case: position deviation from analytical Keplerian solution.
-        let r_kep = kepler_position(MU_EARTH_M3PS2, a, e, inc, raan, aop, ta0, t_sim);
-        let final_diff = (r_sim - r_kep).norm();
-        println!(
-            "finalDiff = {:.4e} m  (Basilisk reference: < 1 m)",
-            final_diff
-        );
-        assert!(
-            final_diff < 1.0,
-            "trajectory deviated from Keplerian: finalDiff = {:.3e} m",
-            final_diff
-        );
+    schedule! { simulation,
+        "spacecraft" => &mut spacecraft, SPACECRAFT_PERIOD_NANOS, 20;
+        "collector" => &mut collector, SAMPLE_PERIOD_NANOS, 10;
+        "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
     }
-}
+    simulation.run_for(duration_nanos);
 
-// --- Orbital mechanics helpers -----------------------------------------------
-
-/// Classical orbital elements → inertial position and velocity.
-/// Matches Basilisk `orbitalMotion.elem2rv`.
-fn elem2rv(
-    mu: f64,
-    a: f64,
-    e: f64,
-    inc: f64,
-    raan: f64,
-    aop: f64,
-    ta: f64,
-) -> (Vector3<f64>, Vector3<f64>) {
-    let p = a * (1.0 - e * e);
-    let r_mag = p / (1.0 + e * ta.cos());
-
-    let (si, ci) = inc.sin_cos();
-    let (sr, cr) = raan.sin_cos();
-    let (sw, cw) = aop.sin_cos();
-    let p_hat = Vector3::new(cr * cw - sr * sw * ci, sr * cw + cr * sw * ci, sw * si);
-    let q_hat = Vector3::new(-cr * sw - sr * cw * ci, -sr * sw + cr * cw * ci, cw * si);
-
-    let (sf, cf) = ta.sin_cos();
-    let r = r_mag * (cf * p_hat + sf * q_hat);
-    let v = (mu / p).sqrt() * (-sf * p_hat + (e + cf) * q_hat);
-    (r, v)
-}
-
-/// Semi-major axis from inertial position and velocity (vis-viva).
-fn sma_from_rv(mu: f64, r: Vector3<f64>, v: Vector3<f64>) -> f64 {
-    let energy = v.norm_squared() / 2.0 - mu / r.norm();
-    -mu / (2.0 * energy)
-}
-
-fn f_to_e(f: f64, e: f64) -> f64 {
-    f64::atan2((1.0 - e * e).sqrt() * f.sin(), f.cos() + e)
-}
-
-fn e_to_f(ee: f64, e: f64) -> f64 {
-    f64::atan2((1.0 - e * e).sqrt() * ee.sin(), ee.cos() - e)
-}
-
-fn solve_kepler(m: f64, e: f64) -> f64 {
-    let two_pi = 2.0 * std::f64::consts::PI;
-    let m = ((m % two_pi) + two_pi) % two_pi;
-    let mut ee = m;
-    for _ in 0..50 {
-        let delta = (m - ee + e * ee.sin()) / (1.0 - e * ee.cos());
-        ee += delta;
-        if delta.abs() < 1e-14 {
-            break;
-        }
-    }
-    ee
-}
-
-/// Analytical Keplerian position at elapsed time t_sec.
-fn kepler_position(
-    mu: f64,
-    a: f64,
-    e: f64,
-    inc: f64,
-    raan: f64,
-    aop: f64,
-    ta0: f64,
-    t_sec: f64,
-) -> Vector3<f64> {
-    let n = (mu / a.powi(3)).sqrt();
-    let e0 = f_to_e(ta0, e);
-    let m0 = e0 - e * e0.sin();
-    let m = m0 + n * t_sec;
-    let et = solve_kepler(m, e);
-    let ta = e_to_f(et, e);
-    elem2rv(mu, a, e, inc, raan, aop, ta).0
+    println!("wrote {}", output_path.display());
 }

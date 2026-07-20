@@ -4,3 +4,5 @@ pub mod atmosphere;
 pub mod eclipse;
 pub mod igrf_field;
 pub mod solar_flux;
+mod wmm_coefficients;
+pub mod wmm_field;

@@ -19,6 +19,9 @@ pub struct MsisAtmosphereConfig {
     pub additional_kernel_paths: Vec<PathBuf>,
     pub inertial_frame: Frame,
     pub fixed_frame: Frame,
+    /// Geomagnetic activity inputs. Basilisk's default NRLMSISE switch-9 mode
+    /// consumes the daily scalar in slot 0; the history slots are retained for
+    /// message/configuration parity but are not used in that mode.
     pub ap_array: [f64; 7],
     pub f107_daily: f64,
     pub f107_average: f64,
@@ -132,7 +135,8 @@ impl MsisAtmosphere {
         };
 
         let phase_started = self.timing_enabled.then(Instant::now);
-        let (latitude_rad, longitude_rad, altitude_m) = ecef_to_geodetic(relative_position_fixed_m);
+        let (latitude_rad, longitude_rad, altitude_m) =
+            ecef_to_spherical_lla(relative_position_fixed_m);
         if let Some(started) = phase_started {
             self.timing_stats.geodetic_nanos += started.elapsed().as_nanos();
         }
@@ -151,7 +155,10 @@ impl MsisAtmosphere {
             self.config.f107_daily,
             self.config.f107_average,
             self.config.ap_array[0],
-            Some(self.config.ap_array),
+            // Basilisk's MsisAtmosphere keeps NRLMSISE switch 9 at +1, so the
+            // daily scalar Ap value is used even though the history structure
+            // is populated from its space-weather messages.
+            None,
         );
         if let Some(started) = phase_started {
             self.timing_stats.msis_eval_nanos += started.elapsed().as_nanos();
@@ -233,37 +240,17 @@ fn seconds_of_day(current_epoch: Epoch) -> f64 {
     hour as f64 * 3600.0 + minute as f64 * 60.0 + second as f64 + nanos as f64 * 1.0e-9
 }
 
-fn ecef_to_geodetic(position_fixed_m: Vector3<f64>) -> (f64, f64, f64) {
-    const WGS84_A_M: f64 = 6_378_137.0;
-    const WGS84_F: f64 = 1.0 / 298.257_223_563;
-    const WGS84_B_M: f64 = WGS84_A_M * (1.0 - WGS84_F);
-    const WGS84_E2: f64 = WGS84_F * (2.0 - WGS84_F);
-    const WGS84_EP2: f64 =
-        (WGS84_A_M * WGS84_A_M - WGS84_B_M * WGS84_B_M) / (WGS84_B_M * WGS84_B_M);
-
+fn ecef_to_spherical_lla(position_fixed_m: Vector3<f64>) -> (f64, f64, f64) {
+    // Upstream calls PCI2LLA with only the equatorial radius. That overload
+    // deliberately treats Earth as a sphere rather than using WGS-84.
+    const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_136.6;
     let x = position_fixed_m.x;
     let y = position_fixed_m.y;
     let z = position_fixed_m.z;
     let longitude_rad = y.atan2(x);
-    let p = (x * x + y * y).sqrt();
-
-    if p < 1.0e-9 {
-        let latitude_rad = if z >= 0.0 {
-            std::f64::consts::FRAC_PI_2
-        } else {
-            -std::f64::consts::FRAC_PI_2
-        };
-        return (latitude_rad, 0.0, z.abs() - WGS84_B_M);
-    }
-
-    let theta = (z * WGS84_A_M).atan2(p * WGS84_B_M);
-    let sin_theta = theta.sin();
-    let cos_theta = theta.cos();
-    let latitude_rad = (z + WGS84_EP2 * WGS84_B_M * sin_theta.powi(3))
-        .atan2(p - WGS84_E2 * WGS84_A_M * cos_theta.powi(3));
-    let sin_lat = latitude_rad.sin();
-    let radius_curvature = WGS84_A_M / (1.0 - WGS84_E2 * sin_lat * sin_lat).sqrt();
-    let altitude_m = p / latitude_rad.cos() - radius_curvature;
+    let cylindrical_radius_m = x.hypot(y);
+    let latitude_rad = z.atan2(cylindrical_radius_m);
+    let altitude_m = position_fixed_m.norm() - EARTH_EQUATORIAL_RADIUS_M;
 
     (latitude_rad, longitude_rad, altitude_m)
 }

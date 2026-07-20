@@ -8,6 +8,7 @@ use super::{
     mrp::body_to_inertial_dcm_from_sigma_bn,
 };
 use crate::Module;
+use crate::dynamics::drag_dynamic_effector::{DragDynamicEffector, DragDynamicEffectorConfig};
 use crate::dynamics::gravity::GravBodyData;
 use crate::dynamics::hinged_rigid_body_state_effector::{
     HingedRigidBodyConfig, HingedRigidBodyStateEffector,
@@ -16,7 +17,9 @@ use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
 use crate::integrators::propagate_rk4;
-use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
+use crate::messages::{
+    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg,
+};
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
 use crate::spacecraft::traits::DynamicEffector;
@@ -63,6 +66,63 @@ fn orbital_angular_momentum(pos: Vector3<f64>, vel: Vector3<f64>) -> Vector3<f64
 
 fn orbital_energy(pos: Vector3<f64>, vel: Vector3<f64>) -> f64 {
     0.5 * vel.norm_squared() - MU_EARTH_M3PS2 / pos.norm()
+}
+
+#[test]
+fn t0_refresh_uses_fresh_dynamic_effector_inputs() {
+    let velocity_mps = Vector3::new(0.0, 2.0, 0.0);
+    let density_kgpm3 = 2.0;
+    let drag_coefficient = 1.5;
+    let projected_area_m2 = 3.0;
+    let expected_force_body_n = Vector3::new(
+        0.0,
+        -0.5 * density_kgpm3 * velocity_mps.norm_squared() * drag_coefficient * projected_area_m2,
+        0.0,
+    );
+
+    let atmosphere = Output::<AtmosphereMsg>::default();
+    let mut drag = DragDynamicEffector::new(DragDynamicEffectorConfig {
+        name: "drag".to_string(),
+        projected_area_m2,
+        drag_coeff: drag_coefficient,
+        com_offset_m: Vector3::zeros(),
+        planet_rotation_rate_radps: Vector3::zeros(),
+    });
+    drag.input_atmosphere_msg.connect(atmosphere.slot());
+
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 1.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::identity(),
+        integration_step_nanos: 1_000_000_000,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: velocity_mps,
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+        integrator: None,
+    });
+    spacecraft.add_dynamic_effector(drag);
+    let diagnostics = spacecraft.diagnostics_out.clone();
+
+    let mut simulation = Simulation::new(start_epoch(), false);
+    simulation.add_module("spacecraft", &mut spacecraft, 1_000_000_000, 0);
+    simulation.initialize();
+    assert_eq!(
+        diagnostics.read().drag_force_body_n,
+        Vector3::zeros(),
+        "initialization should observe the default atmosphere input"
+    );
+
+    atmosphere.write(AtmosphereMsg {
+        neutral_density_kgpm3: density_kgpm3,
+        local_temp_k: 0.0,
+    });
+    simulation.run_for(0);
+    assert_eq!(
+        diagnostics.read().drag_force_body_n,
+        expected_force_body_n,
+        "the t=0 refresh should observe inputs published earlier on the same tick"
+    );
 }
 
 /// Orbital angular momentum must be conserved to 1e-10 relative over 100 s.
@@ -397,8 +457,16 @@ fn fully_coupled_reaction_wheel_matches_reference_trajectory() {
         .omega_radps;
 
     // Reference trajectory from the independent C++ model.
-    let ref_omega = Vector3::new(0.1013573369696111, -0.04537441586853965, 0.09294849613683358);
-    let ref_sigma = Vector3::new(0.012642215452002677, -0.0059225901096826485, 0.01032380305253673);
+    let ref_omega = Vector3::new(
+        0.1013573369696111,
+        -0.04537441586853965,
+        0.09294849613683358,
+    );
+    let ref_sigma = Vector3::new(
+        0.012642215452002677,
+        -0.0059225901096826485,
+        0.01032380305253673,
+    );
     let ref_wheel: f64 = 7.987030732719156;
 
     assert!(

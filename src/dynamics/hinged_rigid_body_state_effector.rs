@@ -463,9 +463,7 @@ mod tests {
         config.inertia_about_panel_com_panel_kg_m2 =
             Matrix3::new(1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0);
         let mut panel = HingedRigidBodyStateEffector::new(config);
-        let motor = Output::new(ArrayMotorTorqueMsg {
-            motor_torque_nm: vec![0.25],
-        });
+        let motor = Output::new(ArrayMotorTorqueMsg::from_active(&[0.25]));
         let reference = Output::new(HingedRigidBodyMsg {
             theta_rad: 0.1,
             theta_dot_radps: 0.2,
@@ -618,9 +616,7 @@ mod tests {
         let panel1_hinge = panel1.hinged_rigid_body_out.clone();
         let panel2 = HingedRigidBodyStateEffector::new(motor_torque_panel_2());
         let panel2_hinge = panel2.hinged_rigid_body_out.clone();
-        let motor = Output::new(ArrayMotorTorqueMsg {
-            motor_torque_nm: vec![2.0],
-        });
+        let motor = Output::new(ArrayMotorTorqueMsg::from_active(&[2.0]));
 
         {
             let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);

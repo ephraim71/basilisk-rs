@@ -10,13 +10,14 @@ mod gps;
 mod hinged_rigid_body;
 mod imu;
 mod magnetic_field;
-mod mtb_command;
+mod mtb_array_command;
+mod mtb_array_config;
 mod planet_state;
 mod power_node_usage;
 mod power_storage_fault;
 mod power_storage_status;
-mod reaction_wheel_command;
 mod reaction_wheel_state;
+mod rw_speed;
 mod solar_flux;
 mod spacecraft_diagnostics;
 mod spacecraft_mass_props;
@@ -39,13 +40,14 @@ pub use gps::GpsMsg;
 pub use hinged_rigid_body::HingedRigidBodyMsg;
 pub use imu::ImuMsg;
 pub use magnetic_field::MagneticFieldMsg;
-pub use mtb_command::MtbCommandMsg;
+pub use mtb_array_command::MtbArrayCommandMsg;
+pub use mtb_array_config::MtbArrayConfigMsg;
 pub use planet_state::PlanetStateMsg;
 pub use power_node_usage::PowerNodeUsageMsg;
 pub use power_storage_fault::PowerStorageFaultMsg;
 pub use power_storage_status::PowerStorageStatusMsg;
-pub use reaction_wheel_command::ReactionWheelCommandMsg;
 pub use reaction_wheel_state::ReactionWheelStateMsg;
+pub use rw_speed::RwSpeedMsg;
 pub use solar_flux::SolarFluxMsg;
 pub use spacecraft_diagnostics::SpacecraftDiagnosticsMsg;
 pub use spacecraft_mass_props::SpacecraftMassPropsMsg;
@@ -57,6 +59,9 @@ pub use sun_sensor::SunSensorMsg;
 pub use tam::TamMsg;
 pub use thruster_command::ThrusterCommandMsg;
 pub use translation_reference::TranslationReferenceMsg;
+
+/// Matches Basilisk's fixed maximum number of configurable effectors.
+pub const MAX_EFF_COUNT: usize = 36;
 
 #[derive(Clone, Debug)]
 pub struct Output<T> {

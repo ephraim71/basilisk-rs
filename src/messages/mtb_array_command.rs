@@ -2,42 +2,39 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 
 use super::MAX_EFF_COUNT;
 
+/// Aggregate magnetic-torque-bar dipole commands.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ArrayMotorTorqueMsg {
-    pub motor_torque_nm: [f64; MAX_EFF_COUNT],
+pub struct MtbArrayCommandMsg {
+    pub dipole_cmds_am2: [f64; MAX_EFF_COUNT],
 }
 
-impl Default for ArrayMotorTorqueMsg {
+impl Default for MtbArrayCommandMsg {
     fn default() -> Self {
         Self {
-            motor_torque_nm: [0.0; MAX_EFF_COUNT],
+            dipole_cmds_am2: [0.0; MAX_EFF_COUNT],
         }
     }
 }
 
-impl ArrayMotorTorqueMsg {
+impl MtbArrayCommandMsg {
     pub fn from_active(values: &[f64]) -> Self {
         assert!(
             values.len() <= MAX_EFF_COUNT,
-            "at most {MAX_EFF_COUNT} motor torques are supported"
+            "at most {MAX_EFF_COUNT} MTB commands are supported"
         );
         let mut message = Self::default();
-        message.motor_torque_nm[..values.len()].copy_from_slice(values);
+        message.dipole_cmds_am2[..values.len()].copy_from_slice(values);
         message
-    }
-
-    pub fn first_torque_nm(&self) -> f64 {
-        self.motor_torque_nm.first().copied().unwrap_or(0.0)
     }
 }
 
-impl TelemetryMessage for ArrayMotorTorqueMsg {
+impl TelemetryMessage for MtbArrayCommandMsg {
     fn flatten(&self) -> Vec<TelemetryField> {
-        self.motor_torque_nm
+        self.dipole_cmds_am2
             .iter()
             .enumerate()
             .map(|(index, value)| TelemetryField {
-                path: format!("motor_torque_nm.{index}"),
+                path: format!("dipole_cmds_am2.{index}"),
                 value: *value,
             })
             .collect()

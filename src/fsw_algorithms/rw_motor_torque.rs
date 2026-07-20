@@ -1,6 +1,6 @@
 use nalgebra::{DMatrix, DVector, Vector3};
 
-use crate::messages::{BodyTorqueCommandMsg, Input, Output, ReactionWheelCommandMsg};
+use crate::messages::{ArrayMotorTorqueMsg, BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -14,15 +14,17 @@ pub struct RwMotorTorqueConfig {
 pub struct RwMotorTorque {
     pub config: RwMotorTorqueConfig,
     pub veh_control_in_msg: Input<BodyTorqueCommandMsg>,
-    pub rw_motor_torque_out_msgs: Vec<Output<ReactionWheelCommandMsg>>,
+    pub rw_motor_torque_out_msg: Output<ArrayMotorTorqueMsg>,
 }
 
 impl RwMotorTorque {
     pub fn new(config: RwMotorTorqueConfig) -> Self {
+        assert!(
+            config.wheel_spin_axes_body.len() <= MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} reaction wheels are supported"
+        );
         Self {
-            rw_motor_torque_out_msgs: (0..config.wheel_spin_axes_body.len())
-                .map(|_| Output::default())
-                .collect(),
+            rw_motor_torque_out_msg: Output::default(),
             config,
             veh_control_in_msg: Input::default(),
         }
@@ -82,21 +84,15 @@ impl RwMotorTorque {
 
 impl Module for RwMotorTorque {
     fn init(&mut self) {
-        for output in &self.rw_motor_torque_out_msgs {
-            output.write(ReactionWheelCommandMsg::default());
-        }
+        self.rw_motor_torque_out_msg
+            .write(ArrayMotorTorqueMsg::default());
     }
 
     fn update(&mut self, _context: &SimulationContext) {
-        for (output, torque) in self
-            .rw_motor_torque_out_msgs
-            .iter()
-            .zip(self.compute_wheel_torques().into_iter())
-        {
-            output.write(ReactionWheelCommandMsg {
-                motor_torque_nm: torque,
-            });
-        }
+        self.rw_motor_torque_out_msg
+            .write(ArrayMotorTorqueMsg::from_active(
+                &self.compute_wheel_torques(),
+            ));
     }
 }
 
@@ -141,9 +137,15 @@ mod tests {
         module.init();
         module.update(&dummy_context());
 
-        let wheel_0 = module.rw_motor_torque_out_msgs[0].read().motor_torque_nm;
-        let wheel_1 = module.rw_motor_torque_out_msgs[1].read().motor_torque_nm;
+        let command = module.rw_motor_torque_out_msg.read();
+        let wheel_0 = command.motor_torque_nm[0];
+        let wheel_1 = command.motor_torque_nm[1];
         assert!((wheel_0 + 0.1).abs() < 1.0e-12);
         assert!((wheel_1 - 0.2).abs() < 1.0e-12);
+        assert!(
+            command.motor_torque_nm[2..]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
     }
 }

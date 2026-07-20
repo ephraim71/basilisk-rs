@@ -1,6 +1,6 @@
 use crate::dynamics::gravity::{GravBodyData, GravityEffector, GravityError};
-use crate::integrators::propagate_rk4;
 use crate::integrators::traits::DynamicObject;
+use crate::integrators::Rk4;
 use crate::messages::{
     Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg, SpacecraftMassPropsMsg,
     SpacecraftStateMsg,
@@ -463,17 +463,20 @@ impl Module for Spacecraft {
                 step_start_nanos,
             )
             .1;
+
         let integrator = self
             .config
             .integrator
-            .unwrap_or(propagate_rk4::<Spacecraft>);
-        let (new_state, gravity_delta_velocity_inertial_mps) = integrator(
+            .clone()
+            .unwrap_or(Box::new(Rk4::default()));
+        let (new_state, gravity_delta_velocity_inertial_mps) = integrator.propagate(
             self,
             &integrated_state,
             step_start_nanos,
             step_start_epoch,
             dt_seconds,
         );
+
         let omega_dot_radps2 = (new_state.omega_radps - integrated_state.omega_radps) / dt_seconds;
 
         self.integrated_state = Some(new_state);
@@ -678,6 +681,58 @@ impl DynamicObject for Spacecraft {
             omega_dot_radps2: omega_dot,
             effector_state_dots,
         }
+    }
+
+    /// Weighted RMS error norm across every integrated scalar (translation,
+    /// attitude, body rate, and each state-effector coordinate). Each component
+    /// is scaled by `atol + rtol * max(|high|, |low|)`, so the mixed units of
+    /// position, velocity, MRP and rate are compared on a relative footing.
+    fn error_norm(
+        &self,
+        high: &IntegratedState,
+        low: &IntegratedState,
+        atol: f64,
+        rtol: f64,
+    ) -> Option<f64> {
+        let mut sum_of_squares = 0.0;
+        let mut count = 0usize;
+        let mut accumulate = |high_component: f64, low_component: f64| {
+            let scale = atol + rtol * high_component.abs().max(low_component.abs());
+            let scaled_error = (high_component - low_component) / scale;
+            sum_of_squares += scaled_error * scaled_error;
+            count += 1;
+        };
+
+        for axis in 0..3 {
+            accumulate(
+                high.position_wrt_central_body_m[axis],
+                low.position_wrt_central_body_m[axis],
+            );
+            accumulate(
+                high.velocity_wrt_central_body_mps[axis],
+                low.velocity_wrt_central_body_mps[axis],
+            );
+            accumulate(high.sigma_bn[axis], low.sigma_bn[axis]);
+            accumulate(high.omega_radps[axis], low.omega_radps[axis]);
+        }
+        for (high_effector, low_effector) in
+            high.effector_states.iter().zip(low.effector_states.iter())
+        {
+            for (high_component, low_component) in high_effector.iter().zip(low_effector.iter()) {
+                accumulate(*high_component, *low_component);
+            }
+        }
+
+        if count == 0 {
+            return Some(0.0);
+        }
+        Some((sum_of_squares / count as f64).sqrt())
+    }
+
+    /// The step output is the gravity-induced velocity change over the step, an
+    /// accumulated quantity, so adaptive sub-steps sum.
+    fn merge_step_outputs(&self, accumulated: Vector3<f64>, next: Vector3<f64>) -> Vector3<f64> {
+        accumulated + next
     }
 
     /// Performs Butcher Normalization

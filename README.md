@@ -1,5 +1,7 @@
 # basilisk-rs
 
+[Docs](https://ephraim71.github.io/basilisk-rs/basilisk_rs/index.html)
+
 THIS LIBRARY IS CURRENTLY IN DEVELOPMENT AND IS NOT MEANT TO BE USED IN PRODUCTION. 
     
 A Rust port of the [Basilisk](https://github.com/AVSLab/basilisk) astrodynamics framework.          

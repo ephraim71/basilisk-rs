@@ -122,6 +122,8 @@ impl<'a> Simulation<'a> {
         loop {
             let context = self.context();
             let current = self.current_sim_nanos;
+            // Basilisk executes a task only at its scheduled tick; stopping
+            // between task ticks does not synthesize a partial final update.
 
             for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) {
                 group
@@ -182,10 +184,18 @@ impl<'a> Simulation<'a> {
     }
 
     pub fn reset(&mut self) {
-        self.initialized = false;
         self.current_sim_nanos = 0;
         for m in &mut self.modules {
             m.next_run_nanos = 0;
+        }
+        if self.initialized {
+            let context = SimulationContext {
+                current_sim_nanos: 0,
+                current_epoch: self.start_epoch,
+            };
+            for scheduled in &mut self.modules {
+                scheduled.module.reset(&context);
+            }
         }
     }
 
@@ -221,12 +231,21 @@ mod tests {
 
     use super::Simulation;
 
+    #[derive(Default)]
+    struct LifecycleProbe {
+        init_count: usize,
+        reset_count: usize,
+        update_count: usize,
+    }
+
     struct Producer {
         output: Output<u32>,
     }
 
     impl Module for Producer {
-        fn init(&mut self) {}
+        fn init(&mut self) {
+            self.output.write(0);
+        }
 
         fn update(&mut self, _context: &SimulationContext) {
             self.output.write(1);
@@ -258,6 +277,36 @@ mod tests {
         fn update(&mut self, _context: &SimulationContext) {
             self.observed = self.input.read();
         }
+    }
+
+    impl Module for LifecycleProbe {
+        fn init(&mut self) {
+            self.init_count += 1;
+        }
+
+        fn reset(&mut self, _context: &SimulationContext) {
+            self.reset_count += 1;
+        }
+
+        fn update(&mut self, _context: &SimulationContext) {
+            self.update_count += 1;
+        }
+    }
+
+    #[test]
+    fn reset_uses_reset_hook_without_repeating_initialization() {
+        let mut probe = LifecycleProbe::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.add_module("probe", &mut probe, 1_000_000_000, 0);
+        simulation.run_for(0);
+        simulation.reset();
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(probe.init_count, 1);
+        assert_eq!(probe.reset_count, 1);
+        assert_eq!(probe.update_count, 2);
     }
 
     #[test]

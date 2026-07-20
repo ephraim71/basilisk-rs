@@ -282,7 +282,7 @@ impl ReactionWheel {
         }
     }
 
-    pub fn pre_integration(&mut self, dt_seconds: f64, requested_torque_nm: f64) {
+    pub fn pre_integration(&mut self, _dt_seconds: f64, requested_torque_nm: f64) {
         self.configure_rw_request(requested_torque_nm);
         self.update_friction_torque();
         self.omega_before_radps = self.omega_radps;

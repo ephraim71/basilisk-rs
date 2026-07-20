@@ -7,7 +7,7 @@ use basilisk_rs::fsw_algorithms::css_wls_est::{CssWlsEst, CssWlsEstConfig};
 use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw_algorithms::sun_safe_point::{SunSafePoint, SunSafePointConfig};
-use basilisk_rs::messages::{Output, SunEphemerisMsg};
+use basilisk_rs::messages::{Output, RwArrayConfigMsg, SunEphemerisMsg, VehicleConfigMsg};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
@@ -83,8 +83,16 @@ fn main() {
     let mut rw_allocator = RwMotorTorque::new(RwMotorTorqueConfig {
         name: "rwMotorTorque".to_string(),
         control_axes_body: wheel_axes.to_vec(),
-        wheel_spin_axes_body: wheel_axes.to_vec(),
     });
+    let mut rw_array_config = RwArrayConfigMsg {
+        num_rw: wheel_axes.len(),
+        ..Default::default()
+    };
+    rw_array_config.spin_axes_body[..wheel_axes.len()].copy_from_slice(&wheel_axes);
+    rw_array_config.spin_axis_inertias_kg_m2[..wheel_axes.len()].fill(0.002);
+    rw_array_config.max_motor_torques_nm[..wheel_axes.len()].fill(0.1);
+    let rw_array_config_output = Output::new(rw_array_config);
+    sim.connect(&rw_array_config_output, &mut rw_allocator.rw_params_in_msg);
 
     let mut rw_x_config = ReactionWheelStateEffectorConfig::balanced(
         "rw_x",
@@ -152,7 +160,6 @@ fn main() {
     });
     let mut mrp_feedback = MrpFeedback::new(MrpFeedbackConfig {
         name: "mrpFeedback".to_string(),
-        inertia_kg_m2: Matrix3::new(0.16, 0.0, 0.0, 0.0, 0.18, 0.0, 0.0, 0.0, 0.22),
         k: 0.08,
         ki: -1.0,
         p: 0.8,
@@ -160,6 +167,12 @@ fn main() {
         known_torque_body_nm: Vector3::zeros(),
         control_law_type: 0,
     });
+    let vehicle_config_output = Output::new(VehicleConfigMsg {
+        inertia_about_point_b_kg_m2: Matrix3::new(0.16, 0.0, 0.0, 0.0, 0.18, 0.0, 0.0, 0.0, 0.22),
+        mass_kg: 12.0,
+        ..Default::default()
+    });
+    sim.connect(&vehicle_config_output, &mut mrp_feedback.veh_config_in_msg);
 
     let mut spacecraft_recorder = csv_recorder("spacecraft_state", &output_dir);
     let mut imu_recorder = csv_recorder("imu", &output_dir);
@@ -300,7 +313,6 @@ fn main() {
         STEP_NANOS,
         PRIORITY_ALLOCATION,
     );
-
     sim.add_module(
         "spacecraft_state_recorder",
         &mut spacecraft_recorder,

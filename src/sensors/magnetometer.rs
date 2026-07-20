@@ -2,11 +2,11 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use nalgebra::{Matrix3, Vector3};
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamMsg};
+use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamSensorMsg};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -35,7 +35,10 @@ impl MagnetometerConfig {
                 return Err(format!("{label} must be finite, got {value}"));
             }
         }
-        for (label, vector) in [("bias_t", self.bias_t), ("walk_bounds_t", self.walk_bounds_t)] {
+        for (label, vector) in [
+            ("bias_t", self.bias_t),
+            ("walk_bounds_t", self.walk_bounds_t),
+        ] {
             if !vector.iter().all(|v| v.is_finite()) {
                 return Err(format!("{label} must be finite, got {vector:?}"));
             }
@@ -64,7 +67,7 @@ pub struct Magnetometer {
     pub config: MagnetometerConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
-    pub output_tam_msg: Output<TamMsg>,
+    pub output_tam_msg: Output<TamSensorMsg>,
     error_state_t: Vector3<f64>,
     rng: StdRng,
 }
@@ -73,7 +76,7 @@ impl Module for Magnetometer {
     fn init(&mut self) {
         // On reset, clear the accumulated Gauss-Markov walk state.
         self.error_state_t = Vector3::zeros();
-        self.output_tam_msg.write(TamMsg::default());
+        self.output_tam_msg.write(TamSensorMsg::default());
     }
 
     fn update(&mut self, _context: &SimulationContext) {
@@ -150,7 +153,7 @@ impl Magnetometer {
     }
 
     fn write_output_message(&mut self, magnetic_field_sensor_t: Vector3<f64>) {
-        self.output_tam_msg.write(TamMsg {
+        self.output_tam_msg.write(TamSensorMsg {
             magnetic_field_sensor_t,
         });
     }
@@ -223,7 +226,10 @@ mod tests {
         // Identity attitude and identity sensor frame: sensed = (field + bias) * scale.
         let sensed = run(Magnetometer::new(config), Vector3::zeros(), field);
         let expected = (field + Vector3::new(1.0e-6, 1.0e-6, 1.0e-5)) * 2.0;
-        assert!((sensed - expected).norm() < 1e-18, "got {sensed:?}, want {expected:?}");
+        assert!(
+            (sensed - expected).norm() < 1e-18,
+            "got {sensed:?}, want {expected:?}"
+        );
     }
 
     #[test]
@@ -241,8 +247,13 @@ mod tests {
             ..Default::default()
         };
         let field_body = state.inertial_to_body().transform_vector(&field);
-        let expected = config.body_to_sensor_quaternion.transform_vector(&field_body);
-        assert!((sensed - expected).norm() < 1e-18, "got {sensed:?}, want {expected:?}");
+        let expected = config
+            .body_to_sensor_quaternion
+            .transform_vector(&field_body);
+        assert!(
+            (sensed - expected).norm() < 1e-18,
+            "got {sensed:?}, want {expected:?}"
+        );
     }
 
     #[test]
@@ -255,7 +266,10 @@ mod tests {
         let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
         // (field)*2 exceeds max on every axis -> clamps to max.
         let sensed = run(Magnetometer::new(config), Vector3::zeros(), field);
-        assert!((sensed - Vector3::repeat(1.0e-5)).norm() < 1e-18, "got {sensed:?}");
+        assert!(
+            (sensed - Vector3::repeat(1.0e-5)).norm() < 1e-18,
+            "got {sensed:?}"
+        );
     }
 
     #[test]
@@ -288,7 +302,10 @@ mod tests {
         }
         let mean = sum / n as f64;
         let sample_std = (sum_sq / n as f64 - mean * mean).sqrt();
-        assert!((sample_std - std).abs() < 0.05 * std, "std {sample_std} vs {std}");
+        assert!(
+            (sample_std - std).abs() < 0.05 * std,
+            "std {sample_std} vs {std}"
+        );
     }
 
     #[test]

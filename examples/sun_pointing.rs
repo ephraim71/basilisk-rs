@@ -7,10 +7,7 @@ use basilisk_rs::fsw_algorithms::css_wls_est::{CssWlsEst, CssWlsEstConfig};
 use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw_algorithms::sun_safe_point::{SunSafePoint, SunSafePointConfig};
-use basilisk_rs::messages::{
-    ArrayMotorTorqueMsg, Input, Output, ReactionWheelCommandMsg, RwArrayConfigMsg, SunEphemerisMsg,
-    VehicleConfigMsg,
-};
+use basilisk_rs::messages::{Output, RwArrayConfigMsg, SunEphemerisMsg, VehicleConfigMsg};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
@@ -54,38 +51,6 @@ impl Module for ConstantSunEphemeris {
     }
 }
 
-struct RwCommandAdapter {
-    input_msg: Input<ArrayMotorTorqueMsg>,
-    output_msg: Output<ReactionWheelCommandMsg>,
-    wheel_index: usize,
-}
-
-impl RwCommandAdapter {
-    fn new(wheel_index: usize) -> Self {
-        Self {
-            input_msg: Input::default(),
-            output_msg: Output::default(),
-            wheel_index,
-        }
-    }
-
-    fn write_current_command(&self) {
-        self.output_msg.write(ReactionWheelCommandMsg {
-            motor_torque_nm: self.input_msg.read().motor_torque_nm[self.wheel_index],
-        });
-    }
-}
-
-impl Module for RwCommandAdapter {
-    fn init(&mut self) {
-        self.output_msg.write(ReactionWheelCommandMsg::default());
-    }
-
-    fn update(&mut self, _context: &SimulationContext) {
-        self.write_current_command();
-    }
-}
-
 fn main() {
     let show_progress = std::env::var_os("SHOW_PROGRESS").is_some();
     let profile_sim = std::env::var_os("PROFILE_SIM").is_some();
@@ -111,6 +76,7 @@ fn main() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.0, 0.0, 0.0),
+        integrator: None
     });
 
     let wheel_axes = [Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0)];
@@ -137,7 +103,6 @@ fn main() {
     );
     rw_x_config.js_kg_m2 = 0.002;
     rw_x_config.max_speed_radps = 500.0;
-    let mut rw_x = ReactionWheelStateEffector::new(rw_x_config);
     let mut rw_y_config = ReactionWheelStateEffectorConfig::balanced(
         "rw_y",
         Vector3::zeros(),
@@ -147,21 +112,14 @@ fn main() {
     );
     rw_y_config.js_kg_m2 = 0.002;
     rw_y_config.max_speed_radps = 500.0;
-    let mut rw_y = ReactionWheelStateEffector::new(rw_y_config);
-    let mut rw_x_command_adapter = RwCommandAdapter::new(0);
-    let mut rw_y_command_adapter = RwCommandAdapter::new(1);
+    let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
+    reaction_wheels.add_reaction_wheel(rw_x_config);
+    reaction_wheels.add_reaction_wheel(rw_y_config);
     sim.connect(
         &rw_allocator.rw_motor_torque_out_msg,
-        &mut rw_x_command_adapter.input_msg,
+        &mut reaction_wheels.rw_motor_cmd_in_msg,
     );
-    sim.connect(
-        &rw_allocator.rw_motor_torque_out_msg,
-        &mut rw_y_command_adapter.input_msg,
-    );
-    sim.connect(&rw_x_command_adapter.output_msg, &mut rw_x.command_in);
-    sim.connect(&rw_y_command_adapter.output_msg, &mut rw_y.command_in);
-    spacecraft.add_state_effector(rw_x);
-    spacecraft.add_state_effector(rw_y);
+    spacecraft.add_state_effector(reaction_wheels);
 
     let mut sun_ephemeris = ConstantSunEphemeris::new(sun_position_inertial_m);
     let mut imu = ImuSensor::new(ImuSensorConfig {
@@ -227,8 +185,7 @@ fn main() {
     let mut sunline_recorder = csv_recorder("sunline", &output_dir);
     let mut guidance_recorder = csv_recorder("guidance", &output_dir);
     let mut body_torque_recorder = csv_recorder("body_torque", &output_dir);
-    let mut rw_x_cmd_recorder = csv_recorder("rw_x_cmd", &output_dir);
-    let mut rw_y_cmd_recorder = csv_recorder("rw_y_cmd", &output_dir);
+    let mut rw_cmd_recorder = csv_recorder("rw_commands", &output_dir);
 
     sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
     for css in [
@@ -305,12 +262,8 @@ fn main() {
         &mut body_torque_recorder.input_msg,
     );
     sim.connect(
-        &rw_x_command_adapter.output_msg,
-        &mut rw_x_cmd_recorder.input_msg,
-    );
-    sim.connect(
-        &rw_y_command_adapter.output_msg,
-        &mut rw_y_cmd_recorder.input_msg,
+        &rw_allocator.rw_motor_torque_out_msg,
+        &mut rw_cmd_recorder.input_msg,
     );
 
     const PRIORITY_ENV: i32 = 70;
@@ -320,7 +273,6 @@ fn main() {
     const PRIORITY_GUIDANCE: i32 = 30;
     const PRIORITY_CONTROL: i32 = 20;
     const PRIORITY_ALLOCATION: i32 = 10;
-    const PRIORITY_ADAPTER: i32 = 5;
     const PRIORITY_RECORD: i32 = 0;
 
     sim.add_module(
@@ -361,19 +313,6 @@ fn main() {
         STEP_NANOS,
         PRIORITY_ALLOCATION,
     );
-    sim.add_module(
-        "rw_x_command_adapter",
-        &mut rw_x_command_adapter,
-        STEP_NANOS,
-        PRIORITY_ADAPTER,
-    );
-    sim.add_module(
-        "rw_y_command_adapter",
-        &mut rw_y_command_adapter,
-        STEP_NANOS,
-        PRIORITY_ADAPTER,
-    );
-
     sim.add_module(
         "spacecraft_state_recorder",
         &mut spacecraft_recorder,
@@ -441,14 +380,8 @@ fn main() {
         PRIORITY_RECORD,
     );
     sim.add_module(
-        "rw_x_cmd_recorder",
-        &mut rw_x_cmd_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "rw_y_cmd_recorder",
-        &mut rw_y_cmd_recorder,
+        "rw_command_recorder",
+        &mut rw_cmd_recorder,
         STEP_NANOS,
         PRIORITY_RECORD,
     );

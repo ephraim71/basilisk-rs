@@ -16,6 +16,18 @@ impl Default for MtbArrayCommandMsg {
     }
 }
 
+impl MtbArrayCommandMsg {
+    pub fn from_active(values: &[f64]) -> Self {
+        assert!(
+            values.len() <= MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} MTB commands are supported"
+        );
+        let mut message = Self::default();
+        message.dipole_cmds_am2[..values.len()].copy_from_slice(values);
+        message
+    }
+}
+
 impl TelemetryMessage for MtbArrayCommandMsg {
     fn flatten(&self) -> Vec<TelemetryField> {
         self.dipole_cmds_am2

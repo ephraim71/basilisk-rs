@@ -13,6 +13,7 @@ pub mod dynamics;
 pub mod environment;
 pub mod fsw_algorithms;
 mod kinematics;
+pub mod integrators;
 pub mod messages;
 pub mod power;
 pub mod sensors;
@@ -54,7 +55,7 @@ mod tests {
         ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
     };
     use crate::environment::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
-    use crate::messages::ReactionWheelCommandMsg;
+    use crate::messages::ArrayMotorTorqueMsg;
     use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -70,6 +71,7 @@ mod tests {
             initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
+            integrator: None,
         });
         spacecraft.add_grav_body(GravBodyData::point_mass(
             "earth",
@@ -79,17 +81,15 @@ mod tests {
             Vector3::zeros(),
         ));
 
-        let mut reaction_wheel =
-            ReactionWheelStateEffector::new(ReactionWheelStateEffectorConfig::balanced(
-                "rw_x",
-                Vector3::new(0.1, 0.0, 0.0),
-                Vector3::new(1.0, 0.0, 0.0),
-                0.02,
-                0.4,
-            ));
-        let rw_command = crate::messages::Output::new(ReactionWheelCommandMsg {
-            motor_torque_nm: 0.001,
-        });
+        let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
+        reaction_wheels.add_reaction_wheel(ReactionWheelStateEffectorConfig::balanced(
+            "rw_x",
+            Vector3::new(0.1, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            0.02,
+            0.4,
+        ));
+        let rw_command = crate::messages::Output::new(ArrayMotorTorqueMsg::from_active(&[0.001]));
         let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu_1".to_string(),
             position_m: Vector3::new(0.0, 0.0, 0.0),
@@ -100,8 +100,8 @@ mod tests {
         let module_names = {
             let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
             sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
-            sim.connect(&rw_command, &mut reaction_wheel.command_in);
-            spacecraft.add_state_effector(reaction_wheel);
+            sim.connect(&rw_command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+            spacecraft.add_state_effector(reaction_wheels);
             sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 10);
             sim.add_module("imu", &mut imu, 5_000_000, 0);
             sim.run_for(0);

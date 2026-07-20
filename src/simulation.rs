@@ -307,4 +307,21 @@ mod tests {
 
         assert_eq!(consumer.observed, 1);
     }
+
+    #[test]
+    fn equal_priorities_retain_insertion_order() {
+        let mut producer = Producer {
+            output: Output::default(),
+        };
+        let mut consumer = Consumer::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.connect(&producer.output, &mut consumer.input);
+        simulation.add_module("producer", &mut producer, 1_000_000_000, 0);
+        simulation.add_module("consumer", &mut consumer, 1_000_000_000, 0);
+        simulation.run_for(0);
+        drop(simulation);
+
+        assert_eq!(consumer.observed, 1);
+    }
 }

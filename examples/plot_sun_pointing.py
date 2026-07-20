@@ -62,8 +62,7 @@ def main() -> None:
     sunline_rows = load_csv(output_dir / "sunline.csv")
     guidance_rows = load_csv(output_dir / "guidance.csv")
     body_torque_rows = load_csv(output_dir / "body_torque.csv")
-    rw_x_rows = load_csv(output_dir / "rw_x_cmd.csv")
-    rw_y_rows = load_csv(output_dir / "rw_y_cmd.csv")
+    rw_rows = load_csv(output_dir / "rw_commands.csv")
 
     times = [row["sim_time_s"] for row in spacecraft_rows]
     pointing_error = [pointing_error_deg(row) for row in spacecraft_rows]
@@ -100,8 +99,8 @@ def main() -> None:
 
     axes[1, 1].plot([row["sim_time_s"] for row in body_torque_rows], [row["torque_request_body_nm.x"] for row in body_torque_rows], label="body torque x")
     axes[1, 1].plot([row["sim_time_s"] for row in body_torque_rows], [row["torque_request_body_nm.y"] for row in body_torque_rows], label="body torque y")
-    axes[1, 1].plot([row["sim_time_s"] for row in rw_x_rows], [row["motor_torque_nm"] for row in rw_x_rows], "--", label="rw x cmd")
-    axes[1, 1].plot([row["sim_time_s"] for row in rw_y_rows], [row["motor_torque_nm"] for row in rw_y_rows], "--", label="rw y cmd")
+    axes[1, 1].plot([row["sim_time_s"] for row in rw_rows], [row["motor_torque_nm.0"] for row in rw_rows], "--", label="rw x cmd")
+    axes[1, 1].plot([row["sim_time_s"] for row in rw_rows], [row["motor_torque_nm.1"] for row in rw_rows], "--", label="rw y cmd")
     axes[1, 1].set_title("Control Torque and Wheel Commands")
     axes[1, 1].set_xlabel("sim time [s]")
     axes[1, 1].set_ylabel("Nm")

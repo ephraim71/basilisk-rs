@@ -1,5 +1,5 @@
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
@@ -31,10 +31,11 @@ pub struct RecorderConfig {
     pub output_path: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Recorder<T> {
     pub config: RecorderConfig,
     pub input_msg: Input<T>,
+    file_handler: Option<BufWriter<File>>,
     message_type: PhantomData<T>,
 }
 
@@ -43,6 +44,7 @@ impl<T> Recorder<T> {
         Self {
             config,
             input_msg: Input::default(),
+            file_handler: None,
             message_type: PhantomData,
         }
     }
@@ -66,13 +68,14 @@ pub enum CsvFormat {
     BasiliskReference,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CsvRecorder<T> {
     pub config: CsvRecorderConfig,
     pub input_msg: Input<T>,
     format: CsvFormat,
     header_paths: Vec<String>,
     header_written: bool,
+    file_handler: Option<BufWriter<File>>,
     message_type: PhantomData<T>,
 }
 
@@ -84,6 +87,7 @@ impl<T> CsvRecorder<T> {
             format: CsvFormat::default(),
             header_paths: Vec::new(),
             header_written: false,
+            file_handler: None,
             message_type: PhantomData,
         }
     }
@@ -104,6 +108,16 @@ where
         if let Some(parent) = self.config.output_path.parent() {
             std::fs::create_dir_all(parent).expect("failed to create telemetry output directory");
         }
+
+        if self.file_handler.is_none() {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.config.output_path)
+                .expect("failed to open telemetry output file");
+
+            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+        }
     }
 
     fn update(&mut self, context: &SimulationContext) {
@@ -113,14 +127,10 @@ where
             fields: self.input_msg.read().flatten(),
         };
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.config.output_path)
-            .expect("failed to open telemetry output file");
-
-        serde_json::to_writer(&mut file, &sample).expect("failed to serialize telemetry sample");
-        writeln!(file).expect("failed to append telemetry newline");
+        if let Some(file_handler) = &mut self.file_handler {
+            serde_json::to_writer(&mut *file_handler, &sample).expect("failed to serialize telemetry sample");
+            writeln!(file_handler).expect("failed to append telemetry newline");
+        }
     }
 }
 
@@ -132,68 +142,73 @@ where
         if let Some(parent) = self.config.output_path.parent() {
             std::fs::create_dir_all(parent).expect("failed to create CSV output directory");
         }
+
+        if self.file_handler.is_none() {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.config.output_path)
+                .expect("failed to open telemetry output file");
+
+            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+        }
     }
 
     fn update(&mut self, context: &SimulationContext) {
         let fields = self.input_msg.read().flatten();
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.config.output_path)
-            .expect("failed to open CSV output file");
-
-        if !self.header_written {
-            self.header_paths = fields.iter().map(|field| field.path.clone()).collect();
+        if let Some(file_handler) = &mut self.file_handler {
+            if !self.header_written {
+                self.header_paths = fields.iter().map(|field| field.path.clone()).collect();
+    
+                match self.format {
+                    CsvFormat::Default => {
+                        write!(file_handler, "sim_time_nanos,sim_time_s")
+                            .expect("failed to write CSV header prefix");
+                    }
+                    CsvFormat::BasiliskReference => {
+                        write!(file_handler, "time_ns").expect("failed to write CSV header prefix");
+                    }
+                }
+                self.header_written = true;
+            }
+            for path in &self.header_paths {
+                write!(&mut *file_handler, ",{path}").expect("failed to write CSV header field");
+            }
+            writeln!(&mut *file_handler).expect("failed to finish CSV row");
 
             match self.format {
                 CsvFormat::Default => {
-                    write!(file, "sim_time_nanos,sim_time_s")
-                        .expect("failed to write CSV header prefix");
+                    write!(
+                        &mut *file_handler,
+                        "{},{:.9}",
+                        context.current_sim_nanos,
+                        context.current_sim_nanos as f64 * 1.0e-9
+                    )
+                    .expect("failed to write CSV timestamp");
                 }
                 CsvFormat::BasiliskReference => {
-                    write!(file, "time_ns").expect("failed to write CSV header prefix");
+                    write!(&mut *file_handler, "{}", context.current_sim_nanos)
+                        .expect("failed to write CSV timestamp");
                 }
             }
             for path in &self.header_paths {
-                write!(file, ",{path}").expect("failed to write CSV header field");
-            }
-            writeln!(file).expect("failed to finish CSV header");
-
-            self.header_written = true;
-        }
-
-        match self.format {
-            CsvFormat::Default => {
-                write!(
-                    file,
-                    "{},{:.9}",
-                    context.current_sim_nanos,
-                    context.current_sim_nanos as f64 * 1.0e-9
-                )
-                .expect("failed to write CSV timestamp");
-            }
-            CsvFormat::BasiliskReference => {
-                write!(file, "{}", context.current_sim_nanos)
-                    .expect("failed to write CSV timestamp");
-            }
-        }
-        for path in &self.header_paths {
-            let value = fields
-                .iter()
-                .find(|field| field.path == *path)
-                .map(|field| field.value)
-                .unwrap_or(0.0);
-            match self.format {
-                CsvFormat::Default => {
-                    write!(file, ",{value:.12}").expect("failed to write CSV field value");
-                }
-                CsvFormat::BasiliskReference => {
-                    write!(file, ",{value:.18e}").expect("failed to write CSV field value");
+                let value = fields
+                    .iter()
+                    .find(|field| field.path == *path)
+                    .map(|field| field.value)
+                    .unwrap_or(0.0);
+                match self.format {
+                    CsvFormat::Default => {
+                        write!(&mut *file_handler, ",{value:.12}").expect("failed to write CSV field value");
+                    }
+                    CsvFormat::BasiliskReference => {
+                        write!(&mut *file_handler, ",{value:.18e}").expect("failed to write CSV field value");
+                    }
                 }
             }
+            writeln!(&mut *file_handler).expect("failed to finish CSV row");
         }
-        writeln!(file).expect("failed to finish CSV row");
     }
 }
 

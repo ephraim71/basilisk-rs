@@ -170,12 +170,12 @@ where
                         write!(file_handler, "time_ns").expect("failed to write CSV header prefix");
                     }
                 }
+                for path in &self.header_paths {
+                    write!(&mut *file_handler, ",{path}").expect("failed to write CSV header field");
+                }
+                writeln!(&mut *file_handler).expect("failed to finish CSV row");
                 self.header_written = true;
             }
-            for path in &self.header_paths {
-                write!(&mut *file_handler, ",{path}").expect("failed to write CSV header field");
-            }
-            writeln!(&mut *file_handler).expect("failed to finish CSV row");
 
             match self.format {
                 CsvFormat::Default => {
@@ -257,6 +257,9 @@ mod tests {
         recorder.input_msg.connect(message_out.slot());
         recorder.init();
         recorder.update(&context());
+        // Drop the recorder so its BufWriter flushes to disk before we read the
+        // file back; a single sample is far below the 1 MiB buffer capacity.
+        drop(recorder);
 
         let csv = std::fs::read_to_string(&output_path).expect("read temporary CSV");
         std::fs::remove_file(output_path).expect("remove temporary CSV");

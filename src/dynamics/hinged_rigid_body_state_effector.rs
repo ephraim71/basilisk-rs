@@ -539,7 +539,7 @@ mod tests {
             initial_velocity_mps: Vector3::zeros(),
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::zeros(),
-            integrator: None
+            integrator: None,
         });
 
         let panel1 = HingedRigidBodyStateEffector::new(motor_torque_panel_1());
@@ -610,7 +610,7 @@ mod tests {
             initial_velocity_mps: Vector3::zeros(),
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::zeros(),
-            integrator: None
+            integrator: None,
         });
         let mut panel1 = HingedRigidBodyStateEffector::new(motor_torque_panel_1());
         let panel1_hinge = panel1.hinged_rigid_body_out.clone();

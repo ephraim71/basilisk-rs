@@ -61,7 +61,10 @@ impl CoarseSunSensorConfig {
             }
         }
         if !self.position_m.iter().all(|v| v.is_finite()) {
-            return Err(format!("position_m must be finite, got {:?}", self.position_m));
+            return Err(format!(
+                "position_m must be finite, got {:?}",
+                self.position_m
+            ));
         }
         if !(0.0..=PI).contains(&self.fov_half_angle_rad) {
             return Err(format!(
@@ -70,7 +73,10 @@ impl CoarseSunSensorConfig {
             ));
         }
         if self.kelly_factor < 0.0 {
-            return Err(format!("kelly_factor must be >= 0, got {}", self.kelly_factor));
+            return Err(format!(
+                "kelly_factor must be >= 0, got {}",
+                self.kelly_factor
+            ));
         }
         if self.k_power <= 0.0 {
             return Err(format!("k_power must be > 0, got {}", self.k_power));

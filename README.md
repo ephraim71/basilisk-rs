@@ -1,23 +1,23 @@
-# basilisk-rs
+# basilisk-rs : A Rust port of Basilisk astrodynamics framework
 
-[Docs](https://ephraim71.github.io/basilisk-rs/basilisk_rs/index.html)
+[Documentation](https://ephraim71.github.io/basilisk-rs/basilisk_rs/index.html)
 
-THIS LIBRARY IS CURRENTLY IN DEVELOPMENT AND IS NOT MEANT TO BE USED IN PRODUCTION. 
+This library is in active development. 
+All existing modules and examples are validated against [Basilisk](https://github.com/avslab/basilisk). 
     
-A Rust port of the [Basilisk](https://github.com/AVSLab/basilisk) astrodynamics framework.          
-The goal is to port both simulation and fsw modules to Rust.              
-Python bindings will be supported in a future version.          
-
 ## Reasons for porting : 
-- Memory safety throughout the full simulation framework, eliminitaing a whole class of bugs. 
+- Memory safety throughout the full simulation and flight software framework, eliminitaing a whole class of bugs. 
 - Rust comes with great error messages. 
 - Small build size (<10MB), making it straightforward to run in the target directly. 
 - Faster run times
 - Faster build times
 - Easily supports multiple recorder backends
+- Use the flight software modules onboard in 
 
 
-## Install Rust
+## How to setup
+
+Install Rust
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -36,14 +36,14 @@ If you want to use the plotting script, install Python and `matplotlib`:
 python3 -m pip install matplotlib
 ```
 
-## Clone
+Clone
 
 ```bash
 git clone git@github.com:ephraim71/basilisk-rs.git
 cd basilisk-rs
 ```
 
-## First-Time Setup
+First-Time Setup
 
 Run this once after cloning to download the required assets:
 
@@ -53,13 +53,13 @@ just fetch-assets
 
 This step requires network access.
 
-## Build
+Build
 
 ```bash
 cargo build --release --example full_satellite_stack
 ```
 
-## Run Example
+Run Example
 
 Run without recorders:
 
@@ -89,12 +89,21 @@ Or point it at a specific output directory:
 python3 examples/plot_full_satellite_stack.py examples/output/full_satellite_stack
 ```
 
-## Profile Simulation
+Profile Simulation
 
 ```bash
 SHOW_PROGRESS=1 PROFILE_SIM=1 cargo run --release --example full_satellite_stack
 ```
 
-## Scheduler Model
+## Future work
 
-Modules with higher numeric priority execute first. Equal-priority modules retain insertion order. There is no Basilisk-style concept of processes or tasks in this library.
+Modules ported
+Examples ported 
+Basilisk style tasks and processes do not exist - all modules are in the same process/task. 
+Python bindings
+More backend recorders
+Vizard support
+
+## Contributing
+This repo is in active development, contributions, reviews and issues are most welcome!  
+

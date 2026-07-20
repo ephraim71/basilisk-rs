@@ -4,6 +4,7 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 pub struct ReactionWheelStateMsg {
     pub omega_radps: f64,
     pub theta_rad: f64,
+    pub applied_motor_torque_nm: f64,
 }
 
 impl TelemetryMessage for ReactionWheelStateMsg {
@@ -16,6 +17,10 @@ impl TelemetryMessage for ReactionWheelStateMsg {
             TelemetryField {
                 path: "theta_rad".to_string(),
                 value: self.theta_rad,
+            },
+            TelemetryField {
+                path: "applied_motor_torque_nm".to_string(),
+                value: self.applied_motor_torque_nm,
             },
         ]
     }

@@ -932,6 +932,7 @@ impl StateEffector for ReactionWheelStateEffector {
             wheel.state_out.write(ReactionWheelStateMsg {
                 omega_radps: wheel.omega_radps,
                 theta_rad: wheel.theta_rad,
+                applied_motor_torque_nm: wheel.u_current_nm,
             });
             speed_message.wheel_speeds_radps[index] = wheel.omega_radps;
             speed_message.wheel_angles_rad[index] = wheel.theta_rad;
@@ -1222,6 +1223,20 @@ mod tests {
         let speed = reaction_wheels.rw_speed_out_msg.read();
         assert_eq!(speed.wheel_speeds_radps[..2], [12.0, -8.0]);
         assert_eq!(speed.wheel_angles_rad[..2], [0.0, 0.2]);
+        assert_eq!(
+            reaction_wheels.wheels()[0]
+                .state_out
+                .read()
+                .applied_motor_torque_nm,
+            0.25
+        );
+        assert_eq!(
+            reaction_wheels.wheels()[1]
+                .state_out
+                .read()
+                .applied_motor_torque_nm,
+            -0.5
+        );
         assert!(
             speed.wheel_speeds_radps[2..]
                 .iter()

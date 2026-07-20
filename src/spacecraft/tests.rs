@@ -230,6 +230,283 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
     );
 }
 
+/// A single fully-coupled imbalanced reaction wheel, offset from the body origin
+/// so the position-coupling terms are exercised. com_offset_m = U_s/mass = 0.002 m.
+fn fully_coupled_reaction_wheel() -> ReactionWheelStateEffector {
+    let mut config = ReactionWheelStateEffectorConfig::jitter_fully_coupled(
+        "rw_fc",
+        Vector3::new(0.1, 0.15, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        -1.0,   // torque limit disabled
+        1000.0, // momentum limit high enough that speed saturation never trips
+        2.0,    // mass_kg
+        0.008,  // jt
+        0.008,  // jg
+        0.002,  // com offset d = U_s/mass = 0.004/2.0
+        8.0e-5, // off-diagonal inertia j13 (dynamic imbalance)
+    );
+    config.js_kg_m2 = 0.01;
+    config.initial_omega_radps = 8.0;
+    let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
+    reaction_wheels.add_reaction_wheel(config);
+    reaction_wheels
+}
+
+fn fully_coupled_reaction_wheel_spacecraft() -> Spacecraft {
+    Spacecraft::new(SpacecraftConfig {
+        mass_kg: 50.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(0.9, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.6),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
+    })
+}
+
+/// The wheel coasts with no motor command, no friction, and no gravity, so the
+/// only internal coupling is the conservative imbalance: total rotational angular
+/// momentum must be conserved.
+#[test]
+fn fully_coupled_reaction_wheel_conserves_total_angular_momentum() {
+    let mut spacecraft = fully_coupled_reaction_wheel_spacecraft();
+    let mut reaction_wheels = fully_coupled_reaction_wheel();
+    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let h_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        spacecraft.add_state_effector(reaction_wheels);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        h_initial = diagnostics
+            .read()
+            .rotational_angular_momentum_inertial_kg_m2ps;
+        sim.run_for(DURATION_NANOS);
+    }
+
+    let h_final = diagnostics
+        .read()
+        .rotational_angular_momentum_inertial_kg_m2ps;
+    let h_norm = h_initial.norm();
+    assert!(h_norm > 0.0, "expected non-zero initial angular momentum");
+
+    for i in 0..3 {
+        let rel_err = (h_final[i] - h_initial[i]).abs() / h_norm;
+        assert!(
+            rel_err < 1e-10,
+            "fully-coupled RW angular momentum component {i} not conserved: \
+             H0={:.6e}  Hf={:.6e}  rel_err={:.2e}",
+            h_initial[i],
+            h_final[i],
+            rel_err
+        );
+    }
+}
+
+/// Cross-validation of the fully-coupled wheel dynamics against an independently
+/// generated reference trajectory (one coasting imbalanced wheel, no gravity, no
+/// motor torque, 1e-4 s RK4 steps for 0.5 s). Conservation laws cannot catch an
+/// error that happens to preserve energy and momentum; a full trajectory match to
+/// a reference does. The reference values below were produced by the original C++
+/// model with identical initial conditions and wheel-frame axes.
+#[test]
+fn fully_coupled_reaction_wheel_matches_reference_trajectory() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 50.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(0.9, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.6),
+        integration_step_nanos: 100_000, // 1e-4 s
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
+    });
+
+    let mut config = ReactionWheelStateEffectorConfig::jitter_fully_coupled(
+        "rw_fc",
+        Vector3::new(0.1, 0.15, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        -1.0,
+        -1.0,
+        2.0,
+        0.008,
+        0.008,
+        0.002,
+        8.0e-5,
+    );
+    // Match the reference wheel frame exactly.
+    config.torque_axis_body = Vector3::new(1.0, 0.0, 0.0);
+    config.gimbal_axis_body = Vector3::new(0.0, 1.0, 0.0);
+    config.js_kg_m2 = 0.01;
+    config.initial_omega_radps = 8.0;
+    let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
+    reaction_wheels.add_reaction_wheel(config);
+
+    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        spacecraft.add_state_effector(reaction_wheels);
+        sim.add_module("spacecraft", &mut spacecraft, 100_000, 0);
+        sim.run_for(500_000_000); // 0.5 s
+    }
+
+    let omega = spacecraft.state_out.read().omega_radps;
+    let sigma = spacecraft.state_out.read().sigma_bn;
+    let wheel_omega = spacecraft.state_effectors[0]
+        .as_any()
+        .downcast_ref::<ReactionWheelStateEffector>()
+        .expect("expected reaction wheel state effector")
+        .wheels()[0]
+        .omega_radps;
+
+    // Reference trajectory from the independent C++ model.
+    let ref_omega = Vector3::new(0.1013573369696111, -0.04537441586853965, 0.09294849613683358);
+    let ref_sigma = Vector3::new(0.012642215452002677, -0.0059225901096826485, 0.01032380305253673);
+    let ref_wheel: f64 = 7.987030732719156;
+
+    assert!(
+        (omega - ref_omega).norm() / ref_omega.norm() < 1e-7,
+        "body rate off reference: got {omega:?}, want {ref_omega:?}"
+    );
+    assert!(
+        (sigma - ref_sigma).norm() / ref_sigma.norm() < 1e-7,
+        "attitude off reference: got {sigma:?}, want {ref_sigma:?}"
+    );
+    assert!(
+        (wheel_omega - ref_wheel).abs() / ref_wheel.abs() < 1e-7,
+        "wheel speed off reference: got {wheel_omega}, want {ref_wheel}"
+    );
+}
+
+/// Same coasting scenario, checking total rotational kinetic energy. Energy is a
+/// stricter check than momentum: it catches sign/term errors in the coupled
+/// mass properties and back-substitution that momentum can be blind to.
+#[test]
+fn fully_coupled_reaction_wheel_conserves_rotational_energy() {
+    let mut spacecraft = fully_coupled_reaction_wheel_spacecraft();
+    let mut reaction_wheels = fully_coupled_reaction_wheel();
+    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let e_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        spacecraft.add_state_effector(reaction_wheels);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        e_initial = diagnostics.read().rotational_energy_j;
+        sim.run_for(DURATION_NANOS);
+    }
+    let e_final = diagnostics.read().rotational_energy_j;
+
+    let rel_err = (e_final - e_initial).abs() / e_initial.abs();
+    assert!(
+        rel_err < 1e-10,
+        "fully-coupled RW rotational energy not conserved: \
+         E0={e_initial:.6e}  Ef={e_final:.6e}  rel_err={rel_err:.2e}"
+    );
+}
+
+/// A balanced wheel and a fully-coupled imbalanced wheel on one spacecraft
+/// simultaneously: back-substitution contributions from each wheel model must
+/// sum correctly rather than only being correct in isolation. Both models are
+/// momentum-conservative in isolation, so coasting with no motor torque or
+/// friction must conserve total rotational angular momentum with both present.
+/// (JitterSimple is intentionally excluded here: it injects an imbalance
+/// force/torque onto the hub without tracking the imbalance mass as a state, so
+/// it is not expected to conserve system momentum exactly, in isolation or
+/// combined with other wheels.)
+#[test]
+fn mixed_reaction_wheel_models_conserve_total_angular_momentum() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 50.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::new(0.9, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.6),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
+    });
+
+    let mut balanced_config = ReactionWheelStateEffectorConfig::balanced(
+        "rw_balanced",
+        Vector3::new(0.1, 0.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        -1.0,
+        1000.0,
+    );
+    balanced_config.js_kg_m2 = 0.01;
+    balanced_config.initial_omega_radps = 5.0;
+    let mut balanced = ReactionWheelStateEffector::new("rw_balanced");
+    balanced.add_reaction_wheel(balanced_config);
+
+    let mut fully_coupled_config = ReactionWheelStateEffectorConfig::jitter_fully_coupled(
+        "rw_fully_coupled",
+        Vector3::new(0.0, 0.0, 0.1),
+        Vector3::new(0.0, 0.0, 1.0),
+        -1.0,
+        1000.0,
+        2.0,
+        0.008,
+        0.008,
+        0.002,
+        8.0e-5,
+    );
+    fully_coupled_config.js_kg_m2 = 0.01;
+    fully_coupled_config.initial_omega_radps = 8.0;
+    let mut fully_coupled = ReactionWheelStateEffector::new("rw_fully_coupled");
+    fully_coupled.add_reaction_wheel(fully_coupled_config);
+
+    let cmd_balanced = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+    let cmd_fully_coupled = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+
+    let diagnostics = spacecraft.diagnostics_out.clone();
+    let h_initial;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.connect(&cmd_balanced, &mut balanced.rw_motor_cmd_in_msg);
+        sim.connect(&cmd_fully_coupled, &mut fully_coupled.rw_motor_cmd_in_msg);
+        spacecraft.add_state_effector(balanced);
+        spacecraft.add_state_effector(fully_coupled);
+        sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+        sim.run_for(0);
+        h_initial = diagnostics
+            .read()
+            .rotational_angular_momentum_inertial_kg_m2ps;
+        sim.run_for(DURATION_NANOS);
+    }
+
+    let h_final = diagnostics
+        .read()
+        .rotational_angular_momentum_inertial_kg_m2ps;
+    let h_norm = h_initial.norm();
+    assert!(h_norm > 0.0, "expected non-zero initial angular momentum");
+    assert_eq!(spacecraft.state_effectors.len(), 2);
+
+    for i in 0..3 {
+        let rel_err = (h_final[i] - h_initial[i]).abs() / h_norm;
+        assert!(
+            rel_err < 1e-9,
+            "mixed RW models angular momentum component {i} not conserved: \
+             H0={:.6e}  Hf={:.6e}  rel_err={:.2e}",
+            h_initial[i],
+            h_final[i],
+            rel_err
+        );
+    }
+}
+
 /// Total rotational angular momentum about the system center of mass must be
 /// conserved while a sprung hinged panel oscillates under torque-free rotation.
 

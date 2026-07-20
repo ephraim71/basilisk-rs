@@ -1,4 +1,4 @@
-use crate::environment::gravity::GravityEffector;
+use crate::dynamics::gravity::{GravBodyData, GravityEffector, GravityError};
 use crate::integrators::propagate_rk4;
 use crate::integrators::traits::DynamicObject;
 use crate::messages::{
@@ -34,6 +34,7 @@ pub struct Spacecraft {
     integration_step_seconds: f64,
     integration_step_duration: Duration,
     integrated_state: Option<IntegratedState>,
+    last_gravity_accel_inertial_mps2: Vector3<f64>,
     last_non_conservative_accel_body_mps2: Vector3<f64>,
 }
 
@@ -54,6 +55,7 @@ impl Spacecraft {
             integration_step_seconds,
             integration_step_duration,
             integrated_state: None,
+            last_gravity_accel_inertial_mps2: Vector3::zeros(),
             last_non_conservative_accel_body_mps2: Vector3::zeros(),
         }
     }
@@ -76,15 +78,18 @@ impl Spacecraft {
         self.dynamic_effectors.push(Box::new(effector));
     }
 
-    pub fn add_grav_body(&mut self, grav_body: crate::environment::gravity::GravBodyData) {
-        self.gravity.add_grav_body(grav_body);
+    pub fn add_grav_body(&mut self, grav_body: GravBodyData) -> Result<(), GravityError> {
+        self.gravity.add_grav_body(grav_body)
     }
 
     pub fn enable_gravity_gradient(&mut self, earth_mu_m3ps2: f64) {
         self.gravity_gradient_mu_m3ps2 = Some(earth_mu_m3ps2);
     }
 
-    pub fn grav_body_input_mut(&mut self, planet_name: &str) -> Option<&mut Input<PlanetStateMsg>> {
+    pub fn grav_body_input_mut(
+        &mut self,
+        planet_name: &str,
+    ) -> Result<&mut Input<PlanetStateMsg>, GravityError> {
         self.gravity.planet_body_input_mut(planet_name)
     }
 
@@ -99,14 +104,26 @@ impl Spacecraft {
                 integrated_state.velocity_wrt_central_body_mps,
                 context.current_sim_nanos,
             );
+        let mass_props = self.mass_props_for_effector_states(&integrated_state.effector_states);
+        let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(integrated_state.sigma_bn);
+        let com_position_wrt_central_body_m = integrated_state.position_wrt_central_body_m
+            + body_to_inertial_dcm * mass_props.center_of_mass_body_m;
+        self.last_gravity_accel_inertial_mps2 = self
+            .gravity
+            .compute_gravity_field(com_position_wrt_central_body_m, context.current_sim_nanos)
+            .unwrap_or_else(|error| panic!("failed to evaluate gravity acceleration: {error}"));
         let state_msg = SpacecraftStateMsg {
             position_m: inertial_position_m,
             velocity_mps: inertial_velocity_mps,
             sigma_bn: integrated_state.sigma_bn,
             omega_radps: integrated_state.omega_radps,
         };
-        let diagnostics_msg =
-            self.current_diagnostics_msg(&integrated_state, &state_msg, Vector3::zeros(), None);
+        let diagnostics_msg = self.current_diagnostics_msg(
+            &integrated_state,
+            &state_msg,
+            Vector3::zeros(),
+            context.current_sim_nanos,
+        );
         self.state_out.write(state_msg.clone());
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
@@ -181,7 +198,7 @@ impl Spacecraft {
         state: &IntegratedState,
         state_msg: &SpacecraftStateMsg,
         omega_dot_radps2: Vector3<f64>,
-        _acceleration_sample: Option<(Vector3<f64>, f64, Epoch, u64)>,
+        current_sim_nanos: u64,
     ) -> SpacecraftDiagnosticsMsg {
         let mass_props = self.mass_props_for_effector_states(&state.effector_states);
         let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);
@@ -234,20 +251,37 @@ impl Spacecraft {
             }
         }
 
+        let com_position_wrt_central_body_m = state.position_wrt_central_body_m
+            + body_to_inertial_dcm * mass_props.center_of_mass_body_m;
+        let com_velocity_wrt_central_body_mps = state.velocity_wrt_central_body_mps
+            + body_to_inertial_dcm * center_of_mass_dot_body_mps;
+        let orbital_kinetic_energy_j =
+            0.5 * mass_props.mass_kg * com_velocity_wrt_central_body_mps.norm_squared();
+        let orbital_potential_energy_j = if self.gravity.has_complete_cache() {
+            mass_props.mass_kg
+                * self
+                    .gravity
+                    .specific_potential_jpkg(com_position_wrt_central_body_m, current_sim_nanos)
+                    .unwrap_or_else(|error| panic!("failed to evaluate gravity potential: {error}"))
+        } else {
+            0.0
+        };
+
         SpacecraftDiagnosticsMsg {
             omega_dot_radps2,
+            gravity_accel_inertial_mps2: self.last_gravity_accel_inertial_mps2,
             non_conservative_accel_body_mps2: self.last_non_conservative_accel_body_mps2,
             drag_force_body_n,
             drag_torque_body_nm,
             srp_force_body_n,
             srp_force_inertial_n,
             srp_torque_body_nm,
-            orbital_kinetic_energy_j: 0.5
-                * mass_props.mass_kg
-                * state_msg.velocity_mps.norm_squared(),
+            orbital_kinetic_energy_j,
+            orbital_potential_energy_j,
+            orbital_energy_j: orbital_kinetic_energy_j + orbital_potential_energy_j,
             rotational_energy_j,
             orbital_angular_momentum_inertial_kg_m2ps: mass_props.mass_kg
-                * state_msg.position_m.cross(&state_msg.velocity_mps),
+                * com_position_wrt_central_body_m.cross(&com_velocity_wrt_central_body_mps),
             rotational_angular_momentum_inertial_kg_m2ps: body_to_inertial_dcm
                 * rotational_angular_momentum_body,
         }
@@ -380,7 +414,7 @@ impl Module for Spacecraft {
             omega_radps: self.config.initial_omega_radps,
         };
         let diagnostics_msg =
-            self.current_diagnostics_msg(&integrated_state, &state_msg, Vector3::zeros(), None);
+            self.current_diagnostics_msg(&integrated_state, &state_msg, Vector3::zeros(), 0);
         self.state_out.write(state_msg.clone());
         self.write_state_effector_outputs(0, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
@@ -388,6 +422,10 @@ impl Module for Spacecraft {
     }
 
     fn update(&mut self, context: &SimulationContext) {
+        self.gravity
+            .update_cache(context.current_sim_nanos)
+            .unwrap_or_else(|error| panic!("failed to refresh gravity inputs: {error}"));
+
         if context.current_sim_nanos == 0 {
             self.refresh_outputs_without_integration(context);
             return;
@@ -402,12 +440,6 @@ impl Module for Spacecraft {
         if dt_seconds == 0.0 {
             return;
         }
-
-        self.gravity.update_cache(
-            context.current_sim_nanos,
-            context.current_epoch,
-            self.config.integration_step_nanos,
-        );
 
         self.sync_effectors_from_integrated_state();
 
@@ -475,12 +507,7 @@ impl Module for Spacecraft {
             &integrated_state,
             &state_msg,
             omega_dot_radps2,
-            Some((
-                old_inertial_velocity_mps,
-                dt_seconds,
-                context.current_epoch,
-                context.current_sim_nanos,
-            )),
+            context.current_sim_nanos,
         );
         self.state_out.write(state_msg.clone());
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
@@ -526,7 +553,7 @@ impl DynamicObject for Spacecraft {
         &mut self,
         state: &IntegratedState,
         current_sim_nanos: u64,
-        current_epoch: Epoch,
+        _current_epoch: Epoch,
     ) -> StateDerivative {
         // Sync outputs (e.g. panel angle) so dynamic effectors read the correct trial state.
         self.sync_state_effectors_from_states(&state.effector_states);
@@ -568,11 +595,11 @@ impl DynamicObject for Spacecraft {
         };
         let com_position_wrt_central_body_m = state.position_wrt_central_body_m
             + body_to_inertial_dcm * mass_props.center_of_mass_body_m;
-        let gravity_accel = self.gravity.compute_gravity_field(
-            com_position_wrt_central_body_m,
-            current_epoch,
-            current_sim_nanos,
-        );
+        let gravity_accel = self
+            .gravity
+            .compute_gravity_field(com_position_wrt_central_body_m, current_sim_nanos)
+            .unwrap_or_else(|error| panic!("failed to evaluate gravity acceleration: {error}"));
+        self.last_gravity_accel_inertial_mps2 = gravity_accel;
         let gravity_body_mps2 = inertial_to_body_dcm * gravity_accel;
 
         for effector in &self.dynamic_effectors {

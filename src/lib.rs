@@ -40,10 +40,10 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
+    use crate::dynamics::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
     use crate::dynamics::reaction_wheel_state_effector::{
         ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
     };
-    use crate::environment::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
     use crate::messages::ArrayMotorTorqueMsg;
     use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
@@ -62,13 +62,18 @@ mod tests {
             initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
             integrator: None,
         });
-        spacecraft.add_grav_body(GravBodyData::point_mass(
-            "earth",
-            3.986_004_418e14,
-            true,
-            Vector3::zeros(),
-            Vector3::zeros(),
-        ));
+        spacecraft
+            .add_grav_body(
+                GravBodyData::point_mass(
+                    "earth",
+                    3.986_004_418e14,
+                    true,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )
+                .expect("valid Earth gravity body"),
+            )
+            .expect("unique central gravity body");
 
         let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
         reaction_wheels.add_reaction_wheel(ReactionWheelStateEffectorConfig::balanced(
@@ -105,7 +110,7 @@ mod tests {
             spacecraft.state_effectors.len() + spacecraft.dynamic_effectors.len(),
             1
         );
-        assert_eq!(spacecraft.gravity.grav_bodies.len(), 1);
+        assert_eq!(spacecraft.gravity.bodies().len(), 1);
         assert_eq!(
             module_names,
             vec!["spacecraft".to_string(), "imu".to_string()]
@@ -114,8 +119,11 @@ mod tests {
 
     #[test]
     fn spherical_harmonics_gravity_has_reasonable_surface_magnitude() {
-        let model = SphericalHarmonicsGravityModel::from_file("assets/gravity/GGM03S.txt", 20);
-        let gravity = model.compute_field(Vector3::new(0.0, 0.0, 6_378_136.3), 20, true);
+        let mut model = SphericalHarmonicsGravityModel::from_file("assets/gravity/GGM03S.txt", 20)
+            .expect("valid gravity coefficient file");
+        let gravity = model
+            .acceleration_at_degree_mps2(Vector3::new(0.0, 0.0, 6_378_136.3), 20, true)
+            .expect("non-singular gravity position");
         let gravity_magnitude = gravity.norm();
 
         assert!(

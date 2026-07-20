@@ -12,7 +12,8 @@
 //!   cargo run --example scenario_basic_orbit -- leo sh       # LEO, J2 spherical harmonics
 //!   cargo run --example scenario_basic_orbit -- gto sh       # GTO, J2 spherical harmonics
 
-use basilisk_rs::environment::gravity::GravBodyData;
+use basilisk_rs::dynamics::gravity::GravBodyData;
+use basilisk_rs::messages::PlanetOrientation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use hifitime::Epoch;
@@ -69,7 +70,7 @@ fn main() {
     let step_nanos: u64 = 10_000_000_000; // 10 s — matches Basilisk simulationTimeStep
     let num_orbits = if use_sh { 3.0 } else { 0.75 };
     let duration_nanos = (num_orbits * period * 1e9) as u64;
-    let t_sim = duration_nanos as f64 * 1e-9;
+    let requested_t_sim = duration_nanos as f64 * 1e-9;
 
     let gravity_label = if use_sh {
         "J2 spherical harmonics (GGM03S deg-2)"
@@ -89,9 +90,9 @@ fn main() {
         48.2, 347.8, 85.3
     );
     println!(
-        "Period:  {:.2} s  ({:.4} orbits simulated)",
+        "Period:  {:.2} s  ({:.4} orbits requested)",
         period,
-        t_sim / period
+        requested_t_sim / period
     );
     println!("Steps:   {} × 10 s", duration_nanos / step_nanos);
     println!();
@@ -120,30 +121,44 @@ fn main() {
     });
 
     if use_sh {
-        spacecraft.add_grav_body(GravBodyData::spherical_harmonics_from_file(
-            "earth",
-            "assets/gravity/GGM03S.txt",
-            2, // J2 only — degree 2, matches Basilisk useSphericalHarmonicsGravityModel(..., 2)
-            true,
-            Vector3::zeros(),
-            Vector3::zeros(),
-        ));
+        spacecraft
+            .add_grav_body(
+                GravBodyData::spherical_harmonics_from_file(
+                    "earth",
+                    "assets/gravity/GGM03S.txt",
+                    2, // J2 only — degree 2, matches Basilisk useSphericalHarmonicsGravityModel(..., 2)
+                    true,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )
+                .expect("failed to configure Earth gravity")
+                // J2 is axisymmetric, so an explicit identity frame is sufficient here.
+                .with_static_orientation(PlanetOrientation::identity()),
+            )
+            .expect("failed to add Earth gravity body");
     } else {
-        spacecraft.add_grav_body(GravBodyData::point_mass(
-            "earth",
-            MU_EARTH_M3PS2,
-            true,
-            Vector3::zeros(),
-            Vector3::zeros(),
-        ));
+        spacecraft
+            .add_grav_body(
+                GravBodyData::point_mass(
+                    "earth",
+                    MU_EARTH_M3PS2,
+                    true,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )
+                .expect("failed to configure Earth gravity"),
+            )
+            .expect("failed to add Earth gravity body");
     }
 
-    {
+    let final_sim_nanos = {
         let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
         let mut sim = Simulation::new(epoch, false);
         sim.add_module("spacecraft", &mut spacecraft, step_nanos, 0);
         sim.run_for(duration_nanos);
-    }
+        sim.current_sim_nanos()
+    };
+    let t_sim = final_sim_nanos as f64 * 1.0e-9;
 
     let r_sim = spacecraft.state_out.read().position_m;
     let v_sim = spacecraft.state_out.read().velocity_mps;

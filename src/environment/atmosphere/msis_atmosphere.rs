@@ -122,8 +122,8 @@ impl MsisAtmosphere {
 
         let relative_position_fixed_m = if self.input_planet_msg.is_connected() {
             let planet_state = self.input_planet_msg.read();
-            if planet_state.has_orientation {
-                planet_state.inertial_to_fixed * relative_position_inertial_m
+            if let Some(orientation) = planet_state.orientation {
+                orientation.inertial_to_fixed * relative_position_inertial_m
             } else {
                 self.rotate_inertial_to_fixed(relative_position_inertial_m, current_epoch)
             }

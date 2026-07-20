@@ -5,7 +5,7 @@ use anise::almanac::Almanac;
 use anise::frames::Frame;
 use nalgebra::{Matrix3, Vector3};
 
-use crate::messages::{Output, PlanetStateMsg};
+use crate::messages::{Output, PlanetOrientation, PlanetStateMsg};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -54,24 +54,22 @@ impl Module for AnisePlanetEphemeris {
             self.timing_stats.translate_nanos += started.elapsed().as_nanos();
         }
 
-        let (has_orientation, inertial_to_fixed, inertial_to_fixed_dot) =
-            if let Some(fixed_frame) = self.config.fixed_frame {
-                let rotation = self
-                    .almanac
-                    .rotate(self.config.source_frame, fixed_frame, context.current_epoch)
-                    .expect("failed to compute ANISE planet orientation");
-                (
-                    true,
-                    matrix3_from_anise_rotation(&rotation.rot_mat),
-                    rotation
-                        .rot_mat_dt
-                        .as_ref()
-                        .map(matrix3_from_anise_rotation)
-                        .unwrap_or_else(Matrix3::zeros),
-                )
-            } else {
-                (false, Matrix3::zeros(), Matrix3::zeros())
-            };
+        let orientation = if let Some(fixed_frame) = self.config.fixed_frame {
+            let rotation = self
+                .almanac
+                .rotate(self.config.source_frame, fixed_frame, context.current_epoch)
+                .expect("failed to compute ANISE planet orientation");
+            Some(PlanetOrientation {
+                inertial_to_fixed: matrix3_from_anise_rotation(&rotation.rot_mat),
+                inertial_to_fixed_dot: rotation
+                    .rot_mat_dt
+                    .as_ref()
+                    .map(matrix3_from_anise_rotation)
+                    .unwrap_or_else(Matrix3::zeros),
+            })
+        } else {
+            None
+        };
 
         let phase_started = self.timing_enabled.then(Instant::now);
         self.output_planet_msg.write(PlanetStateMsg {
@@ -85,9 +83,7 @@ impl Module for AnisePlanetEphemeris {
                 planet_state.velocity_km_s.y * 1.0e3,
                 planet_state.velocity_km_s.z * 1.0e3,
             ),
-            has_orientation,
-            inertial_to_fixed,
-            inertial_to_fixed_dot,
+            orientation,
         });
         if let Some(started) = phase_started {
             self.timing_stats.write_output_nanos += started.elapsed().as_nanos();

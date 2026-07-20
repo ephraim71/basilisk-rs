@@ -116,10 +116,10 @@ impl IgrfField {
                 let planet_state = self.input_planet_msg.read();
                 let relative_position_inertial_m =
                     state.position_m - planet_state.position_inertial_m;
-                if planet_state.has_orientation {
+                if let Some(orientation) = planet_state.orientation {
                     (
                         relative_position_inertial_m,
-                        Some(planet_state.inertial_to_fixed),
+                        Some(orientation.inertial_to_fixed),
                     )
                 } else {
                     (relative_position_inertial_m, None)

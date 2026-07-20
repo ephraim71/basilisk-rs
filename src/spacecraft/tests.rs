@@ -4,7 +4,7 @@ use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    BackSubMatrices, DynamicEffector, EffectorOutput, Spacecraft, SpacecraftConfig, StateEffector,
+    EffectorOutput, Spacecraft, SpacecraftConfig, StateEffector,
     mrp::body_to_inertial_dcm_from_sigma_bn,
 };
 use crate::Module;
@@ -15,8 +15,11 @@ use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
 use crate::environment::gravity::GravBodyData;
+use crate::integrators::propagate_rk4;
 use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
 use crate::simulation::Simulation;
+use crate::spacecraft::structs::BackSubMatrices;
+use crate::spacecraft::traits::DynamicEffector;
 
 const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
 const STEP_NANOS: u64 = 5_000_000; // 5 ms
@@ -38,6 +41,7 @@ fn circular_orbit_spacecraft(radius_m: f64) -> Spacecraft {
         initial_velocity_mps: Vector3::new(0.0, v_circular, 0.0),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
+        integrator: None,
     });
     sc.add_grav_body(GravBodyData::point_mass(
         "earth",
@@ -136,6 +140,7 @@ fn torque_free_rotation_conserves_angular_momentum() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: omega0,
+        integrator: None,
     });
 
     {
@@ -172,6 +177,7 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
+        integrator: None,
     });
 
     let mut wheel_config = ReactionWheelStateEffectorConfig::balanced(
@@ -238,6 +244,7 @@ fn sprung_hinged_panel_conserves_total_angular_momentum() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
     });
 
     // Sprung panel offset from the spin axis, displaced from its rest angle so it
@@ -302,6 +309,7 @@ fn torque_free_rotation_conserves_rotational_energy() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.1, 0.05, 0.02),
+        integrator: None,
     });
 
     let diagnostics = sc.diagnostics_out.clone();
@@ -337,6 +345,7 @@ fn sprung_hinged_panel_conserves_total_energy() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
     });
 
     let mut config = HingedRigidBodyConfig::new("panel");
@@ -388,6 +397,7 @@ fn damped_hinged_panel_dissipates_energy_but_conserves_momentum() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
     });
 
     let mut config = HingedRigidBodyConfig::new("panel");
@@ -466,6 +476,7 @@ fn principal_axis_spin_matches_analytic_attitude_across_mrp_switches() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.0, 0.0, omega_z),
+        integrator: None,
     });
 
     {
@@ -513,6 +524,7 @@ fn spacecraft_outputs_initial_state_and_mass_props() {
         initial_velocity_mps: velocity0,
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: omega0,
+        integrator: None,
     });
 
     {
@@ -551,6 +563,7 @@ fn spacecraft_mass_props_include_hub_center_of_mass_offset() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
+        integrator: None,
     });
 
     {
@@ -688,6 +701,7 @@ fn rk_substeps_sync_state_effector_outputs_before_dynamic_effectors() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::zeros(),
+        integrator: None,
     });
     spacecraft.add_state_effector(publisher);
     spacecraft.add_dynamic_effector(recorder);
@@ -697,7 +711,8 @@ fn rk_substeps_sync_state_effector_outputs_before_dynamic_effectors() {
         .integrated_state
         .clone()
         .expect("spacecraft must initialize integrated state");
-    spacecraft.propagate_rk4(&state, 0, start_epoch(), 1.0);
+
+    propagate_rk4(&mut spacecraft, &state, 0, start_epoch(), 1.0);
 
     let observed = observed_thetas
         .lock()

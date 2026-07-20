@@ -12,6 +12,7 @@ pub mod device_interface;
 pub mod dynamics;
 pub mod environment;
 pub mod fsw_algorithms;
+pub mod integrators;
 pub mod messages;
 pub mod power;
 pub mod sensors;
@@ -59,6 +60,7 @@ mod tests {
             initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
+            integrator: None,
         });
         spacecraft.add_grav_body(GravBodyData::point_mass(
             "earth",

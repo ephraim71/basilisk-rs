@@ -55,7 +55,7 @@ impl<'a> Simulation<'a> {
     }
 
     /// Schedule a module. Higher numeric priorities execute first; equal
-    /// priorities retain insertion order, matching Basilisk task semantics.
+    /// priorities retain insertion order.
     pub fn add_module(
         &mut self,
         name: impl Into<String>,
@@ -98,9 +98,9 @@ impl<'a> Simulation<'a> {
 
     /// Runs every module update scheduled at or before the requested stop time.
     ///
-    /// As in AVS Basilisk, a stop time between task ticks does not cause an
-    /// unscheduled partial update; the simulation time remains at the most
-    /// recent executed task tick.
+    /// A stop time between task ticks does not cause an unscheduled partial
+    /// update; the simulation time remains at the most recent executed task
+    /// tick.
     pub fn run_for(&mut self, duration_nanos: u64) {
         self.initialize();
 
@@ -122,9 +122,8 @@ impl<'a> Simulation<'a> {
         loop {
             let context = self.context();
             let current = self.current_sim_nanos;
-            // Basilisk executes a task only at its scheduled tick; stopping
-            // between task ticks does not synthesize a partial final update.
-
+            // A task executes only at its scheduled tick; stopping between task
+            // ticks does not synthesize a partial final update.
             for group in self.modules.chunk_by_mut(|a, b| a.priority == b.priority) {
                 group
                     .iter_mut()

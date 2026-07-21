@@ -76,7 +76,7 @@ fn main() {
         initial_velocity_mps: Vector3::zeros(),
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.0, 0.0, 0.0),
-        integrator: None
+        integrator: None,
     });
 
     let wheel_axes = [Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0)];

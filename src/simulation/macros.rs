@@ -75,11 +75,11 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
+    use crate::Module;
     use crate::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
     use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
-    use crate::Module;
 
     fn simulation<'a>() -> Simulation<'a> {
         Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false)
@@ -95,7 +95,7 @@ mod tests {
             initial_velocity_mps: Vector3::new(0.0, 7_500.0, 0.0),
             initial_sigma_bn: Vector3::zeros(),
             initial_omega_radps: Vector3::new(0.01, 0.02, 0.03),
-            integrator: None
+            integrator: None,
         })
     }
 

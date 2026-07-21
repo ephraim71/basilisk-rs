@@ -1,6 +1,6 @@
-use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
 
+use crate::integrators::Integrator;
 use crate::spacecraft::Spacecraft;
 
 #[derive(Clone, Debug, Default)]
@@ -50,11 +50,12 @@ pub struct SpacecraftConfig {
     pub initial_velocity_mps: Vector3<f64>,
     pub initial_sigma_bn: Vector3<f64>,
     pub initial_omega_radps: Vector3<f64>,
-    /// The iterator function to be used when calculating state at next time-step.
-    /// Defaults to the classis Runge-Kutta method (RK4) if `None`
-    pub integrator: Option<
-        fn(&mut Spacecraft, &IntegratedState, u64, Epoch, f64) -> (IntegratedState, Vector3<f64>),
-    >,
+    /// The integration scheme used to advance the state each time-step.
+    /// Defaults to the classic Runge-Kutta method ([`Rk4`](crate::integrators::Rk4))
+    /// if `None`. Set it to any built-in integrator struct, or your own type
+    /// implementing [`Integrator`], boxed:
+    /// `Some(Box::new(Dopri45::default()))`.
+    pub integrator: Option<Box<dyn Integrator<Spacecraft>>>,
 }
 
 #[derive(Clone, Debug)]

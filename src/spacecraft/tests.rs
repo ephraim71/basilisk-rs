@@ -16,10 +16,10 @@ use crate::dynamics::hinged_rigid_body_state_effector::{
 use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
-use crate::integrators::propagate_rk4;
-use crate::messages::{
-    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg,
+use crate::integrators::{
+    Dopri45, Euler, Heun, Integrator, Midpoint, Ralston, Rk4, Rk4ThreeEighths, Rkf45,
 };
+use crate::messages::{ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
 use crate::spacecraft::traits::DynamicEffector;
@@ -1086,7 +1086,7 @@ fn rk_substeps_sync_state_effector_outputs_before_dynamic_effectors() {
         .clone()
         .expect("spacecraft must initialize integrated state");
 
-    propagate_rk4(&mut spacecraft, &state, 0, start_epoch(), 1.0);
+    Rk4.propagate(&mut spacecraft, &state, 0, start_epoch(), 1.0);
 
     let observed = observed_thetas
         .lock()
@@ -1120,4 +1120,62 @@ fn keplerian_orbit_position_regression() {
         r,
         rel_err
     );
+}
+
+/// Every built-in integrator struct is assignable to the config slot, including
+/// the adaptive ones that carry an extra `where` bound.
+#[test]
+fn all_integrators_are_pluggable() {
+    let _integrators: [Box<dyn Integrator<Spacecraft>>; 8] = [
+        Box::new(Euler),
+        Box::new(Midpoint),
+        Box::new(Heun),
+        Box::new(Ralston),
+        Box::new(Rk4),
+        Box::new(Rk4ThreeEighths),
+        Box::new(Rkf45::default()),
+        Box::new(Dopri45::default()),
+    ];
+}
+
+/// Runs one full circular orbit with the given integrator and returns the
+/// final radius error relative to the exact circular radius.
+fn orbit_radius_error(integrator: Box<dyn Integrator<Spacecraft>>) -> f64 {
+    let radius_m = 7_000_000.0;
+    let mut sc = circular_orbit_spacecraft(radius_m);
+    sc.config.integrator = Some(integrator);
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(DURATION_NANOS);
+    }
+    let r = sc.state_out.read().position_m.norm();
+    (r - radius_m).abs() / radius_m
+}
+
+/// A higher-order method should hold the circular radius at least as tightly as
+/// a lower-order one over the same 100 s, and every method should stay bounded.
+#[test]
+fn integrator_accuracy_improves_with_order() {
+    let euler = orbit_radius_error(Box::new(Euler));
+    let heun = orbit_radius_error(Box::new(Heun));
+    let rk4 = orbit_radius_error(Box::new(Rk4));
+    let dopri = orbit_radius_error(Box::new(Dopri45::default()));
+
+    // Sanity: nothing blew up.
+    for (name, err) in [
+        ("euler", euler),
+        ("heun", heun),
+        ("rk4", rk4),
+        ("dopri45", dopri),
+    ] {
+        assert!(
+            err.is_finite() && err < 1e-2,
+            "{name} radius error {err:.3e}"
+        );
+    }
+    // Order shows up as strictly better radius retention.
+    assert!(heun < euler, "heun {heun:.3e} !< euler {euler:.3e}");
+    assert!(rk4 < heun, "rk4 {rk4:.3e} !< heun {heun:.3e}");
+    assert!(dopri < 1e-6, "adaptive dopri45 radius error {dopri:.3e}");
 }

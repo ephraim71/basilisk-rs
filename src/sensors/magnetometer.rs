@@ -241,7 +241,6 @@ mod tests {
 
         let sensed = run(Magnetometer::new(config.clone()), sigma_bn, field);
 
-        // Rotate field inertial -> body -> sensor frame.
         let state = SpacecraftStateMsg {
             sigma_bn,
             ..Default::default()

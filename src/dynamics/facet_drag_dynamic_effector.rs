@@ -207,7 +207,6 @@ mod tests {
 
     /// Facets whose normals point away from the flow direction (cos_θ ≤ 0) contribute nothing.
     /// Normals [0,0,-1] and [0,-1,0], v=[0,7788,0]: both perpendicular to or opposing flow.
-    /// Both normals are perpendicular or opposing the flow, so total force/torque = zero.
     #[test]
     fn facets_facing_away_from_flow_produce_no_force() {
         let (mut drag, _atmo) = make_drag(1.0);
@@ -280,7 +279,6 @@ mod tests {
 
     /// Two facets, MRP attitude σ=[0.1,0.2,0.3], v=[7000,0,0] m/s, density=2.0 kg/m³.
     /// Expected values computed directly from the facet drag formula.
-    /// Parametrized cases with MRP attitude rotation.
     #[test]
     fn two_facets_mrp_attitude_force_and_torque() {
         let density = 2.0_f64;
@@ -316,7 +314,6 @@ mod tests {
             ),
         ];
 
-        // expected: facet drag force summed over facets
         let mut expected_force_body = Vector3::zeros();
         let mut expected_torque_body = Vector3::zeros();
         for (area, cd, normal, loc) in facets {

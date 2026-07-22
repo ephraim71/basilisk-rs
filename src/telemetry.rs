@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -374,18 +374,11 @@ where
     T: Clone + Default + TelemetryMessage + Send + Sync,
 {
     fn init(&mut self) {
-        if let Some(parent) = self.config.output_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create telemetry output directory");
-        }
-
         if self.file_handler.is_none() {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.config.output_path)
-                .expect("failed to open telemetry output file");
-
-            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+            self.file_handler = Some(open_buffered_writer(
+                &self.config.output_path,
+                WriterMode::Append,
+            ));
         }
     }
 
@@ -406,19 +399,11 @@ where
 
 impl Module for CsvRecorder {
     fn init(&mut self) {
-        if let Some(parent) = self.config.output_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create CSV output directory");
-        }
-
         if self.file_handler.is_none() {
-            let file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&self.config.output_path)
-                .expect("failed to open CSV output file");
-
-            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+            self.file_handler = Some(open_buffered_writer(
+                &self.config.output_path,
+                WriterMode::Truncate,
+            ));
         }
     }
 
@@ -503,6 +488,33 @@ impl Module for CsvRecorder {
             writeln!(&mut *file_handler).expect("failed to finish CSV row");
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum WriterMode {
+    Append,
+    Truncate,
+}
+
+/// Opens `path` in the requested mode and creates missing parent directories.
+fn open_buffered_writer(path: &Path, mode: WriterMode) -> BufWriter<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create telemetry output directory");
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    match mode {
+        WriterMode::Append => {
+            options.append(true);
+        }
+        WriterMode::Truncate => {
+            options.truncate(true);
+        }
+    }
+    let file = options
+        .open(path)
+        .expect("failed to open telemetry output file");
+    BufWriter::with_capacity(1024 * 1024, file)
 }
 
 #[cfg(test)]

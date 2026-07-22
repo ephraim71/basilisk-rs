@@ -2,7 +2,6 @@ use crate::telemetry::{TelemetryField, TelemetryMessage};
 
 use super::MAX_EFF_COUNT;
 
-/// Aggregate magnetic-torque-bar dipole commands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MtbArrayCommandMsg {
     pub dipole_cmds_am2: [f64; MAX_EFF_COUNT],

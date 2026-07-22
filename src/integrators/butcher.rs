@@ -228,10 +228,6 @@ pub fn propagate_adaptive_rk<D: DynamicObject>(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Fixed-step tableaus
-// ---------------------------------------------------------------------------
-
 /// Forward (explicit) Euler, order 1. One evaluation per step.
 pub const EULER: ButcherTableau = ButcherTableau {
     a: &[&[]],
@@ -285,10 +281,6 @@ pub const RK4_THREE_EIGHTHS: ButcherTableau = ButcherTableau {
     b_embedded: None,
     error_estimate_order: 4,
 };
-
-// ---------------------------------------------------------------------------
-// Embedded (adaptive) tableaus
-// ---------------------------------------------------------------------------
 
 /// Runge-Kutta-Fehlberg 4(5): propagates the 5th-order solution with a 4th-order
 /// embedded estimate. Six evaluations per step.

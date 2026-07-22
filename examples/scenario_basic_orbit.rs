@@ -1,4 +1,4 @@
-//! Basilisk `scenarioBasicOrbit.py` parity case: LEO, point-mass Earth.
+//! Parity case for `scenarioBasicOrbit.py`: LEO, point-mass Earth.
 //!
 //! The binary intentionally performs no plotting. It writes the deterministic
 //! simulation result to `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv`.
@@ -98,7 +98,7 @@ fn main() {
         topic: "scenarioBasicOrbitLEO0Earth".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     connect!(&simulation,

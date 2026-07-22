@@ -248,7 +248,7 @@ impl GravityModel for SphericalHarmonicsGravityModel {
     }
 
     fn specific_potential_jpkg(&mut self, position_m: Vector3<f64>) -> Result<f64, GravityError> {
-        // Official Basilisk currently uses point-mass potential for this model.
+        // A point-mass potential is used for this model.
         Ok(-self.mu_m3ps2 / checked_radius(position_m)?)
     }
 }

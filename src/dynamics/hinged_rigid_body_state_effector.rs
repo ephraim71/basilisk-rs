@@ -629,14 +629,18 @@ mod tests {
 
         let final_mass_props = spacecraft.mass_props_out.read();
         assert!((final_mass_props.mass_kg - 950.0).abs() < 1.0e-10);
-        assert!(final_mass_props
-            .center_of_mass_body_m
-            .iter()
-            .all(|value| value.is_finite()));
-        assert!(final_mass_props
-            .inertia_about_point_b_body_kg_m2
-            .iter()
-            .all(|value| value.is_finite()));
+        assert!(
+            final_mass_props
+                .center_of_mass_body_m
+                .iter()
+                .all(|value| value.is_finite())
+        );
+        assert!(
+            final_mass_props
+                .inertia_about_point_b_body_kg_m2
+                .iter()
+                .all(|value| value.is_finite())
+        );
         assert!(panel1_hinge.read().theta_rad.is_finite());
         assert!(panel2_hinge.read().theta_rad.is_finite());
     }

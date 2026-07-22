@@ -245,7 +245,7 @@ fn multi_body_field_includes_central_body_indirect_acceleration() {
 }
 
 #[test]
-fn spherical_harmonics_matches_official_basilisk_degree_20_result() {
+fn spherical_harmonics_matches_reference_degree_20_result() {
     let mut model = SphericalHarmonicsGravityModel::from_file("assets/gravity/GGM03S.txt", 20)
         .expect("valid GGM03S coefficients");
     let acceleration = model
@@ -260,7 +260,7 @@ fn spherical_harmonics_matches_official_basilisk_degree_20_result() {
 }
 
 #[test]
-fn polyhedral_model_matches_official_basilisk_tetrahedron_result() {
+fn polyhedral_model_matches_reference_tetrahedron_result() {
     let vertices = vec![
         Vector3::new(1.0, 1.0, 1.0),
         Vector3::new(-1.0, -1.0, 1.0),
@@ -295,7 +295,7 @@ fn polyhedral_model_rejects_open_or_degenerate_meshes() {
 }
 
 #[test]
-fn polyhedral_model_loads_basilisk_txt_meshes_with_kilometer_units() {
+fn polyhedral_model_loads_txt_meshes_with_kilometer_units() {
     let path =
         std::env::temp_dir().join(format!("basilisk-rs-polyhedron-{}.txt", std::process::id()));
     let contents = "4 4\n\
@@ -308,8 +308,7 @@ fn polyhedral_model_loads_basilisk_txt_meshes_with_kilometer_units() {
 1 4 3\n\
 2 3 4\n";
     std::fs::write(&path, contents).expect("write temporary polyhedron fixture");
-    let model =
-        PolyhedralGravityModel::from_basilisk_file(&path, 10.0).expect("load Basilisk text mesh");
+    let model = PolyhedralGravityModel::from_mesh_file(&path, 10.0).expect("load text mesh");
     std::fs::remove_file(&path).expect("remove temporary polyhedron fixture");
     assert_eq!(model.vertex_count(), 4);
     assert_eq!(model.face_count(), 4);
@@ -317,7 +316,7 @@ fn polyhedral_model_loads_basilisk_txt_meshes_with_kilometer_units() {
 }
 
 #[test]
-fn polyhedral_model_loads_basilisk_obj_and_gaskell_tab_meshes() {
+fn polyhedral_model_loads_obj_and_gaskell_tab_meshes() {
     let obj = "v 0.001 0.001 0.001\n\
 v -0.001 -0.001 0.001\n\
 v -0.001 0.001 -0.001\n\
@@ -343,8 +342,7 @@ f 2 3 4\n";
             extension
         ));
         std::fs::write(&path, contents).expect("write temporary polyhedron fixture");
-        let model =
-            PolyhedralGravityModel::from_basilisk_file(&path, 10.0).expect("load Basilisk mesh");
+        let model = PolyhedralGravityModel::from_mesh_file(&path, 10.0).expect("load mesh");
         std::fs::remove_file(&path).expect("remove temporary polyhedron fixture");
         assert_eq!(model.vertex_count(), 4);
         assert_eq!(model.face_count(), 4);

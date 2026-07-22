@@ -1,4 +1,4 @@
-//! Basilisk `scenarioAttitudeFeedbackRW.py` parity case `01`.
+//! Parity case for `scenarioAttitudeFeedbackRW.py` `01`.
 //!
 //! Balanced Honeywell HR16 wheels with the flight-software and hardware
 //! voltage interfaces enabled. The binary only runs the simulation and writes
@@ -240,7 +240,7 @@ fn main() {
         topic: "scenarioAttitudeFeedbackRW01".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     connect!(&simulation,

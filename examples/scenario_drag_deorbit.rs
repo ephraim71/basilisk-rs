@@ -1,4 +1,4 @@
-//! Basilisk `scenarioDragDeorbit.py` parity case: MSIS atmosphere, no wind.
+//! Parity case for `scenarioDragDeorbit.py`: MSIS atmosphere, no wind.
 //!
 //! The simulation advances on the upstream 15-second task cadence and stops on
 //! the first task tick below 100 km. It writes one reference-compatible CSV.
@@ -182,7 +182,7 @@ fn main() {
         topic: "scenarioDragDeorbitmsis0".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     connect!(&simulation,
         &spacecraft.state_out => &mut atmosphere.input_state_msg,

@@ -387,7 +387,7 @@ impl GravityEffector {
                 state.inertial_to_fixed,
             )?;
             if self.central_body_index.is_some() && !body.is_central_body {
-                // Match the intended Basilisk relative-frame energy contribution.
+                // Relative-frame energy contribution for non-central bodies.
                 potential += body.evaluate_specific_potential(
                     state.position_inertial_m - central_position_m,
                     state.inertial_to_fixed,

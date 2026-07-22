@@ -1,4 +1,4 @@
-//! Basilisk `scenarioMtbMomentumManagement.py` parity case.
+//! Parity case for `scenarioMtbMomentumManagement.py`.
 //!
 //! Four reaction wheels, four magnetic torque bars, WMM2025, and the complete
 //! attitude/momentum-management control chain. The binary only writes CSV.
@@ -291,7 +291,7 @@ fn main() {
         topic: "scenarioMtbMomentumManagement".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     let start_epoch = Epoch::from_gregorian_utc(2019, 6, 27, 10, 23, 0, 0);
     let mut simulation = Simulation::new(start_epoch, false);

@@ -1,7 +1,7 @@
 use nalgebra::{Matrix3, Vector3};
 
-/// Compose two successive modified Rodrigues parameter rotations using the
-/// same shadow-set selection as Basilisk's `addMRP`.
+/// Compose two successive modified Rodrigues parameter rotations, selecting
+/// the shadow set to avoid the parameter singularity.
 pub(crate) fn add_mrp(first: Vector3<f64>, second: Vector3<f64>) -> Vector3<f64> {
     let mut first = first;
     let mut denominator =
@@ -19,8 +19,8 @@ pub(crate) fn add_mrp(first: Vector3<f64>, second: Vector3<f64>) -> Vector3<f64>
     map_mrp_to_inner_set(result)
 }
 
-/// Compute the relative MRP rotation from `second` to `first`, matching
-/// Basilisk's `subMRP` operation and shadow-set behavior.
+/// Compute the relative MRP rotation from `second` to `first`, selecting the
+/// shadow set to avoid the parameter singularity.
 pub(crate) fn subtract_mrp(first: Vector3<f64>, second: Vector3<f64>) -> Vector3<f64> {
     let mut first = first;
     let mut denominator =
@@ -37,8 +37,7 @@ pub(crate) fn subtract_mrp(first: Vector3<f64>, second: Vector3<f64>) -> Vector3
     map_mrp_to_inner_set(result)
 }
 
-/// Convert MRPs to the passive direction cosine matrix returned by
-/// Basilisk's `MRP2C`.
+/// Convert MRPs to the passive direction cosine matrix.
 pub(crate) fn mrp_to_dcm(mrp: Vector3<f64>) -> Matrix3<f64> {
     let q1 = mrp.x;
     let q2 = mrp.y;

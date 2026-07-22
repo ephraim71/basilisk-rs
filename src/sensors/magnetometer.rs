@@ -2,8 +2,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use nalgebra::{Matrix3, Vector3};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
 
 use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamSensorMsg};

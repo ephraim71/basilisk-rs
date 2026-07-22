@@ -19,9 +19,9 @@ pub struct MsisAtmosphereConfig {
     pub additional_kernel_paths: Vec<PathBuf>,
     pub inertial_frame: Frame,
     pub fixed_frame: Frame,
-    /// Geomagnetic activity inputs. Basilisk's default NRLMSISE switch-9 mode
+    /// Geomagnetic activity inputs. The default NRLMSISE switch-9 mode
     /// consumes the daily scalar in slot 0; the history slots are retained for
-    /// message/configuration parity but are not used in that mode.
+    /// configuration parity but are not used in that mode.
     pub ap_array: [f64; 7],
     pub f107_daily: f64,
     pub f107_average: f64,
@@ -155,9 +155,9 @@ impl MsisAtmosphere {
             self.config.f107_daily,
             self.config.f107_average,
             self.config.ap_array[0],
-            // Basilisk's MsisAtmosphere keeps NRLMSISE switch 9 at +1, so the
-            // daily scalar Ap value is used even though the history structure
-            // is populated from its space-weather messages.
+            // NRLMSISE switch 9 is kept at +1, so the daily scalar Ap value is
+            // used even though the history structure is populated from the
+            // space-weather messages.
             None,
         );
         if let Some(started) = phase_started {

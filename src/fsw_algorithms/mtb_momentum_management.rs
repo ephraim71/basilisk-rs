@@ -1,8 +1,8 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
 use crate::messages::{
-    ArrayMotorTorqueMsg, Input, MtbArrayCommandMsg, MtbArrayConfigMsg, Output, RwArrayConfigMsg,
-    RwSpeedMsg, TamSensorBodyMsg, MAX_EFF_COUNT,
+    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, MtbArrayCommandMsg, MtbArrayConfigMsg, Output,
+    RwArrayConfigMsg, RwSpeedMsg, TamSensorBodyMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -300,14 +300,14 @@ mod tests {
     use nalgebra::{DMatrix, Vector3};
 
     use crate::messages::{
-        ArrayMotorTorqueMsg, MtbArrayConfigMsg, Output, RwArrayConfigMsg, RwSpeedMsg,
-        TamSensorBodyMsg, MAX_EFF_COUNT,
+        ArrayMotorTorqueMsg, MAX_EFF_COUNT, MtbArrayConfigMsg, Output, RwArrayConfigMsg,
+        RwSpeedMsg, TamSensorBodyMsg,
     };
     use crate::{Module, SimulationContext};
 
     use super::{
-        svd_pseudo_inverse, MtbMomentumManagement, MtbMomentumManagementConfig,
-        SVD_SINGULAR_VALUE_CUTOFF,
+        MtbMomentumManagement, MtbMomentumManagementConfig, SVD_SINGULAR_VALUE_CUTOFF,
+        svd_pseudo_inverse,
     };
 
     struct Fixture {
@@ -519,9 +519,11 @@ mod tests {
         assert!((mtb_output.dipole_cmds_am2[0] - 0.25).abs() <= 1.0e-12);
         assert!(mtb_output.dipole_cmds_am2[1].abs() <= 1.0e-12);
         assert!(mtb_output.dipole_cmds_am2[2].abs() <= 1.0e-12);
-        assert!(mtb_output.dipole_cmds_am2[3..]
-            .iter()
-            .all(|value| *value == 0.0));
+        assert!(
+            mtb_output.dipole_cmds_am2[3..]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
         assert!(
             (rw_output.motor_torque_nm[0] - (1.0 + fixture.module.tau_desired_rw_wheel_nm[0]))
                 .abs()
@@ -544,9 +546,11 @@ mod tests {
 
         assert_eq!(fixture.module.rw_config_params.num_rw, 4);
         assert_eq!(fixture.module.mtb_config_params.num_mtb, 3);
-        assert!(fixture.module.tau_ideal_rw_wheel_nm[..4]
-            .iter()
-            .any(|value| *value != 0.0));
+        assert!(
+            fixture.module.tau_ideal_rw_wheel_nm[..4]
+                .iter()
+                .any(|value| *value != 0.0)
+        );
 
         fixture.module.reset(0);
         assert_eq!(fixture.module.rw_config_params.num_rw, 0);

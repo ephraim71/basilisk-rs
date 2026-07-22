@@ -45,7 +45,7 @@ impl SolarRadiationPressureFacet {
         }
     }
 
-    pub fn basilisk_facet(
+    pub fn articulated(
         area_m2: f64,
         dcm_facet0_body: Matrix3<f64>,
         normal_facet: Vector3<f64>,
@@ -124,16 +124,15 @@ impl FacetSRPDynamicEffector {
         diffuse_coeff: f64,
         specular_coeff: f64,
     ) -> usize {
-        self.facets
-            .push(SolarRadiationPressureFacet::basilisk_facet(
-                area_m2,
-                dcm_facet0_body,
-                normal_facet,
-                articulation_axis_facet,
-                location_body_m,
-                diffuse_coeff,
-                specular_coeff,
-            ));
+        self.facets.push(SolarRadiationPressureFacet::articulated(
+            area_m2,
+            dcm_facet0_body,
+            normal_facet,
+            articulation_axis_facet,
+            location_body_m,
+            diffuse_coeff,
+            specular_coeff,
+        ));
         self.facets.len() - 1
     }
 

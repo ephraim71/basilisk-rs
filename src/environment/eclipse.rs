@@ -63,7 +63,7 @@ impl Eclipse {
         let apparent_sun_radius_rad = safe_asin(SUN_RADIUS_M / sun_to_spacecraft.norm());
         let apparent_planet_radius_rad =
             safe_asin(self.config.occulting_body_radius_m / planet_to_spacecraft.norm());
-        // Basilisk cpp: acos((-s_BP_N · r_HB_N) / ...) where r_HB_N = sun - sc = -sun_to_spacecraft
+        // Derivation: acos((-s_BP_N · r_HB_N) / ...) where r_HB_N = sun - sc = -sun_to_spacecraft
         // Expanding: -s_BP_N · (-sun_to_spacecraft) = planet_to_spacecraft · sun_to_spacecraft
         let separation_rad = safe_acos(
             planet_to_spacecraft.dot(&sun_to_spacecraft)

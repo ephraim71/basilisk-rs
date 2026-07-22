@@ -6,7 +6,7 @@ use super::MAX_EFF_COUNT;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MtbArrayConfigMsg {
     pub num_mtb: usize,
-    /// Columns of Basilisk's 3-by-numMTB `GtMatrix_B` matrix.
+    /// Columns of the 3-by-numMTB `GtMatrix_B` matrix.
     pub dipole_axes_body: [Vector3<f64>; MAX_EFF_COUNT],
     pub max_dipoles_am2: [f64; MAX_EFF_COUNT],
 }

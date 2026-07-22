@@ -1,4 +1,4 @@
-//! Basilisk `scenarioCSS.py` parity case `0010`.
+//! Parity case for `scenarioCSS.py` `0010`.
 //!
 //! Three independent coarse Sun sensors, no platform/constellation, a fixed
 //! half-eclipse, and no Kelly distortion. The binary only writes CSV output.
@@ -130,7 +130,7 @@ fn main() {
         topic: "scenarioCSS0010".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     for sensor in [&mut css1, &mut css2, &mut css3] {

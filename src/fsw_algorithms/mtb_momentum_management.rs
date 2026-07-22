@@ -1,4 +1,4 @@
-use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, SymmetricEigen, Vector3};
 
 use crate::messages::{
     ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, MtbArrayCommandMsg, MtbArrayConfigMsg, Output,
@@ -160,7 +160,7 @@ impl MtbMomentumManagement {
         let mut mtb_dipole_commands = if num_mtb == 0 {
             DVector::zeros(0)
         } else {
-            -svd_pseudo_inverse(&b_gt, SVD_SINGULAR_VALUE_CUTOFF) * &tau_ideal_rw_body
+            -pseudo_inverse(&b_gt, SVD_SINGULAR_VALUE_CUTOFF) * &tau_ideal_rw_body
         };
 
         for mtb in 0..num_mtb {
@@ -259,20 +259,29 @@ fn tilde(vector: Vector3<f64>) -> Matrix3<f64> {
     )
 }
 
-fn svd_pseudo_inverse(matrix: &DMatrix<f64>, cutoff: f64) -> DMatrix<f64> {
-    let mut decomposition = matrix.clone().svd(true, true);
-    for singular_value in decomposition.singular_values.iter_mut() {
-        *singular_value = if *singular_value >= cutoff {
-            singular_value.recip()
-        } else {
-            0.0
-        };
+/// Moore-Penrose pseudo-inverse of a (generally rank-deficient) matrix, computed
+/// as `M^T (M M^T)^+`. The symmetric factor `M M^T` is diagonalized with a
+/// symmetric eigensolver, which stays accurate for the rank-2 `tilde(B) * Gt`
+/// matrices this law inverts. nalgebra's general SVD does not: for some field
+/// geometries it returns a decomposition with a Moore-Penrose residual of ~1e-7,
+/// injecting a spurious dipole-command spike. Modes whose singular value (the
+/// square root of a Gram eigenvalue) is below `cutoff` are dropped.
+fn pseudo_inverse(matrix: &DMatrix<f64>, cutoff: f64) -> DMatrix<f64> {
+    let transpose = matrix.transpose();
+    let gram = matrix * &transpose;
+    let dimension = gram.nrows();
+    let eigen = SymmetricEigen::new(gram);
+
+    let mut gram_pseudo_inverse = DMatrix::zeros(dimension, dimension);
+    for index in 0..dimension {
+        let eigenvalue = eigen.eigenvalues[index];
+        if eigenvalue > 0.0 && eigenvalue.sqrt() >= cutoff {
+            let eigenvector = eigen.eigenvectors.column(index);
+            gram_pseudo_inverse += (&eigenvector * eigenvector.transpose()) / eigenvalue;
+        }
     }
 
-    decomposition
-        .recompose()
-        .expect("SVD requested both singular-vector matrices")
-        .transpose()
+    transpose * gram_pseudo_inverse
 }
 
 fn minimum_norm_inverse(matrix: &DMatrix<f64>) -> DMatrix<f64> {
@@ -307,7 +316,7 @@ mod tests {
 
     use super::{
         MtbMomentumManagement, MtbMomentumManagementConfig, SVD_SINGULAR_VALUE_CUTOFF,
-        svd_pseudo_inverse,
+        pseudo_inverse,
     };
 
     struct Fixture {
@@ -601,7 +610,7 @@ mod tests {
             0.5 * SVD_SINGULAR_VALUE_CUTOFF,
             2.0,
         ]));
-        let inverse = svd_pseudo_inverse(&matrix, SVD_SINGULAR_VALUE_CUTOFF);
+        let inverse = pseudo_inverse(&matrix, SVD_SINGULAR_VALUE_CUTOFF);
 
         assert!((inverse[(0, 0)] - 1.0 / SVD_SINGULAR_VALUE_CUTOFF).abs() <= 1.0e-3);
         assert_eq!(inverse[(1, 1)], 0.0);
@@ -620,8 +629,42 @@ mod tests {
             3,
             &[0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0],
         );
-        let actual = svd_pseudo_inverse(&matrix, SVD_SINGULAR_VALUE_CUTOFF);
+        let actual = pseudo_inverse(&matrix, SVD_SINGULAR_VALUE_CUTOFF);
 
         assert!((actual - expected).norm() <= 1.0e-12);
+    }
+
+    // Regression: `tilde(B) * Gt` is rank-2. For this field geometry (captured
+    // mid-run from the MTB momentum-management parity scenario) nalgebra's general
+    // SVD returned a pseudo-inverse with a Moore-Penrose residual of ~1.6e-7,
+    // producing a one-step dipole-command spike that diverged from the C++
+    // reference. The Gram/eigen pseudo-inverse must stay accurate here.
+    #[test]
+    fn pseudo_inverse_is_accurate_for_rank2_field_geometry() {
+        let b_gt = DMatrix::from_row_slice(
+            3,
+            4,
+            &[
+                0.0,
+                1.06879128500276908e-05,
+                -2.72834298179075497e-05,
+                7.55749564030370400e-06,
+                -1.06879128500276908e-05,
+                0.0,
+                -3.15802641687453088e-05,
+                -7.55749564030370400e-06,
+                2.72834298179075497e-05,
+                3.15802641687453088e-05,
+                0.0,
+                4.16229171138074661e-05,
+            ],
+        );
+        let pinv = pseudo_inverse(&b_gt, SVD_SINGULAR_VALUE_CUTOFF);
+        // Moore-Penrose condition M P M == M.
+        let residual = (&b_gt * &pinv * &b_gt - &b_gt).norm();
+        assert!(
+            residual <= 1.0e-15,
+            "pseudo-inverse Moore-Penrose residual too large: {residual:.3e}"
+        );
     }
 }

@@ -1,6 +1,6 @@
 # basilisk-rs
 
-A Rust port of the [Basilisk astrodynamics framework](https://github.com/AVSLab/basilisk).
+A Rust translation of the [Basilisk astrodynamics framework](https://github.com/AVSLab/basilisk).
 
 The project is under active development. Modules and scenarios are validated against Basilisk as they are ported.
 

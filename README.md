@@ -19,11 +19,46 @@ Install `matplotlib` to render scenario plots:
 python3 -m pip install matplotlib
 ```
 
+## Fetching assets
+
+Scenarios load ephemeris, planetary orientation, and gravity data that are not
+checked into the repository. Download them into `assets/` before running any
+scenario:
+
+```bash
+just fetch-assets
+```
+
+This is a convenience wrapper around two recipes:
+
+- `just fetch-anise-assets` — SPICE/ANISE kernels into `assets/anise/`
+  (`de440s.bsp`, `earth_latest_high_prec.bpc`, `pck11.pca`).
+- `just fetch-gravity` — the GGM03S spherical-harmonic gravity model into
+  `assets/gravity/GGM03S.txt`.
+
+The recipes only run `curl`, so if you don't have [`just`](https://github.com/casey/just)
+installed you can also fetch each file by hand — see the `curl` invocations in
+`justfile`.
+
 ## Basic orbit scenario
 
 Run the simulation:
 
 ```bash
+just run-basic-orbit
+# equivalently:
+cargo run --release --example scenario_basic_orbit
+```
+
+Any example can also be run by name with the generic `run` recipe, which
+forwards extra arguments to the binary after `--`. The name is the file stem of
+a `.rs` file in `examples/` (e.g. `scenario_basic_orbit` for
+`examples/scenario_basic_orbit.rs`); Cargo builds each such file with a `main()`
+as its own example target.
+
+```bash
+just run scenario_basic_orbit
+# equivalently:
 cargo run --release --example scenario_basic_orbit
 ```
 

@@ -196,7 +196,21 @@ mod tests {
     }
 
     #[test]
-    fn schedule_accepts_existing_modules() {
+    fn schedule_accepts_labeled_form() {
+        let mut sun_sensor = sun_sensor();
+        let mut imu = imu();
+        let mut sim = simulation();
+
+        crate::schedule! { sim,
+            "sun_sensor" => &mut sun_sensor, period = 10_000_000, priority = 0;
+            "imu" => &mut imu, period = 10_000_000, priority = 10;
+        }
+
+        assert_eq!(sim.module_names(), vec!["sun_sensor", "imu"]);
+    }
+
+    #[test]
+    fn schedule_accepts_positional_form() {
         let mut sun_sensor = sun_sensor();
         let mut imu = imu();
         let mut sim = simulation();
@@ -207,5 +221,60 @@ mod tests {
         }
 
         assert_eq!(sim.module_names(), vec!["sun_sensor", "imu"]);
+    }
+
+    #[test]
+    fn schedule_accepts_mixed_forms() {
+        let mut sun_sensor = sun_sensor();
+        let mut imu = imu();
+        let mut sim = simulation();
+
+        crate::schedule! { sim,
+            "sun_sensor" => &mut sun_sensor, period = 10_000_000, priority = 0;
+            "imu" => &mut imu, 10_000_000, 10;
+        }
+
+        assert_eq!(sim.module_names(), vec!["sun_sensor", "imu"]);
+    }
+
+    #[test]
+    fn labeled_and_positional_forms_schedule_identically() {
+        // Reads (name, period, priority) straight from the scheduled modules;
+        // this test module is a descendant of `crate::simulation`, so it may
+        // touch those private fields.
+        fn scheduled_params(sim: &Simulation<'_>) -> Vec<(String, u64, i32)> {
+            sim.modules
+                .iter()
+                .map(|scheduled| {
+                    (
+                        scheduled.name.clone(),
+                        scheduled.period_nanos,
+                        scheduled.priority,
+                    )
+                })
+                .collect()
+        }
+
+        // Same values, one call site per form.
+        let mut labeled_sun = sun_sensor();
+        let mut labeled_imu = imu();
+        let mut labeled_sim = simulation();
+        crate::schedule! { labeled_sim,
+            "sun_sensor" => &mut labeled_sun, period = 10_000_000, priority = 0;
+            "imu" => &mut labeled_imu, period = 20_000_000, priority = 10;
+        }
+
+        let mut positional_sun = sun_sensor();
+        let mut positional_imu = imu();
+        let mut positional_sim = simulation();
+        crate::schedule! { positional_sim,
+            "sun_sensor" => &mut positional_sun, 10_000_000, 0;
+            "imu" => &mut positional_imu, 20_000_000, 10;
+        }
+
+        assert_eq!(
+            scheduled_params(&labeled_sim),
+            scheduled_params(&positional_sim),
+        );
     }
 }

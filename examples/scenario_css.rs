@@ -1,4 +1,4 @@
-//! Basilisk `scenarioCSS.py` parity case `0010`.
+//! Parity case for `scenarioCSS.py` `0010`.
 //!
 //! Three independent coarse Sun sensors, no platform/constellation, a fixed
 //! half-eclipse, and no Kelly distortion. The binary only writes CSV output.

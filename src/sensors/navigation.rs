@@ -6,7 +6,7 @@ use crate::{Module, SimulationContext};
 /// Perfect navigation adapter that republishes spacecraft truth in the
 /// navigation-message types consumed by flight-software modules.
 ///
-/// This is the noiseless subset of Basilisk's `SimpleNav`: position, velocity,
+/// This is a noiseless navigation solution: position, velocity,
 /// attitude, and body rate are copied exactly from the connected spacecraft
 /// state. The Sun-point field remains zero because [`SpacecraftStateMsg`] does
 /// not carry a Sun direction.

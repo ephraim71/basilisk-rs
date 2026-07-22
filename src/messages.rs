@@ -72,7 +72,7 @@ pub use thruster_command::ThrusterCommandMsg;
 pub use translation_reference::TranslationReferenceMsg;
 pub use vehicle_config::VehicleConfigMsg;
 
-/// Matches Basilisk's fixed maximum number of configurable effectors.
+/// Fixed maximum number of configurable effectors.
 pub const MAX_EFF_COUNT: usize = 36;
 
 #[derive(Clone, Debug)]

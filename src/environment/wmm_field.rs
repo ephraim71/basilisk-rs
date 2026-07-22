@@ -1,10 +1,10 @@
 //! World Magnetic Model environment module.
 //!
-//! The implementation follows the spherical-harmonic formulation used by the
-//! current Basilisk C++ WMM module. WMM2025 coefficients are embedded,
+//! The implementation follows the standard spherical-harmonic WMM
+//! formulation. WMM2025 coefficients are embedded,
 //! evaluated in `f64`, and advanced from the 2025.0 model epoch with their
 //! secular-variation terms. Dates before 2025 are deliberately supported by
-//! negative extrapolation; the Basilisk momentum-management reference scenario
+//! negative extrapolation; the momentum-management scenario
 //! starts in June 2019.
 
 use hifitime::{Duration as HiDuration, Epoch};
@@ -36,8 +36,7 @@ impl Default for WmmFieldConfig {
 ///
 /// `input_planet_msg` is optional. With no planet message, or with a planet
 /// message whose `orientation` is `None`, the planet is treated as centered at
-/// the inertial origin with identity inertial-to-fixed orientation, matching
-/// Basilisk's magnetic-field base-class fallback. A connected planet message
+/// the inertial origin with identity inertial-to-fixed orientation. A connected planet message
 /// still supplies its inertial position when its orientation is absent.
 #[derive(Clone, Debug)]
 pub struct WmmField {
@@ -77,8 +76,8 @@ impl WmmField {
             return Vector3::zeros();
         }
 
-        // Basilisk's current WMM module evaluates the harmonics directly in
-        // geocentric spherical coordinates. In particular, it does not pass
+        // The harmonics are evaluated directly in geocentric spherical
+        // coordinates. In particular, this does not pass
         // through WGS-84 geodetic coordinates or rotate the spherical field to
         // a geodetic tangent frame.
         let latitude_rad = (relative_position_fixed_m.z / orbit_radius_m)
@@ -318,7 +317,7 @@ fn triangular_index(n: usize, m: usize) -> usize {
     n * (n + 1) / 2 + m
 }
 
-/// Reproduce Basilisk C++'s civil-time conversion: round the epoch-message
+/// Civil-time conversion: round the epoch-message
 /// seconds once, round elapsed simulation seconds once, then normalize the
 /// resulting Gregorian calendar before computing the fractional year.
 fn decimal_year_from_simulation_time(current_epoch: Epoch, current_sim_nanos: u64) -> f64 {
@@ -411,9 +410,9 @@ mod tests {
 
     #[test]
     fn matches_basilisk_cpp_wmm2025_spherical_reference() {
-        // Basilisk C++ output using WMM2025.COF at the initial state of
+        // Expected output using WMM2025.COF at the initial state of
         // scenarioMtbMomentumManagement. This is the spherical N/E/D vector
-        // before Basilisk rotates it into inertial components.
+        // before it is rotated into inertial components.
         let expected_nt = Vector3::new(
             29_237.812_127_970_752,
             -1_917.855_041_684_363_4,

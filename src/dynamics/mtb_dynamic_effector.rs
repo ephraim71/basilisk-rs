@@ -11,7 +11,7 @@ use crate::spacecraft::{DynamicEffector, EffectorOutput};
 /// Aggregate magnetic-torque-bar effector.
 ///
 /// One instance represents the complete MTB array. Active command and
-/// configuration slots share the same index, matching Basilisk's `MtbEffector`.
+/// configuration slots share the same index.
 #[derive(Clone, Debug)]
 pub struct MtbEffector {
     pub name: String,
@@ -52,8 +52,8 @@ impl MtbEffector {
             } else if dipole_command_am2 < -max_dipole_am2 {
                 dipole_command_am2 = -max_dipole_am2;
             }
-            // Basilisk uses each Gt matrix column verbatim; it does not
-            // normalize configured MTB axes inside the dynamics module.
+            // Each Gt matrix column is used verbatim; configured MTB axes are
+            // not normalized inside the dynamics module.
             net_dipole_body_am2 += axis_body * dipole_command_am2;
         }
 

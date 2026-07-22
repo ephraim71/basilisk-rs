@@ -1,4 +1,4 @@
-//! Basilisk `scenarioMtbMomentumManagement.py` parity case.
+//! Parity case for `scenarioMtbMomentumManagement.py`.
 //!
 //! Four reaction wheels, four magnetic torque bars, WMM2025, and the complete
 //! attitude/momentum-management control chain. The binary only writes CSV.

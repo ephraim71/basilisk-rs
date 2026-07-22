@@ -1,7 +1,7 @@
 const NANOSECONDS_TO_SECONDS: f64 = 1.0e-9;
 const MAX_SAFE_NANOSECOND_DELTA: u64 = 1_u64 << f64::MANTISSA_DIGITS;
 
-/// Match Basilisk's `diffNanoToSec`: preserve the sign of a time difference
+/// Signed time difference in seconds: preserve the sign of the difference
 /// and reject integer deltas that cannot be represented exactly by `f64`.
 pub(crate) fn diff_nanos_to_seconds(first_nanos: u64, second_nanos: u64) -> f64 {
     let (magnitude_nanos, sign) = if first_nanos >= second_nanos {

@@ -620,8 +620,7 @@ impl ReactionWheel {
 }
 
 /// Aggregate reaction-wheel state effector. Wheel order defines the mapping
-/// from `rw_motor_cmd_in_msg.motor_torque_nm[i]` to `wheels[i]`, matching
-/// Basilisk's `ReactionWheelStateEffector::addReactionWheel` convention.
+/// from `rw_motor_cmd_in_msg.motor_torque_nm[i]` to `wheels[i]` by insertion order.
 #[derive(Clone, Debug)]
 pub struct ReactionWheelStateEffector {
     pub name: String,
@@ -1273,8 +1272,8 @@ mod tests {
         reaction_wheels.add_reaction_wheel(balanced);
         reaction_wheels.add_reaction_wheel(jitter);
 
-        // Basilisk stores every wheel speed first, followed only by the
-        // jitter-wheel angles: [omega_x, omega_y, theta_y].
+        // Every wheel speed is stored first, followed by the jitter-wheel
+        // angles: [omega_x, omega_y, theta_y].
         assert_eq!(reaction_wheels.state_len(), 3);
         assert_eq!(reaction_wheels.initial_state(), vec![4.0, 5.0, 0.0]);
         let state = [4.0, 5.0, 0.2];

@@ -1,4 +1,4 @@
-//! Basilisk `scenarioAttitudeFeedbackRW.py` parity case `01`.
+//! Parity case for `scenarioAttitudeFeedbackRW.py` `01`.
 //!
 //! Balanced Honeywell HR16 wheels with the flight-software and hardware
 //! voltage interfaces enabled. The binary only runs the simulation and writes

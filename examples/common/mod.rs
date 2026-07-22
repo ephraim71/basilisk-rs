@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use basilisk_rs::telemetry::TelemetryField;
 use nalgebra::Vector3;
 
-// Value used by the Basilisk build that produced `csvs.zip`.
+// Earth gravitational parameter (m^3/s^2) shared across the parity scenarios.
 pub const MU_EARTH_M3PS2: f64 = 3.986_004_36e14;
 pub const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_136.6;
 pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
@@ -33,8 +33,7 @@ pub fn scenario_output_path(file_name: &str) -> PathBuf {
     path
 }
 
-/// Classical orbital elements to inertial Cartesian state, matching
-/// Basilisk's `orbitalMotion.elem2rv` convention.
+/// Classical orbital elements to inertial Cartesian state.
 #[allow(clippy::too_many_arguments)]
 pub fn elem2rv(
     mu_m3ps2: f64,

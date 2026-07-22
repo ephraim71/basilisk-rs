@@ -349,7 +349,7 @@ mod tests {
     }
 
     /// With a rotating planet the drag opposes the atmosphere-relative velocity
-    /// v_rel = v - (omega x r). Mirrors Basilisk's wind-linked facet drag test.
+    /// v_rel = v - (omega x r).
     #[test]
     fn planet_rotation_produces_atmosphere_relative_drag() {
         let density = 2.0_f64;

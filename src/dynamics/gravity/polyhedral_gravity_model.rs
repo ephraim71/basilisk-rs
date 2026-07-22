@@ -105,8 +105,8 @@ impl PolyhedralGravityModel {
         })
     }
 
-    /// Loads the `.txt`, `.obj`, or `.tab` formats accepted by Basilisk's
-    /// `loadPolyFromFile`, whose vertex coordinates are expressed in km.
+    /// Loads the `.txt`, `.obj`, or `.tab` mesh formats, whose vertex
+    /// coordinates are expressed in km.
     pub fn from_basilisk_file(path: impl AsRef<Path>, mu_m3ps2: f64) -> Result<Self, GravityError> {
         let path = resolve_repo_relative_path(path.as_ref());
         let contents =
@@ -204,7 +204,7 @@ impl GravityModel for PolyhedralGravityModel {
     }
 
     fn specific_potential_jpkg(&mut self, position_m: Vector3<f64>) -> Result<f64, GravityError> {
-        // Official Basilisk currently uses point-mass potential for this model.
+        // A point-mass potential is used for this model.
         Ok(-self.mu_m3ps2 / checked_radius(position_m)?)
     }
 }

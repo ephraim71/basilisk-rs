@@ -38,7 +38,6 @@ python3 -m pip install matplotlib
 Clone
 
 ```bash
-git clone git@github.com:ephraim71/basilisk-rs.git
 cd basilisk-rs
 ```
 

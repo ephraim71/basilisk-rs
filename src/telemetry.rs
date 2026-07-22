@@ -63,7 +63,7 @@ pub enum CsvFormat {
     /// fixed-point values.
     #[default]
     Default,
-    /// Basilisk scenario-reference format: one integer `time_ns` column and
+    /// Reference scenario format: one integer `time_ns` column and
     /// 18-digit scientific values.
     BasiliskReference,
 }

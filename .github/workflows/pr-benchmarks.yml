@@ -94,6 +94,7 @@ jobs:
           cold_build_seconds="$(tr -d '\n' < .github/tmp/cold-build-seconds.txt)"
           warm_build_seconds="$(tr -d '\n' < .github/tmp/warm-build-seconds.txt)"
           run_seconds="$(tr -d '\n' < .github/tmp/run-seconds.txt)"
+          simulation_seconds='7200'
           binary_size_bytes="$(stat -c '%s' ./target/release/examples/scenario_mtb_momentum_management)"
 
           build_size="$(
@@ -114,6 +115,17 @@ jobs:
                 } else {
                   printf "%.2f %s", value, unit;
                 }
+              }
+            '
+          )"
+
+          speedup="$(
+            awk -v sim="${simulation_seconds}" -v wall="${run_seconds}" '
+              BEGIN {
+                if (wall <= 0) {
+                  exit 1;
+                }
+                printf "%.2fx", sim / wall;
               }
             '
           )"
@@ -152,7 +164,8 @@ jobs:
             printf 'Passed: `%s`\n' '${{ steps.tests.outputs.passed }}'
             printf 'Failed: `%s`\n' '${{ steps.tests.outputs.failed }}'
             printf 'Build size: `%s`\n' "${build_size}"
-            printf 'scenario_mtb_momentum_management runtime: `%ss`\n' "${run_seconds}"
+            printf 'scenario_mtb_momentum_management wall-clock runtime: `%ss`\n' "${run_seconds}"
+            printf 'scenario_mtb_momentum_management simulation speedup: `%s`\n' "${speedup}"
             printf 'Cold build time: `%s`\n' "${cold_build_time}"
             printf 'Warm build time: `%s`\n' "${warm_build_time}"
           } > .github/tmp/pr-comment.md

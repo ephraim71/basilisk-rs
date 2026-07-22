@@ -2,7 +2,6 @@ use nalgebra::Vector3;
 
 use super::MAX_EFF_COUNT;
 
-/// Magnetic-torque-bar array geometry and limits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MtbArrayConfigMsg {
     pub num_mtb: usize,

@@ -32,7 +32,6 @@ impl MotorVoltageInterfaceConfig {
     }
 }
 
-/// Maps aggregate motor voltage commands to aggregate motor torque commands.
 #[derive(Clone, Debug)]
 pub struct MotorVoltageInterface {
     pub config: MotorVoltageInterfaceConfig,

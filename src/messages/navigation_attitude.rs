@@ -2,7 +2,6 @@ use nalgebra::Vector3;
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-/// Attitude-navigation solution.
 #[derive(Clone, Debug, Default)]
 pub struct NavigationAttitudeMsg {
     pub time_tag_s: f64,

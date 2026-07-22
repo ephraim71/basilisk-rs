@@ -1,8 +1,8 @@
 use nalgebra::{Matrix3, Vector3};
 
 use crate::messages::{
-    AttitudeGuidanceMsg, BodyTorqueCommandMsg, Input, Output, RwArrayConfigMsg, RwAvailabilityMsg,
-    RwSpeedMsg, VehicleConfigMsg, MAX_EFF_COUNT,
+    AttitudeGuidanceMsg, BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output, RwArrayConfigMsg,
+    RwAvailabilityMsg, RwSpeedMsg, VehicleConfigMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::{Module, SimulationContext};

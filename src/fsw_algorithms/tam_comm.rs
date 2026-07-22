@@ -64,8 +64,8 @@ impl Module for TamComm {
 mod tests {
     use hifitime::Epoch;
     use nalgebra::{Matrix3, Vector3};
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use rand_distr::{Distribution, StandardNormal};
 
     use crate::messages::{Input, Output, TamSensorBodyMsg, TamSensorMsg};

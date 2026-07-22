@@ -1,8 +1,8 @@
 use nalgebra::{Matrix3, Vector3};
 
 use crate::messages::{
-    ArrayMotorTorqueMsg, BodyTorqueCommandMsg, Input, Output, RwArrayConfigMsg, RwAvailabilityMsg,
-    MAX_EFF_COUNT,
+    ArrayMotorTorqueMsg, BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output, RwArrayConfigMsg,
+    RwAvailabilityMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -195,12 +195,12 @@ mod tests {
     use nalgebra::{DMatrix, DVector, Matrix3, Vector3};
 
     use crate::messages::{
-        BodyTorqueCommandMsg, Output, RwArrayConfigMsg, RwAvailability, RwAvailabilityMsg,
-        MAX_EFF_COUNT,
+        BodyTorqueCommandMsg, MAX_EFF_COUNT, Output, RwArrayConfigMsg, RwAvailability,
+        RwAvailabilityMsg,
     };
     use crate::{Module, SimulationContext};
 
-    use super::{upstream_m33_inverse, RwMotorTorque, RwMotorTorqueConfig};
+    use super::{RwMotorTorque, RwMotorTorqueConfig, upstream_m33_inverse};
 
     const WHEEL_AXES_36: [[f64; 3]; 36] = [
         [0.4835867893995201, 0.7025829597277155, 0.5220354411517549],

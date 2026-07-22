@@ -19,7 +19,9 @@ use crate::dynamics::reaction_wheel_state_effector::{
 use crate::integrators::{
     Dopri45, Euler, Heun, Integrator, Midpoint, Ralston, Rk4, Rk4ThreeEighths, Rkf45,
 };
-use crate::messages::{ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
+use crate::messages::{
+    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg,
+};
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
 use crate::spacecraft::traits::DynamicEffector;

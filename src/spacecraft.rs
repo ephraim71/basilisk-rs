@@ -1,6 +1,6 @@
 use crate::dynamics::gravity::{GravBodyData, GravityEffector, GravityError};
-use crate::integrators::traits::DynamicObject;
 use crate::integrators::Rk4;
+use crate::integrators::traits::DynamicObject;
 use crate::messages::{
     Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg, SpacecraftMassPropsMsg,
     SpacecraftStateMsg,

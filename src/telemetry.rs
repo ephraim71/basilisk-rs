@@ -128,7 +128,8 @@ where
         };
 
         if let Some(file_handler) = &mut self.file_handler {
-            serde_json::to_writer(&mut *file_handler, &sample).expect("failed to serialize telemetry sample");
+            serde_json::to_writer(&mut *file_handler, &sample)
+                .expect("failed to serialize telemetry sample");
             writeln!(file_handler).expect("failed to append telemetry newline");
         }
     }
@@ -160,7 +161,7 @@ where
         if let Some(file_handler) = &mut self.file_handler {
             if !self.header_written {
                 self.header_paths = fields.iter().map(|field| field.path.clone()).collect();
-    
+
                 match self.format {
                     CsvFormat::Default => {
                         write!(file_handler, "sim_time_nanos,sim_time_s")
@@ -171,7 +172,8 @@ where
                     }
                 }
                 for path in &self.header_paths {
-                    write!(&mut *file_handler, ",{path}").expect("failed to write CSV header field");
+                    write!(&mut *file_handler, ",{path}")
+                        .expect("failed to write CSV header field");
                 }
                 writeln!(&mut *file_handler).expect("failed to finish CSV row");
                 self.header_written = true;
@@ -200,10 +202,12 @@ where
                     .unwrap_or(0.0);
                 match self.format {
                     CsvFormat::Default => {
-                        write!(&mut *file_handler, ",{value:.12}").expect("failed to write CSV field value");
+                        write!(&mut *file_handler, ",{value:.12}")
+                            .expect("failed to write CSV field value");
                     }
                     CsvFormat::BasiliskReference => {
-                        write!(&mut *file_handler, ",{value:.18e}").expect("failed to write CSV field value");
+                        write!(&mut *file_handler, ",{value:.18e}")
+                            .expect("failed to write CSV field value");
                     }
                 }
             }

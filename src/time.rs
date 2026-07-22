@@ -20,7 +20,7 @@ pub(crate) fn diff_nanos_to_seconds(first_nanos: u64, second_nanos: u64) -> f64 
 
 #[cfg(test)]
 mod tests {
-    use super::{diff_nanos_to_seconds, MAX_SAFE_NANOSECOND_DELTA};
+    use super::{MAX_SAFE_NANOSECOND_DELTA, diff_nanos_to_seconds};
 
     #[test]
     fn matches_upstream_signed_and_precision_checked_conversion() {

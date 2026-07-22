@@ -150,7 +150,10 @@ impl ReactionWheelStateEffectorConfig {
             ("j13_kg_m2", self.j13_kg_m2),
             ("coulomb_friction_nm", self.coulomb_friction_nm),
             ("static_friction_nm", self.static_friction_nm),
-            ("viscous_friction_nms_per_rad", self.viscous_friction_nms_per_rad),
+            (
+                "viscous_friction_nms_per_rad",
+                self.viscous_friction_nms_per_rad,
+            ),
         ] {
             if !value.is_finite() || value < 0.0 {
                 return Err(format!("{label} must be finite and >= 0, got {value}"));
@@ -506,11 +509,7 @@ impl ReactionWheel {
     /// and speed: the wheel inertia tensor, center-of-mass position, and their
     /// body-frame time derivatives. `com_offset_m` is the imbalance center-of-mass
     /// offset along `w2_hat` and `j13_kg_m2` is the off-diagonal wheel inertia.
-    fn fully_coupled_kinematics(
-        &self,
-        theta_rad: f64,
-        omega_radps: f64,
-    ) -> FullyCoupledKinematics {
+    fn fully_coupled_kinematics(&self, theta_rad: f64, omega_radps: f64) -> FullyCoupledKinematics {
         let gs_hat = normalize_or_zero(self.config.spin_axis_body);
         let (w2_hat, w3_hat) = self.jitter_axes_for_theta(theta_rad);
 
@@ -521,18 +520,20 @@ impl ReactionWheel {
         // dcm_BW has the wheel frame axes as its columns.
         let dcm_body_wheel = Matrix3::from_columns(&[gs_hat, w2_hat, w3_hat]);
         let inertia_wheel = Matrix3::new(
-            self.config.js_kg_m2, 0.0, j13,
-            0.0, self.config.jt_kg_m2, 0.0,
-            j13, 0.0, self.config.jg_kg_m2,
+            self.config.js_kg_m2,
+            0.0,
+            j13,
+            0.0,
+            self.config.jt_kg_m2,
+            0.0,
+            j13,
+            0.0,
+            self.config.jg_kg_m2,
         );
         let inertia_body = dcm_body_wheel * inertia_wheel * dcm_body_wheel.transpose();
-        let inertia_prime_wheel = Matrix3::new(
-            0.0, -j13, 0.0,
-            -j13, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-        ) * omega_radps;
-        let inertia_prime_body =
-            dcm_body_wheel * inertia_prime_wheel * dcm_body_wheel.transpose();
+        let inertia_prime_wheel =
+            Matrix3::new(0.0, -j13, 0.0, -j13, 0.0, 0.0, 0.0, 0.0, 0.0) * omega_radps;
+        let inertia_prime_body = dcm_body_wheel * inertia_prime_wheel * dcm_body_wheel.transpose();
 
         let com_position_body = self.config.position_m + d * w2_hat;
         let com_prime_body = d * omega_radps * w3_hat;
@@ -574,16 +575,14 @@ impl ReactionWheel {
         let gravity_torque_about_wheel = d * k.w2_hat.cross(&(mass * gravity_body_mps2));
 
         let a_omega = -mass_d / denom * k.w3_hat;
-        let b_omega = -(denom * k.gs_hat
-            + j13 * k.w3_hat
-            + mass_d * self.config.position_m.cross(&k.w3_hat))
-            / denom;
+        let b_omega =
+            -(denom * k.gs_hat + j13 * k.w3_hat + mass_d * self.config.position_m.cross(&k.w3_hat))
+                / denom;
         let c_omega = (omega_w2 * omega_w3 * (-mass * d * d)
             - j13 * omega_w2 * omega_s
             - mass_d
                 * k.w3_hat.dot(
-                    &body_omega_radps
-                        .cross(&body_omega_radps.cross(&self.config.position_m)),
+                    &body_omega_radps.cross(&body_omega_radps.cross(&self.config.position_m)),
                 )
             + (self.u_current_nm + self.friction_torque_nm)
             + k.gs_hat.dot(&gravity_torque_about_wheel))
@@ -784,23 +783,25 @@ impl StateEffector for ReactionWheelStateEffector {
         self.assert_state_length(effector_state);
         let mut derivatives = vec![0.0; self.state_len()];
         for (wheel_index, wheel) in self.wheels.iter().enumerate() {
-            let omega_dot_radps2 = if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled)
-            {
-                // a_omega/b_omega/c_omega were cached in update_contributions, which
-                // has the body rate that compute_derivatives is not given.
-                let terms = wheel.fully_coupled_terms.borrow();
-                terms.a_omega.dot(&body_trans_accel_mps2)
-                    + terms.b_omega.dot(&body_omega_dot_radps2)
-                    + terms.c_omega
-            } else {
-                wheel
-                    .omega_dot_radps2(body_omega_dot_radps2)
-                    .expect("unsupported reaction wheel model for back substitution")
-            };
+            let omega_dot_radps2 =
+                if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+                    // a_omega/b_omega/c_omega were cached in update_contributions, which
+                    // has the body rate that compute_derivatives is not given.
+                    let terms = wheel.fully_coupled_terms.borrow();
+                    terms.a_omega.dot(&body_trans_accel_mps2)
+                        + terms.b_omega.dot(&body_omega_dot_radps2)
+                        + terms.c_omega
+                } else {
+                    wheel
+                        .omega_dot_radps2(body_omega_dot_radps2)
+                        .expect("unsupported reaction wheel model for back substitution")
+                };
             // Numerical-stability guard: unlimited torque on a small-inertia hub can
             // otherwise produce an unbounded wheel acceleration.
-            let omega_dot_radps2 =
-                omega_dot_radps2.clamp(-MAX_WHEEL_ACCELERATION_RADPS2, MAX_WHEEL_ACCELERATION_RADPS2);
+            let omega_dot_radps2 = omega_dot_radps2.clamp(
+                -MAX_WHEEL_ACCELERATION_RADPS2,
+                MAX_WHEEL_ACCELERATION_RADPS2,
+            );
             derivatives[wheel_index] = omega_dot_radps2;
             if let Some(theta_index) = self.theta_state_index(wheel_index) {
                 derivatives[theta_index] = effector_state[wheel_index];
@@ -822,7 +823,13 @@ impl StateEffector for ReactionWheelStateEffector {
                     Matrix3::zeros(),
                     Matrix3::zeros(),
                 ),
-                |(mass_sum, first_moment_sum, first_moment_prime_sum, inertia_sum, inertia_prime_sum),
+                |(
+                    mass_sum,
+                    first_moment_sum,
+                    first_moment_prime_sum,
+                    inertia_sum,
+                    inertia_prime_sum,
+                ),
                  (wheel_index, wheel)| {
                     if !matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
                         return (
@@ -833,14 +840,17 @@ impl StateEffector for ReactionWheelStateEffector {
                             inertia_prime_sum,
                         );
                     }
-                    let (omega_radps, theta_rad) = self.state_for_wheel(effector_state, wheel_index);
+                    let (omega_radps, theta_rad) =
+                        self.state_for_wheel(effector_state, wheel_index);
                     let k = wheel.fully_coupled_kinematics(theta_rad, omega_radps);
                     let r_tilde = tilde(k.com_position_body);
                     let r_prime_tilde = tilde(k.com_prime_body);
-                    let inertia_about_point_b = k.inertia_body + k.mass * r_tilde * r_tilde.transpose();
+                    let inertia_about_point_b =
+                        k.inertia_body + k.mass * r_tilde * r_tilde.transpose();
                     let inertia_about_point_b_prime = k.inertia_prime_body
                         + k.mass
-                            * (r_prime_tilde * r_tilde.transpose() + r_tilde * r_prime_tilde.transpose());
+                            * (r_prime_tilde * r_tilde.transpose()
+                                + r_tilde * r_prime_tilde.transpose());
                     (
                         mass_sum + k.mass,
                         first_moment_sum + k.mass * k.com_position_body,

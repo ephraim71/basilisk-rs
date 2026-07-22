@@ -1,6 +1,6 @@
 use crate::messages::{
-    ArrayMotorTorqueMsg, ArrayMotorVoltageMsg, Input, Output, RwArrayConfigMsg, RwAvailabilityMsg,
-    RwSpeedMsg, MAX_EFF_COUNT,
+    ArrayMotorTorqueMsg, ArrayMotorVoltageMsg, Input, MAX_EFF_COUNT, Output, RwArrayConfigMsg,
+    RwAvailabilityMsg, RwSpeedMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::{Module, SimulationContext};
@@ -368,11 +368,13 @@ mod tests {
 
         module.reset();
 
-        assert!(module
-            .voltage_out_msg
-            .read()
-            .voltage_v
-            .iter()
-            .all(|voltage| voltage.abs() <= 1.0e-3));
+        assert!(
+            module
+                .voltage_out_msg
+                .read()
+                .voltage_v
+                .iter()
+                .all(|voltage| voltage.abs() <= 1.0e-3)
+        );
     }
 }

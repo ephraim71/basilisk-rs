@@ -38,7 +38,7 @@ pub struct EffectorOutput {
     pub torque_body_nm: Vector3<f64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SpacecraftConfig {
     pub mass_kg: f64,
     /// Hub center of mass relative to the body frame origin.

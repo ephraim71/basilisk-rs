@@ -3,7 +3,7 @@
 //!
 //! Each built-in method is a small struct that delegates to the Butcher-tableau
 //! drivers in [`super::butcher`]. To add a *custom* integrator, implement
-//! [`Integrator`] for your own type and derive `Clone` + `Debug` — it can then
+//! [`Integrator`] for your own type and derive `Debug` — it can then
 //! be dropped straight into `SpacecraftConfig::integrator`. The step itself can
 //! reuse [`propagate_explicit_rk`] / [`propagate_adaptive_rk`] with a custom
 //! [`ButcherTableau`](super::butcher::ButcherTableau), or be written from scratch
@@ -21,10 +21,10 @@ use std::fmt;
 /// `dt_seconds`, returning the next state and the step's
 /// [`StepOutput`](DynamicObject::StepOutput).
 ///
-/// Implement this — and derive `Clone` + `Debug` — to define a custom
-/// integrator that plugs into `SpacecraftConfig::integrator`. `Send` is required
-/// because a `Spacecraft` is a [`Module`](crate::Module), which must be `Send`.
-pub trait Integrator<D: DynamicObject + 'static>: IntegratorClone<D> + fmt::Debug + Send {
+/// Implement this — and derive `Debug` — to define a custom integrator that
+/// plugs into `SpacecraftConfig::integrator`. `Send` is required because a
+/// `Spacecraft` is a [`Module`](crate::Module), which must be `Send`.
+pub trait Integrator<D: DynamicObject + 'static>: fmt::Debug + Send {
     fn propagate(
         &self,
         object: &mut D,
@@ -33,30 +33,6 @@ pub trait Integrator<D: DynamicObject + 'static>: IntegratorClone<D> + fmt::Debu
         current_epoch: Epoch,
         dt_seconds: f64,
     ) -> (D::State, D::StepOutput);
-}
-
-/// Object-safe cloning support for `Box<dyn Integrator<D>>`.
-///
-/// Blanket-implemented for every `Clone` integrator, so implementors get it for
-/// free just by deriving `Clone`; there is never a reason to implement it by hand.
-pub trait IntegratorClone<D: DynamicObject + 'static> {
-    fn clone_box(&self) -> Box<dyn Integrator<D>>;
-}
-
-impl<D, T> IntegratorClone<D> for T
-where
-    D: DynamicObject + 'static,
-    T: Integrator<D> + Clone + 'static,
-{
-    fn clone_box(&self) -> Box<dyn Integrator<D>> {
-        Box::new(self.clone())
-    }
-}
-
-impl<D: DynamicObject + 'static> Clone for Box<dyn Integrator<D>> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
 }
 
 /// Declares a zero-config fixed-step integrator struct bound to a tableau.

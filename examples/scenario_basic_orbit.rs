@@ -66,7 +66,7 @@ fn main() {
     );
     let orbit_period_s =
         2.0 * std::f64::consts::PI * (semimajor_axis_m.powi(3) / MU_EARTH_M3PS2).sqrt();
-    let duration_nanos = (0.75 * orbit_period_s * 1.0e9) as u64;
+    let duration_nanos = (0.75 * orbit_period_s * 1.0e13) as u64;
 
     let mut spacecraft = Spacecraft::new(SpacecraftConfig {
         mass_kg: 100.0,

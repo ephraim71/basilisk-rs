@@ -107,7 +107,7 @@ impl PolyhedralGravityModel {
 
     /// Loads the `.txt`, `.obj`, or `.tab` mesh formats, whose vertex
     /// coordinates are expressed in km.
-    pub fn from_basilisk_file(path: impl AsRef<Path>, mu_m3ps2: f64) -> Result<Self, GravityError> {
+    pub fn from_mesh_file(path: impl AsRef<Path>, mu_m3ps2: f64) -> Result<Self, GravityError> {
         let path = resolve_repo_relative_path(path.as_ref());
         let contents =
             fs::read_to_string(&path).map_err(|error| invalid_file(&path, error.to_string()))?;

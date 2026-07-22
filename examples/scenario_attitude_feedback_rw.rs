@@ -240,7 +240,7 @@ fn main() {
         topic: "scenarioAttitudeFeedbackRW01".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     connect!(&simulation,

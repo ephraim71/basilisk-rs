@@ -182,7 +182,7 @@ fn main() {
         topic: "scenarioDragDeorbitmsis0".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::BasiliskReference);
+    .with_format(CsvFormat::Reference);
 
     connect!(&simulation,
         &spacecraft.state_out => &mut atmosphere.input_state_msg,

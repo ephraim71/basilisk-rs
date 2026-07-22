@@ -65,7 +65,7 @@ pub enum CsvFormat {
     Default,
     /// Reference scenario format: one integer `time_ns` column and
     /// 18-digit scientific values.
-    BasiliskReference,
+    Reference,
 }
 
 #[derive(Debug)]
@@ -167,7 +167,7 @@ where
                         write!(file_handler, "sim_time_nanos,sim_time_s")
                             .expect("failed to write CSV header prefix");
                     }
-                    CsvFormat::BasiliskReference => {
+                    CsvFormat::Reference => {
                         write!(file_handler, "time_ns").expect("failed to write CSV header prefix");
                     }
                 }
@@ -189,7 +189,7 @@ where
                     )
                     .expect("failed to write CSV timestamp");
                 }
-                CsvFormat::BasiliskReference => {
+                CsvFormat::Reference => {
                     write!(&mut *file_handler, "{}", context.current_sim_nanos)
                         .expect("failed to write CSV timestamp");
                 }
@@ -205,7 +205,7 @@ where
                         write!(&mut *file_handler, ",{value:.12}")
                             .expect("failed to write CSV field value");
                     }
-                    CsvFormat::BasiliskReference => {
+                    CsvFormat::Reference => {
                         write!(&mut *file_handler, ",{value:.18e}")
                             .expect("failed to write CSV field value");
                     }
@@ -292,7 +292,7 @@ mod tests {
     fn reference_time_mode_writes_one_time_ns_column() {
         let csv = record_one_sample(
             unique_csv_path("reference_time"),
-            Some(CsvFormat::BasiliskReference),
+            Some(CsvFormat::Reference),
         );
         let mut lines = csv.lines();
         assert!(

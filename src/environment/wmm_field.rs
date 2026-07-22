@@ -409,7 +409,7 @@ mod tests {
     ];
 
     #[test]
-    fn matches_basilisk_cpp_wmm2025_spherical_reference() {
+    fn matches_reference_wmm2025_spherical() {
         // Expected output using WMM2025.COF at the initial state of
         // scenarioMtbMomentumManagement. This is the spherical N/E/D vector
         // before it is rotated into inertial components.
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn decimal_year_matches_basilisk_subday_and_rounding_behavior() {
+    fn decimal_year_matches_reference_subday_and_rounding_behavior() {
         let epoch = Epoch::from_gregorian_utc(2020, 7, 2, 12, 0, 0, 0);
         assert!(
             (decimal_year_from_simulation_time(epoch, 0) - 2020.501_366_120_218_6).abs() < 1.0e-12

@@ -291,7 +291,7 @@ impl From<String> for CsvSourceConfig {
 ///     &atmosphere => recorder.add_source::<AtmosphereMsg>("environment"),
 /// );
 /// schedule! { simulation,
-///     "csv" => &mut recorder, 1_000_000_000, 0;
+///     "csv" => &mut recorder, period=1_000_000_000, priority=0;
 /// }
 /// simulation.run_for(0);
 /// ```

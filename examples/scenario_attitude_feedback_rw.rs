@@ -231,15 +231,15 @@ fn main() {
         ),
     );
     schedule! { simulation,
-        "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 100;
-        "voltage_interface" => &mut voltage_interface, TASK_PERIOD_NANOS, 90;
-        "navigation" => &mut navigation, TASK_PERIOD_NANOS, 80;
-        "inertial_reference" => &mut inertial_reference, TASK_PERIOD_NANOS, 70;
-        "tracking_error" => &mut tracking_error, TASK_PERIOD_NANOS, 60;
-        "mrp_feedback" => &mut mrp_feedback, TASK_PERIOD_NANOS, 50;
-        "rw_motor_torque" => &mut rw_motor_torque, TASK_PERIOD_NANOS, 40;
-        "rw_motor_voltage" => &mut rw_motor_voltage, TASK_PERIOD_NANOS, 30;
-        "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
+        "spacecraft" => &mut spacecraft, period=TASK_PERIOD_NANOS, priority=100;
+        "voltage_interface" => &mut voltage_interface, period=TASK_PERIOD_NANOS, priority=90;
+        "navigation" => &mut navigation, period=TASK_PERIOD_NANOS, priority=80;
+        "inertial_reference" => &mut inertial_reference, period=TASK_PERIOD_NANOS, priority=70;
+        "tracking_error" => &mut tracking_error, period=TASK_PERIOD_NANOS, priority=60;
+        "mrp_feedback" => &mut mrp_feedback, period=TASK_PERIOD_NANOS, priority=50;
+        "rw_motor_torque" => &mut rw_motor_torque, period=TASK_PERIOD_NANOS, priority=40;
+        "rw_motor_voltage" => &mut rw_motor_voltage, period=TASK_PERIOD_NANOS, priority=30;
+        "recorder" => &mut recorder, period=SAMPLE_PERIOD_NANOS, priority=0;
     }
     simulation.run_for(DURATION_NANOS);
 

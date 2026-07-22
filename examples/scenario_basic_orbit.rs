@@ -78,8 +78,8 @@ fn main() {
         ),
     );
     schedule! { simulation,
-        "spacecraft" => &mut spacecraft, SPACECRAFT_PERIOD_NANOS, 20;
-        "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
+        "spacecraft" => &mut spacecraft, period=SPACECRAFT_PERIOD_NANOS, priority=20;
+        "recorder" => &mut recorder, period=SAMPLE_PERIOD_NANOS, priority=0;
     }
     simulation.run_for(duration_nanos);
 

@@ -21,11 +21,11 @@ fetch-gravity:
     mkdir -p assets/gravity
     curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt {{ggm03s_url}}
 
-run-basic-orbit:
-    cargo run --release --example scenario_basic_orbit
+# Run any example by name, forwarding extra args to the binary
+# (e.g. `just run scenario_basic_orbit` or `just run scenario_css -- --help`).
+run example *args:
+    cargo run --release --example {{example}} {{args}}
 
-plot-basic-orbit:
-    python3 examples/plot_scenario_basic_orbit.py
 
 # Run the five deterministic scenarios and write their CSV files.
 run-scenarios:

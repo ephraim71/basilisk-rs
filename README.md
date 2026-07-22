@@ -19,11 +19,64 @@ Install `matplotlib` to render scenario plots:
 python3 -m pip install matplotlib
 ```
 
+## Fetching assets
+
+Scenarios load ephemeris, planetary orientation, and gravity data that are not
+checked into the repository. Download them into `assets/` before running any
+scenario:
+
+```bash
+just fetch-assets
+```
+
+This is a convenience wrapper around two recipes:
+
+- `just fetch-anise-assets` — SPICE/ANISE kernels into `assets/anise/`
+  (`de440s.bsp`, `earth_latest_high_prec.bpc`, `pck11.pca`).
+- `just fetch-gravity` — the GGM03S spherical-harmonic gravity model into
+  `assets/gravity/GGM03S.txt`.
+
+The recipes only run `curl`, so if you don't have [`just`](https://github.com/casey/just)
+installed you can fetch each file by hand instead:
+
+```bash
+# SPICE/ANISE kernels
+mkdir -p assets/anise
+curl --fail --location --progress-bar --output assets/anise/de440s.bsp \
+  https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp
+curl --fail --location --progress-bar --output assets/anise/earth_latest_high_prec.bpc \
+  https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_latest_high_prec.bpc
+curl --fail --location --progress-bar --output assets/anise/pck11.pca \
+  https://public-data.nyxspace.com/anise/v0.4/pck11.pca
+
+# Gravity model
+mkdir -p assets/gravity
+curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt \
+  https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData/LocalGravData/GGM03S.txt
+```
+
+If the `pck11.pca` download fails on a TLS certificate error, retry that one
+command with `--insecure` (the `just` recipe falls back to this automatically).
+
 ## Basic orbit scenario
 
 Run the simulation:
 
 ```bash
+just run-basic-orbit
+# equivalently:
+cargo run --release --example scenario_basic_orbit
+```
+
+Any example can also be run by name with the generic `run` recipe, which
+forwards extra arguments to the binary after `--`. The name is the file stem of
+a `.rs` file in `examples/` (e.g. `scenario_basic_orbit` for
+`examples/scenario_basic_orbit.rs`); Cargo builds each such file with a `main()`
+as its own example target.
+
+```bash
+just run scenario_basic_orbit
+# equivalently:
 cargo run --release --example scenario_basic_orbit
 ```
 

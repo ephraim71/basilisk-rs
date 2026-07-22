@@ -1,8 +1,10 @@
-//! Parity case for `scenarioMtbMomentumManagement.py`.
+//! Magnetic torque-bar momentum-management configuration from
+//! `scenarioMtbMomentumManagement.py`.
 //!
 //! Four reaction wheels, four magnetic torque bars, WMM2025, and the complete
-//! attitude/momentum-management control chain. The binary only writes CSV.
+//! attitude/momentum-management control chain. Writes the telemetry to CSV.
 
+#[path = "support/common.rs"]
 mod common;
 
 use basilisk_rs::dynamics::gravity::GravBodyData;
@@ -20,21 +22,19 @@ use basilisk_rs::fsw_algorithms::mtb_momentum_management::{
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw_algorithms::tam_comm::{TamComm, TamCommConfig};
 use basilisk_rs::messages::{
-    ArrayMotorTorqueMsg, AttitudeGuidanceMsg, Input, MAX_EFF_COUNT, MagneticFieldMsg,
-    MtbArrayCommandMsg, MtbArrayConfigMsg, Output, ReactionWheelStateMsg, RwArrayConfigMsg,
-    RwSpeedMsg, TamSensorBodyMsg, TamSensorMsg, VehicleConfigMsg,
+    ArrayMotorTorqueMsg, AttitudeGuidanceMsg, MAX_EFF_COUNT, MagneticFieldMsg, MtbArrayCommandMsg,
+    MtbArrayConfigMsg, Output, ReactionWheelStateMsg, RwArrayConfigMsg, RwSpeedMsg,
+    TamSensorBodyMsg, TamSensorMsg, VehicleConfigMsg,
 };
 use basilisk_rs::sensors::magnetometer::{Magnetometer, MagnetometerConfig};
 use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{
-    CsvFormat, CsvRecorder, CsvRecorderConfig, TelemetryField, TelemetryMessage,
-};
-use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
+use basilisk_rs::{connect, schedule};
 use common::{
-    MU_EARTH_M3PS2, array_fields, elem2rv, rpm_to_radps, scenario_output_path, seconds,
-    vector_fields,
+    MU_EARTH_M3PS2, array_columns, elem2rv, rpm_to_radps, scenario_output_path, seconds,
+    vector_columns,
 };
 use hifitime::Epoch;
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -42,92 +42,6 @@ use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 const TASK_PERIOD_NANOS: u64 = seconds(2);
 const SAMPLE_PERIOD_NANOS: u64 = seconds(36);
 const DURATION_NANOS: u64 = seconds(7_200);
-
-#[derive(Clone, Debug)]
-struct MtbTelemetry {
-    requested_motor_torque_nm: [f64; MAX_EFF_COUNT],
-    guidance: AttitudeGuidanceMsg,
-    wheel_speeds_radps: [f64; MAX_EFF_COUNT],
-    applied_motor_torque_nm: [f64; 4],
-    magnetic_field_inertial_t: Vector3<f64>,
-    tam_sensor_t: Vector3<f64>,
-    tam_body_t: Vector3<f64>,
-    dipole_cmds_am2: [f64; MAX_EFF_COUNT],
-}
-
-impl Default for MtbTelemetry {
-    fn default() -> Self {
-        Self {
-            requested_motor_torque_nm: [0.0; MAX_EFF_COUNT],
-            guidance: AttitudeGuidanceMsg::default(),
-            wheel_speeds_radps: [0.0; MAX_EFF_COUNT],
-            applied_motor_torque_nm: [0.0; 4],
-            magnetic_field_inertial_t: Vector3::zeros(),
-            tam_sensor_t: Vector3::zeros(),
-            tam_body_t: Vector3::zeros(),
-            dipole_cmds_am2: [0.0; MAX_EFF_COUNT],
-        }
-    }
-}
-
-impl TelemetryMessage for MtbTelemetry {
-    fn flatten(&self) -> Vec<TelemetryField> {
-        let mut fields = array_fields("motorTorque_Nm", &self.requested_motor_torque_nm);
-        fields.extend(vector_fields("sigma_BR", self.guidance.sigma_br));
-        fields.extend(vector_fields(
-            "omega_BR_B_rad_per_s",
-            self.guidance.omega_br_b_radps,
-        ));
-        fields.extend(array_fields(
-            "wheelSpeeds_rad_per_s",
-            &self.wheel_speeds_radps,
-        ));
-        fields.extend(array_fields("rwTorque_Nm", &self.applied_motor_torque_nm));
-        fields.extend(vector_fields(
-            "magField_N_T",
-            self.magnetic_field_inertial_t,
-        ));
-        fields.extend(vector_fields("tam_S_T", self.tam_sensor_t));
-        fields.extend(vector_fields("tam_B_T", self.tam_body_t));
-        fields.extend(array_fields("mtbDipoleCmds_A_m2", &self.dipole_cmds_am2));
-        fields
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct MtbCollector {
-    requested_torque_in_msg: Input<ArrayMotorTorqueMsg>,
-    guidance_in_msg: Input<AttitudeGuidanceMsg>,
-    wheel_speeds_in_msg: Input<RwSpeedMsg>,
-    wheel_state_in_msgs: [Input<ReactionWheelStateMsg>; 4],
-    magnetic_field_in_msg: Input<MagneticFieldMsg>,
-    tam_sensor_in_msg: Input<TamSensorMsg>,
-    tam_body_in_msg: Input<TamSensorBodyMsg>,
-    dipole_command_in_msg: Input<MtbArrayCommandMsg>,
-    telemetry_out_msg: Output<MtbTelemetry>,
-}
-
-impl Module for MtbCollector {
-    fn init(&mut self) {
-        self.telemetry_out_msg.write(MtbTelemetry::default());
-    }
-
-    fn update(&mut self, _context: &SimulationContext) {
-        self.telemetry_out_msg.write(MtbTelemetry {
-            requested_motor_torque_nm: self.requested_torque_in_msg.read().motor_torque_nm,
-            guidance: self.guidance_in_msg.read(),
-            wheel_speeds_radps: self.wheel_speeds_in_msg.read().wheel_speeds_radps,
-            applied_motor_torque_nm: self
-                .wheel_state_in_msgs
-                .each_ref()
-                .map(|input| input.read().applied_motor_torque_nm),
-            magnetic_field_inertial_t: self.magnetic_field_in_msg.read().magnetic_field_inertial_t,
-            tam_sensor_t: self.tam_sensor_in_msg.read().magnetic_field_sensor_t,
-            tam_body_t: self.tam_body_in_msg.read().magnetic_field_body_t,
-            dipole_cmds_am2: self.dipole_command_in_msg.read().dipole_cmds_am2,
-        });
-    }
-}
 
 fn bct_wheel(name: &str, spin_axis_body: Vector3<f64>) -> ReactionWheelStateEffectorConfig {
     let maximum_speed_radps = rpm_to_radps(5_000.0);
@@ -171,8 +85,8 @@ fn main() {
         std::array::from_fn(|index| bct_wheel(&format!("RW{}", index + 1), wheel_axes[index]));
     let rw_config_output = Output::new(rw_configuration(&wheel_configs));
 
-    // Preserve the reference scenario's deliberately truncated diagonal-axis
-    // literal instead of substituting Rust's higher-precision constant.
+    // Preserve the source scenario's deliberately truncated diagonal-axis
+    // literal.
     #[allow(clippy::approx_constant)]
     let mtb_axes = [
         Vector3::x(),
@@ -286,12 +200,11 @@ fn main() {
     let mut mtb_effector = MtbEffector::new("MtbEff");
 
     let output_path = scenario_output_path("scenarioMtbMomentumManagement.csv");
-    let mut collector = MtbCollector::default();
     let mut recorder = CsvRecorder::new(CsvRecorderConfig {
         topic: "scenarioMtbMomentumManagement".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::Reference);
+    .with_format(CsvFormat::Scenario);
 
     let start_epoch = Epoch::from_gregorian_utc(2019, 6, 27, 10, 23, 0, 0);
     let mut simulation = Simulation::new(start_epoch, false);
@@ -323,18 +236,61 @@ fn main() {
         &tam_comm.tam_out_msg => &mut momentum_management.tam_sensor_body_in_msg,
         &wheel_speed_output => &mut momentum_management.rw_speeds_in_msg,
         &rw_motor_torque.rw_motor_torque_out_msg => &mut momentum_management.rw_motor_torque_in_msg,
-        &rw_motor_torque.rw_motor_torque_out_msg => &mut collector.requested_torque_in_msg,
-        &tracking_error.att_guid_out_msg => &mut collector.guidance_in_msg,
-        &wheel_speed_output => &mut collector.wheel_speeds_in_msg,
-        &wheel_state_outputs[0] => &mut collector.wheel_state_in_msgs[0],
-        &wheel_state_outputs[1] => &mut collector.wheel_state_in_msgs[1],
-        &wheel_state_outputs[2] => &mut collector.wheel_state_in_msgs[2],
-        &wheel_state_outputs[3] => &mut collector.wheel_state_in_msgs[3],
-        &magnetic_field.output_magnetic_field_msg => &mut collector.magnetic_field_in_msg,
-        &tam.output_tam_msg => &mut collector.tam_sensor_in_msg,
-        &tam_comm.tam_out_msg => &mut collector.tam_body_in_msg,
-        &momentum_management.mtb_cmd_out_msg => &mut collector.dipole_command_in_msg,
-        &collector.telemetry_out_msg => &mut recorder.input_msg,
+        &rw_motor_torque.rw_motor_torque_out_msg => recorder.add_source::<ArrayMotorTorqueMsg>(
+            CsvSourceConfig::columns(array_columns(
+                "motor_torque_nm",
+                "motorTorque_Nm",
+                MAX_EFF_COUNT,
+            )),
+        ),
+        &tracking_error.att_guid_out_msg => recorder.add_source::<AttitudeGuidanceMsg>(
+            CsvSourceConfig::columns(
+                vector_columns("sigma_br", "sigma_BR")
+                    .into_iter()
+                    .chain(vector_columns(
+                        "omega_br_b_radps",
+                        "omega_BR_B_rad_per_s",
+                    )),
+            ),
+        ),
+        &wheel_speed_output => recorder.add_source::<RwSpeedMsg>(
+            CsvSourceConfig::columns(array_columns(
+                "wheel_speeds_radps",
+                "wheelSpeeds_rad_per_s",
+                MAX_EFF_COUNT,
+            )),
+        ),
+        &wheel_state_outputs[0] => recorder.add_source::<ReactionWheelStateMsg>(
+            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_0")]),
+        ),
+        &wheel_state_outputs[1] => recorder.add_source::<ReactionWheelStateMsg>(
+            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_1")]),
+        ),
+        &wheel_state_outputs[2] => recorder.add_source::<ReactionWheelStateMsg>(
+            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_2")]),
+        ),
+        &wheel_state_outputs[3] => recorder.add_source::<ReactionWheelStateMsg>(
+            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_3")]),
+        ),
+        &magnetic_field.output_magnetic_field_msg => recorder.add_source::<MagneticFieldMsg>(
+            CsvSourceConfig::columns(vector_columns(
+                "magnetic_field_inertial_t",
+                "magField_N_T",
+            )),
+        ),
+        &tam.output_tam_msg => recorder.add_source::<TamSensorMsg>(
+            CsvSourceConfig::columns(vector_columns("magnetic_field_sensor_t", "tam_S_T")),
+        ),
+        &tam_comm.tam_out_msg => recorder.add_source::<TamSensorBodyMsg>(
+            CsvSourceConfig::columns(vector_columns("magnetic_field_body_t", "tam_B_T")),
+        ),
+        &momentum_management.mtb_cmd_out_msg => recorder.add_source::<MtbArrayCommandMsg>(
+            CsvSourceConfig::columns(array_columns(
+                "dipole_cmds_am2",
+                "mtbDipoleCmds_A_m2",
+                MAX_EFF_COUNT,
+            )),
+        ),
     );
     schedule! { simulation,
         "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 100;
@@ -347,7 +303,6 @@ fn main() {
         "tam" => &mut tam, TASK_PERIOD_NANOS, 30;
         "tam_comm" => &mut tam_comm, TASK_PERIOD_NANOS, 20;
         "momentum_management" => &mut momentum_management, TASK_PERIOD_NANOS, 10;
-        "collector" => &mut collector, SAMPLE_PERIOD_NANOS, 5;
         "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
     }
     simulation.run_for(DURATION_NANOS);

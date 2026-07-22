@@ -13,7 +13,7 @@ use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::{CsvRecorder, CsvRecorderConfig};
-use basilisk_rs::{Module, SimulationContext};
+use basilisk_rs::{Module, SimulationContext, connect, schedule};
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 
@@ -92,7 +92,9 @@ fn main() {
     rw_array_config.spin_axis_inertias_kg_m2[..wheel_axes.len()].fill(0.002);
     rw_array_config.max_motor_torques_nm[..wheel_axes.len()].fill(0.1);
     let rw_array_config_output = Output::new(rw_array_config);
-    sim.connect(&rw_array_config_output, &mut rw_allocator.rw_params_in_msg);
+    connect!(&sim,
+        &rw_array_config_output => &mut rw_allocator.rw_params_in_msg,
+    );
 
     let mut rw_x_config = ReactionWheelStateEffectorConfig::balanced(
         "rw_x",
@@ -115,9 +117,8 @@ fn main() {
     let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
     reaction_wheels.add_reaction_wheel(rw_x_config);
     reaction_wheels.add_reaction_wheel(rw_y_config);
-    sim.connect(
-        &rw_allocator.rw_motor_torque_out_msg,
-        &mut reaction_wheels.rw_motor_cmd_in_msg,
+    connect!(&sim,
+        &rw_allocator.rw_motor_torque_out_msg => &mut reaction_wheels.rw_motor_cmd_in_msg,
     );
     spacecraft.add_state_effector(reaction_wheels);
 
@@ -172,7 +173,9 @@ fn main() {
         mass_kg: 12.0,
         ..Default::default()
     });
-    sim.connect(&vehicle_config_output, &mut mrp_feedback.veh_config_in_msg);
+    connect!(&sim,
+        &vehicle_config_output => &mut mrp_feedback.veh_config_in_msg,
+    );
 
     let mut spacecraft_recorder = csv_recorder("spacecraft_state", &output_dir);
     let mut imu_recorder = csv_recorder("imu", &output_dir);
@@ -187,7 +190,9 @@ fn main() {
     let mut body_torque_recorder = csv_recorder("body_torque", &output_dir);
     let mut rw_cmd_recorder = csv_recorder("rw_commands", &output_dir);
 
-    sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
+    connect!(&sim,
+        &spacecraft.state_out => &mut imu.input_state_msg,
+    );
     for css in [
         &mut css_px,
         &mut css_mx,
@@ -196,8 +201,10 @@ fn main() {
         &mut css_pz,
         &mut css_mz,
     ] {
-        sim.connect(&spacecraft.state_out, &mut css.input_state_msg);
-        sim.connect(&sun_ephemeris.output_sun_msg, &mut css.input_sun_msg);
+        connect!(&sim,
+            &spacecraft.state_out => &mut css.input_state_msg,
+            &sun_ephemeris.output_sun_msg => &mut css.input_sun_msg,
+        );
     }
     for (input, sensor_output) in css_wls_est.css_data_in_msgs.iter_mut().zip([
         &css_px.output_sun_sensor_msg,
@@ -207,63 +214,28 @@ fn main() {
         &css_pz.output_sun_sensor_msg,
         &css_mz.output_sun_sensor_msg,
     ]) {
-        sim.connect(sensor_output, input);
+        connect!(&sim, sensor_output => input);
     }
-    sim.connect(
-        &css_wls_est.nav_state_out_msg,
-        &mut sun_safe_point.sun_direction_in_msg,
-    );
-    sim.connect(&imu.output_imu_msg, &mut sun_safe_point.imu_in_msg);
-    sim.connect(
-        &sun_safe_point.att_guidance_out_msg,
-        &mut mrp_feedback.guid_in_msg,
-    );
-    sim.connect(
-        &mrp_feedback.cmd_torque_out_msg,
-        &mut rw_allocator.veh_control_in_msg,
+    connect!(&sim,
+        &css_wls_est.nav_state_out_msg => &mut sun_safe_point.sun_direction_in_msg,
+        &imu.output_imu_msg => &mut sun_safe_point.imu_in_msg,
+        &sun_safe_point.att_guidance_out_msg => &mut mrp_feedback.guid_in_msg,
+        &mrp_feedback.cmd_torque_out_msg => &mut rw_allocator.veh_control_in_msg,
     );
 
-    sim.connect(&spacecraft.state_out, &mut spacecraft_recorder.input_msg);
-    sim.connect(&imu.output_imu_msg, &mut imu_recorder.input_msg);
-    sim.connect(
-        &css_px.output_sun_sensor_msg,
-        &mut css_px_recorder.input_msg,
-    );
-    sim.connect(
-        &css_mx.output_sun_sensor_msg,
-        &mut css_mx_recorder.input_msg,
-    );
-    sim.connect(
-        &css_py.output_sun_sensor_msg,
-        &mut css_py_recorder.input_msg,
-    );
-    sim.connect(
-        &css_my.output_sun_sensor_msg,
-        &mut css_my_recorder.input_msg,
-    );
-    sim.connect(
-        &css_pz.output_sun_sensor_msg,
-        &mut css_pz_recorder.input_msg,
-    );
-    sim.connect(
-        &css_mz.output_sun_sensor_msg,
-        &mut css_mz_recorder.input_msg,
-    );
-    sim.connect(
-        &css_wls_est.nav_state_out_msg,
-        &mut sunline_recorder.input_msg,
-    );
-    sim.connect(
-        &sun_safe_point.att_guidance_out_msg,
-        &mut guidance_recorder.input_msg,
-    );
-    sim.connect(
-        &mrp_feedback.cmd_torque_out_msg,
-        &mut body_torque_recorder.input_msg,
-    );
-    sim.connect(
-        &rw_allocator.rw_motor_torque_out_msg,
-        &mut rw_cmd_recorder.input_msg,
+    connect!(&sim,
+        &spacecraft.state_out => spacecraft_recorder.add_source(""),
+        &imu.output_imu_msg => imu_recorder.add_source(""),
+        &css_px.output_sun_sensor_msg => css_px_recorder.add_source(""),
+        &css_mx.output_sun_sensor_msg => css_mx_recorder.add_source(""),
+        &css_py.output_sun_sensor_msg => css_py_recorder.add_source(""),
+        &css_my.output_sun_sensor_msg => css_my_recorder.add_source(""),
+        &css_pz.output_sun_sensor_msg => css_pz_recorder.add_source(""),
+        &css_mz.output_sun_sensor_msg => css_mz_recorder.add_source(""),
+        &css_wls_est.nav_state_out_msg => sunline_recorder.add_source(""),
+        &sun_safe_point.att_guidance_out_msg => guidance_recorder.add_source(""),
+        &mrp_feedback.cmd_torque_out_msg => body_torque_recorder.add_source(""),
+        &rw_allocator.rw_motor_torque_out_msg => rw_cmd_recorder.add_source(""),
     );
 
     const PRIORITY_ENV: i32 = 70;
@@ -275,116 +247,33 @@ fn main() {
     const PRIORITY_ALLOCATION: i32 = 10;
     const PRIORITY_RECORD: i32 = 0;
 
-    sim.add_module(
-        "sun_ephemeris",
-        &mut sun_ephemeris,
-        STEP_NANOS,
-        PRIORITY_ENV,
-    );
-    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, PRIORITY_DYNAMICS);
-    sim.add_module("imu", &mut imu, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_px", &mut css_px, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_mx", &mut css_mx, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_py", &mut css_py, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_my", &mut css_my, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_pz", &mut css_pz, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module("css_mz", &mut css_mz, STEP_NANOS, PRIORITY_SENSORS);
-    sim.add_module(
-        "cssWlsEst",
-        &mut css_wls_est,
-        STEP_NANOS,
-        PRIORITY_ESTIMATION,
-    );
-    sim.add_module(
-        "sunSafePoint",
-        &mut sun_safe_point,
-        STEP_NANOS,
-        PRIORITY_GUIDANCE,
-    );
-    sim.add_module(
-        "mrpFeedback",
-        &mut mrp_feedback,
-        STEP_NANOS,
-        PRIORITY_CONTROL,
-    );
-    sim.add_module(
-        "rwMotorTorque",
-        &mut rw_allocator,
-        STEP_NANOS,
-        PRIORITY_ALLOCATION,
-    );
-    sim.add_module(
-        "spacecraft_state_recorder",
-        &mut spacecraft_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "imu_recorder",
-        &mut imu_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_px_recorder",
-        &mut css_px_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_mx_recorder",
-        &mut css_mx_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_py_recorder",
-        &mut css_py_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_my_recorder",
-        &mut css_my_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_pz_recorder",
-        &mut css_pz_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "css_mz_recorder",
-        &mut css_mz_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "sunline_recorder",
-        &mut sunline_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "guidance_recorder",
-        &mut guidance_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "body_torque_recorder",
-        &mut body_torque_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
-    sim.add_module(
-        "rw_command_recorder",
-        &mut rw_cmd_recorder,
-        STEP_NANOS,
-        PRIORITY_RECORD,
-    );
+    schedule! { sim,
+        "sun_ephemeris" => &mut sun_ephemeris, STEP_NANOS, PRIORITY_ENV;
+        "spacecraft" => &mut spacecraft, STEP_NANOS, PRIORITY_DYNAMICS;
+        "imu" => &mut imu, STEP_NANOS, PRIORITY_SENSORS;
+        "css_px" => &mut css_px, STEP_NANOS, PRIORITY_SENSORS;
+        "css_mx" => &mut css_mx, STEP_NANOS, PRIORITY_SENSORS;
+        "css_py" => &mut css_py, STEP_NANOS, PRIORITY_SENSORS;
+        "css_my" => &mut css_my, STEP_NANOS, PRIORITY_SENSORS;
+        "css_pz" => &mut css_pz, STEP_NANOS, PRIORITY_SENSORS;
+        "css_mz" => &mut css_mz, STEP_NANOS, PRIORITY_SENSORS;
+        "cssWlsEst" => &mut css_wls_est, STEP_NANOS, PRIORITY_ESTIMATION;
+        "sunSafePoint" => &mut sun_safe_point, STEP_NANOS, PRIORITY_GUIDANCE;
+        "mrpFeedback" => &mut mrp_feedback, STEP_NANOS, PRIORITY_CONTROL;
+        "rwMotorTorque" => &mut rw_allocator, STEP_NANOS, PRIORITY_ALLOCATION;
+        "spacecraft_state_recorder" => &mut spacecraft_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "imu_recorder" => &mut imu_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_px_recorder" => &mut css_px_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_mx_recorder" => &mut css_mx_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_py_recorder" => &mut css_py_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_my_recorder" => &mut css_my_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_pz_recorder" => &mut css_pz_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "css_mz_recorder" => &mut css_mz_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "sunline_recorder" => &mut sunline_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "guidance_recorder" => &mut guidance_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "body_torque_recorder" => &mut body_torque_recorder, STEP_NANOS, PRIORITY_RECORD;
+        "rw_command_recorder" => &mut rw_cmd_recorder, STEP_NANOS, PRIORITY_RECORD;
+    }
 
     sim.run_for(DURATION_NANOS);
     let module_timings = if profile_sim {
@@ -467,7 +356,7 @@ fn body_to_sensor_for_boresight(boresight_body: Vector3<f64>) -> UnitQuaternion<
     UnitQuaternion::from_rotation_matrix(&body_to_sensor)
 }
 
-fn csv_recorder<T>(topic: &str, output_dir: &Path) -> CsvRecorder<T> {
+fn csv_recorder(topic: &str, output_dir: &Path) -> CsvRecorder {
     CsvRecorder::new(CsvRecorderConfig {
         topic: topic.to_string(),
         output_path: output_dir.join(format!("{topic}.csv")),

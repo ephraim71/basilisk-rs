@@ -1,55 +1,23 @@
-//! Parity case for `scenarioBasicOrbit.py`: LEO, point-mass Earth.
+//! LEO point-mass Earth configuration from `scenarioBasicOrbit.py`.
 //!
-//! The binary intentionally performs no plotting. It writes the deterministic
-//! simulation result to `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv`.
+//! Writes the simulated state history to
+//! `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv`.
 
+#[path = "support/common.rs"]
 mod common;
 
 use basilisk_rs::dynamics::gravity::GravBodyData;
-use basilisk_rs::messages::{Input, Output, SpacecraftStateMsg};
+use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{
-    CsvFormat, CsvRecorder, CsvRecorderConfig, TelemetryField, TelemetryMessage,
-};
-use basilisk_rs::{Module, SimulationContext, connect, schedule};
-use common::{MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds, vector_fields};
+use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
+use basilisk_rs::{connect, schedule};
+use common::{MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds, vector_columns};
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
 
 const SPACECRAFT_PERIOD_NANOS: u64 = seconds(10);
 const SAMPLE_PERIOD_NANOS: u64 = seconds(40);
-
-#[derive(Clone, Debug, Default)]
-struct BasicOrbitTelemetry {
-    state: SpacecraftStateMsg,
-}
-
-impl TelemetryMessage for BasicOrbitTelemetry {
-    fn flatten(&self) -> Vec<TelemetryField> {
-        let mut fields = vector_fields("r_BN_N_m", self.state.position_m);
-        fields.extend(vector_fields("v_BN_N_m_per_s", self.state.velocity_mps));
-        fields
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct BasicOrbitCollector {
-    state_in_msg: Input<SpacecraftStateMsg>,
-    telemetry_out_msg: Output<BasicOrbitTelemetry>,
-}
-
-impl Module for BasicOrbitCollector {
-    fn init(&mut self) {
-        self.telemetry_out_msg.write(BasicOrbitTelemetry::default());
-    }
-
-    fn update(&mut self, _context: &SimulationContext) {
-        self.telemetry_out_msg.write(BasicOrbitTelemetry {
-            state: self.state_in_msg.read(),
-        });
-    }
-}
 
 fn main() {
     let degrees = std::f64::consts::PI / 180.0;
@@ -92,22 +60,25 @@ fn main() {
         )
         .expect("unique central gravity body");
 
-    let mut collector = BasicOrbitCollector::default();
     let output_path = scenario_output_path("scenarioBasicOrbitLEO0Earth.csv");
     let mut recorder = CsvRecorder::new(CsvRecorderConfig {
         topic: "scenarioBasicOrbitLEO0Earth".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::Reference);
+    .with_format(CsvFormat::Scenario);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     connect!(&simulation,
-        &spacecraft.state_out => &mut collector.state_in_msg,
-        &collector.telemetry_out_msg => &mut recorder.input_msg,
+        &spacecraft.state_out => recorder.add_source::<SpacecraftStateMsg>(
+            CsvSourceConfig::columns(
+                vector_columns("position_m", "r_BN_N_m")
+                    .into_iter()
+                    .chain(vector_columns("velocity_mps", "v_BN_N_m_per_s")),
+            ),
+        ),
     );
     schedule! { simulation,
         "spacecraft" => &mut spacecraft, SPACECRAFT_PERIOD_NANOS, 20;
-        "collector" => &mut collector, SAMPLE_PERIOD_NANOS, 10;
         "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
     }
     simulation.run_for(duration_nanos);

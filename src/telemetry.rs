@@ -5,11 +5,24 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::thread::JoinHandle;
 
 use serde::Serialize;
 
 use crate::messages::Input;
 use crate::{Module, SimulationContext};
+
+/// Samples buffered on the simulation thread before a batch is handed off to the
+/// writer thread. Batching amortizes the cross-thread wakeup cost over many
+/// samples instead of paying it per sample.
+const TELEMETRY_BATCH_SIZE: usize = 1024;
+/// Number of batches that may be queued to the writer thread. A full channel
+/// applies backpressure (the simulation blocks on `send`) rather than growing
+/// memory without bound when the disk can't keep up. A capacity of ≥ 2 also
+/// gives the double-buffering effect: the sim fills batch *N+1* while the writer
+/// drains batch *N*.
+const TELEMETRY_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TelemetryField {
@@ -28,6 +41,105 @@ pub trait TelemetryMessage {
     fn flatten(&self) -> Vec<TelemetryField>;
 }
 
+/// Owns a writer thread and buffers samples until a full batch can be handed off
+/// to it. Serialization and file I/O happen on the writer thread, keeping them
+/// off the simulation hot path.
+///
+/// On drop the final partial batch is shipped, the sender is closed (which ends
+/// the writer loop and flushes the `BufWriter`), and the thread is joined, so all
+/// buffered data is on disk before the recorder is gone.
+#[derive(Debug)]
+enum WriterCommand<S> {
+    Batch(Vec<S>),
+    Flush(SyncSender<io::Result<()>>),
+}
+
+#[derive(Debug)]
+struct BatchWriter<S> {
+    batch: Vec<S>,
+    sender: Option<SyncSender<WriterCommand<S>>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl<S> BatchWriter<S> {
+    /// Spawn a writer thread that owns `writer` and applies `write_sample` to
+    /// every sample of every batch it receives, flushing when the channel closes.
+    fn spawn<W>(mut writer: BufWriter<File>, mut write_sample: W) -> Self
+    where
+        S: Send + 'static,
+        W: FnMut(&mut BufWriter<File>, &S) + Send + 'static,
+    {
+        let (sender, receiver) = sync_channel::<WriterCommand<S>>(TELEMETRY_CHANNEL_CAPACITY);
+        let handle = std::thread::spawn(move || {
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    WriterCommand::Batch(batch) => {
+                        for sample in &batch {
+                            write_sample(&mut writer, sample);
+                        }
+                    }
+                    WriterCommand::Flush(completion) => {
+                        let _ = completion.send(writer.flush());
+                    }
+                }
+            }
+            writer.flush().expect("failed to flush telemetry writer");
+        });
+        Self {
+            batch: Vec::with_capacity(TELEMETRY_BATCH_SIZE),
+            sender: Some(sender),
+            handle: Some(handle),
+        }
+    }
+
+    /// Buffer a sample, handing the whole batch off once it is full.
+    fn push(&mut self, sample: S) {
+        self.batch.push(sample);
+        if self.batch.len() >= TELEMETRY_BATCH_SIZE {
+            self.send_batch();
+        }
+    }
+
+    /// Hand the current batch to the writer thread, leaving a fresh buffer in its
+    /// place. A no-op when nothing is buffered.
+    fn send_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(TELEMETRY_BATCH_SIZE));
+        if let Some(sender) = &self.sender {
+            sender
+                .send(WriterCommand::Batch(batch))
+                .expect("telemetry writer thread disconnected");
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.send_batch();
+        let Some(sender) = &self.sender else {
+            return Ok(());
+        };
+        let (completion, completed) = sync_channel(0);
+        sender
+            .send(WriterCommand::Flush(completion))
+            .map_err(|_| io::Error::other("telemetry writer thread disconnected"))?;
+        completed
+            .recv()
+            .map_err(|_| io::Error::other("telemetry writer thread disconnected"))?
+    }
+}
+
+impl<S> Drop for BatchWriter<S> {
+    fn drop(&mut self) {
+        self.send_batch();
+        // Dropping the sender ends the writer loop, which flushes the BufWriter.
+        self.sender = None;
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RecorderConfig {
     pub topic: String,
@@ -38,7 +150,7 @@ pub struct RecorderConfig {
 pub struct Recorder<T> {
     pub config: RecorderConfig,
     pub input_msg: Input<T>,
-    file_handler: Option<BufWriter<File>>,
+    writer: Option<BatchWriter<RecordedSample>>,
     message_type: PhantomData<T>,
 }
 
@@ -47,7 +159,7 @@ impl<T> Recorder<T> {
         Self {
             config,
             input_msg: Input::default(),
-            file_handler: None,
+            writer: None,
             message_type: PhantomData,
         }
     }
@@ -183,13 +295,22 @@ impl From<String> for CsvSourceConfig {
 /// }
 /// simulation.run_for(0);
 /// ```
+
+/// A single CSV sample handed off to the writer thread. The topic is not needed
+/// because each recorder owns its own file.
+#[derive(Debug)]
+struct CsvSample {
+    sim_time_nanos: u64,
+    fields: Vec<TelemetryField>,
+}
+
 pub struct CsvRecorder {
     pub config: CsvRecorderConfig,
     format: CsvFormat,
     sources: Vec<Box<dyn CsvSource>>,
     header_paths: Vec<String>,
     header_written: bool,
-    file_handler: Option<BufWriter<File>>,
+    writer: Option<BatchWriter<CsvSample>>,
 }
 
 impl fmt::Debug for CsvRecorder {
@@ -213,7 +334,7 @@ impl CsvRecorder {
             sources: Vec::new(),
             header_paths: Vec::new(),
             header_written: false,
-            file_handler: None,
+            writer: None,
         }
     }
 
@@ -255,8 +376,8 @@ impl CsvRecorder {
 
     /// Flushes buffered rows to disk without consuming the recorder.
     pub fn flush(&mut self) -> io::Result<()> {
-        if let Some(file_handler) = &mut self.file_handler {
-            file_handler.flush()
+        if let Some(writer) = &mut self.writer {
+            writer.flush()
         } else {
             Ok(())
         }
@@ -374,52 +495,77 @@ where
     T: Clone + Default + TelemetryMessage + Send + Sync,
 {
     fn init(&mut self) {
-        if self.file_handler.is_none() {
-            self.file_handler = Some(open_buffered_writer(
-                &self.config.output_path,
-                WriterMode::Append,
-            ));
+        if self.writer.is_some() {
+            return;
         }
+        let file = open_buffered_writer(&self.config.output_path, WriterMode::Append);
+        self.writer = Some(BatchWriter::spawn(
+            file,
+            |writer, sample: &RecordedSample| {
+                serde_json::to_writer(&mut *writer, sample)
+                    .expect("failed to serialize telemetry sample");
+                writeln!(writer).expect("failed to append telemetry newline");
+            },
+        ));
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        let sample = RecordedSample {
-            sim_time_nanos: context.current_sim_nanos,
-            topic: self.config.topic.clone(),
-            fields: self.input_msg.read().flatten(),
-        };
-
-        if let Some(file_handler) = &mut self.file_handler {
-            serde_json::to_writer(&mut *file_handler, &sample)
-                .expect("failed to serialize telemetry sample");
-            writeln!(file_handler).expect("failed to append telemetry newline");
+        // The only sim-thread work: read the live input and buffer the sample.
+        if let Some(writer) = &mut self.writer {
+            writer.push(RecordedSample {
+                sim_time_nanos: context.current_sim_nanos,
+                topic: self.config.topic.clone(),
+                fields: self.input_msg.read().flatten(),
+            });
         }
     }
 }
 
 impl Module for CsvRecorder {
     fn init(&mut self) {
-        if self.file_handler.is_none() {
-            self.file_handler = Some(open_buffered_writer(
-                &self.config.output_path,
-                WriterMode::Truncate,
-            ));
+        if self.writer.is_some() {
+            return;
         }
+        let file = open_buffered_writer(&self.config.output_path, WriterMode::Truncate);
+        let format = self.format;
+        let mut header_paths: Vec<String> = Vec::new();
+        let mut header_written = false;
+        self.writer = Some(BatchWriter::spawn(
+            file,
+            move |writer, sample: &CsvSample| {
+                if !header_written {
+                    header_paths = sample
+                        .fields
+                        .iter()
+                        .map(|field| field.path.clone())
+                        .collect();
+                    write_csv_header(writer, format, &header_paths);
+                    header_written = true;
+                }
+                write_csv_row(
+                    writer,
+                    format,
+                    sample.sim_time_nanos,
+                    &header_paths,
+                    &sample.fields,
+                );
+            },
+        ));
     }
 
     fn update(&mut self, context: &SimulationContext) {
         assert!(
-            self.file_handler.is_some(),
+            self.writer.is_some(),
             "CSV recorder must be initialized before update"
         );
 
         let fields = self.collect_fields();
         let paths: Vec<String> = fields.iter().map(|field| field.path.clone()).collect();
-        let write_header = !self.header_written;
         validate_csv_schema(&self.config.topic, self.format, &paths);
 
-        if write_header {
+        if !self.header_written {
             self.header_paths = paths;
+            self.header_written = true;
         } else {
             let expected_paths: HashSet<&str> =
                 self.header_paths.iter().map(String::as_str).collect();
@@ -433,59 +579,11 @@ impl Module for CsvRecorder {
             );
         }
 
-        let values_by_path: HashMap<&str, f64> = fields
-            .iter()
-            .map(|field| (field.path.as_str(), field.value))
-            .collect();
-
-        if let Some(file_handler) = &mut self.file_handler {
-            if write_header {
-                match self.format {
-                    CsvFormat::Default => {
-                        write!(file_handler, "sim_time_nanos,sim_time_s")
-                            .expect("failed to write CSV header prefix");
-                    }
-                    CsvFormat::Scenario => {
-                        write!(file_handler, "time_ns").expect("failed to write CSV header prefix");
-                    }
-                }
-                for path in &self.header_paths {
-                    write!(&mut *file_handler, ",{path}")
-                        .expect("failed to write CSV header field");
-                }
-                writeln!(&mut *file_handler).expect("failed to finish CSV header");
-                self.header_written = true;
-            }
-
-            match self.format {
-                CsvFormat::Default => {
-                    write!(
-                        &mut *file_handler,
-                        "{},{:.9}",
-                        context.current_sim_nanos,
-                        context.current_sim_nanos as f64 * 1.0e-9
-                    )
-                    .expect("failed to write CSV timestamp");
-                }
-                CsvFormat::Scenario => {
-                    write!(&mut *file_handler, "{}", context.current_sim_nanos)
-                        .expect("failed to write CSV timestamp");
-                }
-            }
-            for path in &self.header_paths {
-                let value = values_by_path[path.as_str()];
-                match self.format {
-                    CsvFormat::Default => {
-                        write!(&mut *file_handler, ",{value:.12}")
-                            .expect("failed to write CSV field value");
-                    }
-                    CsvFormat::Scenario => {
-                        write!(&mut *file_handler, ",{value:.18e}")
-                            .expect("failed to write CSV field value");
-                    }
-                }
-            }
-            writeln!(&mut *file_handler).expect("failed to finish CSV row");
+        if let Some(writer) = &mut self.writer {
+            writer.push(CsvSample {
+                sim_time_nanos: context.current_sim_nanos,
+                fields,
+            });
         }
     }
 }
@@ -494,6 +592,63 @@ impl Module for CsvRecorder {
 enum WriterMode {
     Append,
     Truncate,
+}
+
+/// Write the CSV header row: the format-specific time columns followed by one
+/// column per telemetry path.
+fn write_csv_header(writer: &mut BufWriter<File>, format: CsvFormat, header_paths: &[String]) {
+    match format {
+        CsvFormat::Default => {
+            write!(writer, "sim_time_nanos,sim_time_s").expect("failed to write CSV header prefix");
+        }
+        CsvFormat::Scenario => {
+            write!(writer, "time_ns").expect("failed to write CSV header prefix");
+        }
+    }
+    for path in header_paths {
+        write!(writer, ",{path}").expect("failed to write CSV header field");
+    }
+    writeln!(writer).expect("failed to finish CSV header");
+}
+
+/// Write one CSV data row, emitting fields in the first sample's column order.
+fn write_csv_row(
+    writer: &mut BufWriter<File>,
+    format: CsvFormat,
+    sim_time_nanos: u64,
+    header_paths: &[String],
+    fields: &[TelemetryField],
+) {
+    match format {
+        CsvFormat::Default => {
+            write!(
+                writer,
+                "{},{:.9}",
+                sim_time_nanos,
+                sim_time_nanos as f64 * 1.0e-9
+            )
+            .expect("failed to write CSV timestamp");
+        }
+        CsvFormat::Scenario => {
+            write!(writer, "{sim_time_nanos}").expect("failed to write CSV timestamp");
+        }
+    }
+    let values_by_path: HashMap<&str, f64> = fields
+        .iter()
+        .map(|field| (field.path.as_str(), field.value))
+        .collect();
+    for path in header_paths {
+        let value = values_by_path[path.as_str()];
+        match format {
+            CsvFormat::Default => {
+                write!(writer, ",{value:.12}").expect("failed to write CSV field value");
+            }
+            CsvFormat::Scenario => {
+                write!(writer, ",{value:.18e}").expect("failed to write CSV field value");
+            }
+        }
+    }
+    writeln!(writer).expect("failed to finish CSV row");
 }
 
 /// Opens `path` in the requested mode and creates missing parent directories.

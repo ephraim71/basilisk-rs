@@ -105,20 +105,9 @@ fn adaptive_controller_is_configurable_per_instance() {
     assert!((result[0] - 10.0).abs() < 1e-9, "got {result:?}");
 }
 
-/// Boxed integrators must be cloneable so `SpacecraftConfig` can keep `Clone`.
-#[test]
-fn boxed_integrator_clones() {
-    let original: Box<dyn Integrator<Drifter>> = Box::new(Dopri45::default());
-    let cloned = original.clone();
-    assert_eq!(
-        step_with(original.as_ref(), 4.0),
-        step_with(cloned.as_ref(), 4.0)
-    );
-}
-
 /// A downstream user can define an integrator entirely outside this module by
 /// implementing [`Integrator`]; here, a naive forward-Euler written from scratch.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct UserForwardEuler;
 
 impl<D: DynamicObject + 'static> Integrator<D> for UserForwardEuler {
@@ -138,12 +127,9 @@ impl<D: DynamicObject + 'static> Integrator<D> for UserForwardEuler {
 #[test]
 fn user_defined_integrator_plugs_in_and_matches_builtin_euler() {
     let user: Box<dyn Integrator<Drifter>> = Box::new(UserForwardEuler);
-    // Cloning through the trait object must work for a user type too.
-    let user_clone = user.clone();
     assert_eq!(
         step_with(user.as_ref(), 3.0),
         step_with(&Euler, 3.0),
         "hand-written Euler should match the built-in"
     );
-    assert_eq!(step_with(user_clone.as_ref(), 3.0), [6.0, 2.0]);
 }

@@ -1,5 +1,5 @@
 use crate::dynamics::gravity::{GravBodyData, GravityEffector, GravityError};
-use crate::integrators::Rk4;
+use crate::integrators::{Integrator, Rk4};
 use crate::integrators::traits::DynamicObject;
 use crate::messages::{
     Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg, SpacecraftMassPropsMsg,
@@ -464,18 +464,22 @@ impl Module for Spacecraft {
             )
             .1;
 
-        let integrator = self
-            .config
-            .integrator
-            .clone()
-            .unwrap_or(Box::new(Rk4::default()));
-        let (new_state, gravity_delta_velocity_inertial_mps) = integrator.propagate(
+        // Move the integrator out of `self` so it no longer aliases `*self`;
+        // `propagate` takes `&mut self`, which would collide with a reference
+        // borrowed out of `self.config`. `Rk4` is the zero-config default when
+        // none is configured. Restored below once `chosen` is dead.
+        let integrator_slot = self.config.integrator.take();
+        let default_integrator = Rk4::default();
+        let chosen: &dyn Integrator<Spacecraft> =
+            integrator_slot.as_deref().unwrap_or(&default_integrator);
+        let (new_state, gravity_delta_velocity_inertial_mps) = chosen.propagate(
             self,
             &integrated_state,
             step_start_nanos,
             step_start_epoch,
             dt_seconds,
         );
+        self.config.integrator = integrator_slot;
 
         let omega_dot_radps2 = (new_state.omega_radps - integrated_state.omega_radps) / dt_seconds;
 

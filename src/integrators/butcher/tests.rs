@@ -124,7 +124,7 @@ fn rk4_matches_reference_solution_closely() {
 }
 
 /// The 3/8-rule and classic RK4 are both order 4 but use different tableaus;
-/// their solutions should be close yet not bit-identical, confirming the
+/// their solutions should be close yet not identical, confirming the
 /// multi-derivative stage assembly actually differs between them.
 #[test]
 fn three_eighths_rule_differs_from_classic_rk4() {

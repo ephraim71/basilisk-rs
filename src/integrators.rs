@@ -29,9 +29,8 @@ pub use methods::{
     Dopri45,
     Euler,
     Heun,
-    // The extension point + its cloning helper.
+    // The extension point.
     Integrator,
-    IntegratorClone,
     Midpoint,
     Ralston,
     Rk4,

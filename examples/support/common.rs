@@ -2,10 +2,9 @@
 
 use std::path::PathBuf;
 
-use basilisk_rs::telemetry::TelemetryField;
 use nalgebra::Vector3;
 
-// Earth gravitational parameter (m^3/s^2) shared across the parity scenarios.
+// Earth gravitational parameter (m^3/s^2) shared across the scenarios.
 pub const MU_EARTH_M3PS2: f64 = 3.986_004_36e14;
 pub const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_136.6;
 pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
@@ -67,24 +66,30 @@ pub fn elem2rv(
     (position_m, velocity_mps)
 }
 
-pub fn vector_fields(prefix: &str, vector: Vector3<f64>) -> Vec<TelemetryField> {
-    vector
-        .iter()
+pub fn vector_columns(source_prefix: &str, output_prefix: &str) -> Vec<(String, String)> {
+    ["x", "y", "z"]
+        .into_iter()
         .enumerate()
-        .map(|(index, value)| TelemetryField {
-            path: format!("{prefix}_{index}"),
-            value: *value,
+        .map(|(index, axis)| {
+            (
+                format!("{source_prefix}.{axis}"),
+                format!("{output_prefix}_{index}"),
+            )
         })
         .collect()
 }
 
-pub fn array_fields(prefix: &str, values: &[f64]) -> Vec<TelemetryField> {
-    values
-        .iter()
-        .enumerate()
-        .map(|(index, value)| TelemetryField {
-            path: format!("{prefix}_{index}"),
-            value: *value,
+pub fn array_columns(
+    source_prefix: &str,
+    output_prefix: &str,
+    count: usize,
+) -> Vec<(String, String)> {
+    (0..count)
+        .map(|index| {
+            (
+                format!("{source_prefix}.{index}"),
+                format!("{output_prefix}_{index}"),
+            )
         })
         .collect()
 }

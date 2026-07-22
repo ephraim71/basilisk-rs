@@ -2,6 +2,7 @@
 Cargo.lock
 *.csv
 *.png
+*.svg
 *.pyc
 __pycache__/
 assets/

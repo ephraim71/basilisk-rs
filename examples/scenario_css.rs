@@ -1,18 +1,17 @@
-//! Parity case for `scenarioCSS.py` `0010`.
+//! Coarse Sun sensor configuration `0010` from `scenarioCSS.py`.
 //!
 //! Three independent coarse Sun sensors, no platform/constellation, a fixed
-//! half-eclipse, and no Kelly distortion. The binary only writes CSV output.
+//! half-eclipse, and no Kelly distortion. Writes the sensor signals to CSV.
 
+#[path = "support/common.rs"]
 mod common;
 
-use basilisk_rs::messages::{EclipseMsg, Input, Output, SunEphemerisMsg, SunSensorMsg};
+use basilisk_rs::messages::{EclipseMsg, Output, SunEphemerisMsg, SunSensorMsg};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{
-    CsvFormat, CsvRecorder, CsvRecorderConfig, TelemetryField, TelemetryMessage,
-};
-use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
+use basilisk_rs::{connect, schedule};
 use common::{scenario_output_path, seconds};
 use hifitime::Epoch;
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
@@ -20,45 +19,6 @@ use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_700.0;
 const TASK_PERIOD_NANOS: u64 = seconds(1);
 const DURATION_NANOS: u64 = seconds(300);
-
-#[derive(Clone, Debug, Default)]
-struct CssTelemetry {
-    signals: [f64; 3],
-}
-
-impl TelemetryMessage for CssTelemetry {
-    fn flatten(&self) -> Vec<TelemetryField> {
-        self.signals
-            .iter()
-            .enumerate()
-            .map(|(index, value)| TelemetryField {
-                path: format!("css{}Signal", index + 1),
-                value: *value,
-            })
-            .collect()
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct CssCollector {
-    css_in_msgs: [Input<SunSensorMsg>; 3],
-    telemetry_out_msg: Output<CssTelemetry>,
-}
-
-impl Module for CssCollector {
-    fn init(&mut self) {
-        self.telemetry_out_msg.write(CssTelemetry::default());
-    }
-
-    fn update(&mut self, _context: &SimulationContext) {
-        self.telemetry_out_msg.write(CssTelemetry {
-            signals: self
-                .css_in_msgs
-                .each_ref()
-                .map(|input| input.read().sensed_value),
-        });
-    }
-}
 
 fn sensor(
     name: &str,
@@ -124,13 +84,12 @@ fn main() {
     let eclipse = Output::new(EclipseMsg {
         illumination_factor: 0.5,
     });
-    let mut collector = CssCollector::default();
     let output_path = scenario_output_path("scenarioCSS0010.csv");
     let mut recorder = CsvRecorder::new(CsvRecorderConfig {
         topic: "scenarioCSS0010".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::Reference);
+    .with_format(CsvFormat::Scenario);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     for sensor in [&mut css1, &mut css2, &mut css3] {
@@ -141,17 +100,21 @@ fn main() {
         );
     }
     connect!(&simulation,
-        &css1.output_sun_sensor_msg => &mut collector.css_in_msgs[0],
-        &css2.output_sun_sensor_msg => &mut collector.css_in_msgs[1],
-        &css3.output_sun_sensor_msg => &mut collector.css_in_msgs[2],
-        &collector.telemetry_out_msg => &mut recorder.input_msg,
+        &css1.output_sun_sensor_msg => recorder.add_source::<SunSensorMsg>(
+            CsvSourceConfig::columns([("sensed_value", "css1Signal")]),
+        ),
+        &css2.output_sun_sensor_msg => recorder.add_source::<SunSensorMsg>(
+            CsvSourceConfig::columns([("sensed_value", "css2Signal")]),
+        ),
+        &css3.output_sun_sensor_msg => recorder.add_source::<SunSensorMsg>(
+            CsvSourceConfig::columns([("sensed_value", "css3Signal")]),
+        ),
     );
     schedule! { simulation,
         "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 30;
         "css1" => &mut css1, TASK_PERIOD_NANOS, 20;
         "css2" => &mut css2, TASK_PERIOD_NANOS, 20;
         "css3" => &mut css3, TASK_PERIOD_NANOS, 20;
-        "collector" => &mut collector, TASK_PERIOD_NANOS, 10;
         "recorder" => &mut recorder, TASK_PERIOD_NANOS, 0;
     }
     simulation.run_for(DURATION_NANOS);

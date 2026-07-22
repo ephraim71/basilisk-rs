@@ -1,8 +1,9 @@
-//! Parity case for `scenarioDragDeorbit.py`: MSIS atmosphere, no wind.
+//! MSIS atmosphere, no-wind configuration from `scenarioDragDeorbit.py`.
 //!
-//! The simulation advances on the upstream 15-second task cadence and stops on
-//! the first task tick below 100 km. It writes one reference-compatible CSV.
+//! The simulation advances on a 15-second task cadence and stops on the first
+//! task tick below 100 km. It writes the resulting state history to CSV.
 
+#[path = "support/common.rs"]
 mod common;
 
 use std::path::PathBuf;
@@ -19,13 +20,11 @@ use basilisk_rs::messages::{
 };
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{
-    CsvFormat, CsvRecorder, CsvRecorderConfig, TelemetryField, TelemetryMessage,
-};
+use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
 use basilisk_rs::{Module, SimulationContext, connect, schedule};
 use common::{
     EARTH_EQUATORIAL_RADIUS_M, MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds,
-    vector_fields,
+    vector_columns,
 };
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
@@ -37,40 +36,9 @@ const INITIAL_ALTITUDE_M: f64 = 250_000.0;
 const PROJECTED_AREA_M2: f64 = 10.0;
 const DRAG_COEFFICIENT: f64 = 2.2;
 
-#[derive(Clone, Debug, Default)]
-struct DragTelemetry {
-    state: SpacecraftStateMsg,
-    diagnostics: SpacecraftDiagnosticsMsg,
-    atmosphere: AtmosphereMsg,
-}
-
-impl TelemetryMessage for DragTelemetry {
-    fn flatten(&self) -> Vec<TelemetryField> {
-        let mut fields = vector_fields("r_BN_N_m", self.state.position_m);
-        fields.extend(vector_fields("v_BN_N_m_per_s", self.state.velocity_mps));
-        fields.extend(vector_fields(
-            "forceExternal_B_N",
-            self.diagnostics.drag_force_body_n,
-        ));
-        fields.push(TelemetryField {
-            path: "neutralDensity_kg_per_m3".to_string(),
-            value: self.atmosphere.neutral_density_kgpm3,
-        });
-        fields
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct DragCollector {
-    state_in_msg: Input<SpacecraftStateMsg>,
-    diagnostics_in_msg: Input<SpacecraftDiagnosticsMsg>,
-    atmosphere_in_msg: Input<AtmosphereMsg>,
-    telemetry_out_msg: Output<DragTelemetry>,
-}
-
 /// Models the separate upstream drag task: it reads the atmosphere after the
 /// spacecraft task and the cached density is consumed on the next integration
-/// tick. This one-task delay is observable in the reference trajectory.
+/// tick. This one-task delay is observable in the recorded trajectory.
 #[derive(Clone, Debug, Default)]
 struct AtmosphereLatch {
     atmosphere_in_msg: Input<AtmosphereMsg>,
@@ -84,20 +52,6 @@ impl Module for AtmosphereLatch {
 
     fn update(&mut self, _context: &SimulationContext) {
         self.atmosphere_out_msg.write(self.atmosphere_in_msg.read());
-    }
-}
-
-impl Module for DragCollector {
-    fn init(&mut self) {
-        self.telemetry_out_msg.write(DragTelemetry::default());
-    }
-
-    fn update(&mut self, _context: &SimulationContext) {
-        self.telemetry_out_msg.write(DragTelemetry {
-            state: self.state_in_msg.read(),
-            diagnostics: self.diagnostics_in_msg.read(),
-            atmosphere: self.atmosphere_in_msg.read(),
-        });
     }
 }
 
@@ -150,7 +104,7 @@ fn main() {
         f107_daily: 110.0,
         f107_average: 110.0,
     });
-    // The C++ module defaults to an identity planet DCM when no ephemeris
+    // The source module defaults to an identity planet DCM when no ephemeris
     // message is supplied. Supplying that state explicitly avoids ANISE's
     // rotating-Earth fallback while retaining the shared MSIS module API.
     let planet_state = Output::new(PlanetStateMsg {
@@ -176,27 +130,40 @@ fn main() {
     spacecraft.add_dynamic_effector(drag);
 
     let state_handle = spacecraft.state_out.clone();
-    let mut collector = DragCollector::default();
     let output_path = scenario_output_path("scenarioDragDeorbitmsis0.csv");
     let mut recorder = CsvRecorder::new(CsvRecorderConfig {
         topic: "scenarioDragDeorbitmsis0".to_string(),
         output_path: output_path.clone(),
     })
-    .with_format(CsvFormat::Reference);
+    .with_format(CsvFormat::Scenario);
 
     connect!(&simulation,
         &spacecraft.state_out => &mut atmosphere.input_state_msg,
         &planet_state => &mut atmosphere.input_planet_msg,
         &atmosphere.output_atmosphere_msg => &mut atmosphere_latch.atmosphere_in_msg,
-        &spacecraft.state_out => &mut collector.state_in_msg,
-        &spacecraft.diagnostics_out => &mut collector.diagnostics_in_msg,
-        &atmosphere.output_atmosphere_msg => &mut collector.atmosphere_in_msg,
-        &collector.telemetry_out_msg => &mut recorder.input_msg,
+        &spacecraft.state_out => recorder.add_source::<SpacecraftStateMsg>(
+            CsvSourceConfig::columns(
+                vector_columns("position_m", "r_BN_N_m")
+                    .into_iter()
+                    .chain(vector_columns("velocity_mps", "v_BN_N_m_per_s")),
+            ),
+        ),
+        &spacecraft.diagnostics_out => recorder.add_source::<SpacecraftDiagnosticsMsg>(
+            CsvSourceConfig::columns(vector_columns(
+                "drag_force_body_n",
+                "forceExternal_B_N",
+            )),
+        ),
+        &atmosphere.output_atmosphere_msg => recorder.add_source::<AtmosphereMsg>(
+            CsvSourceConfig::columns([(
+                "neutral_density_kgpm3",
+                "neutralDensity_kg_per_m3",
+            )]),
+        ),
     );
     schedule! { simulation,
         "atmosphere" => &mut atmosphere, TASK_PERIOD_NANOS, 30;
         "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 20;
-        "collector" => &mut collector, SAMPLE_PERIOD_NANOS, 10;
         "atmosphere_latch" => &mut atmosphere_latch, TASK_PERIOD_NANOS, 5;
         "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
     }

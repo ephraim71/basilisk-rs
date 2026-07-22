@@ -3,7 +3,7 @@
 //! The current crate layout is an architecture sketch:
 //! - one folder per module family
 //! - a separate `messages` module for message payloads
-//! - a generic telemetry recorder for any message type
+//! - type-safe telemetry recorders that can combine arbitrary message types
 //! - explicit wiring in Rust code
 
 use hifitime::Epoch;

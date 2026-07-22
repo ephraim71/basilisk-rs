@@ -74,27 +74,27 @@ jobs:
           printf 'passed=%s\n' "${passed}" >> "${GITHUB_OUTPUT}"
           printf 'failed=%s\n' "${failed}" >> "${GITHUB_OUTPUT}"
 
-      - name: Measure basic-orbit build and run
+      - name: Measure MTB momentum-management build and run
         run: |
           mkdir -p .github/tmp
           marker='<!-- basilisk-rs-pr-benchmarks -->'
 
           /usr/bin/time -f '%e' -o .github/tmp/cold-build-seconds.txt \
-            cargo build --release --example scenario_basic_orbit
+            cargo build --release --example scenario_mtb_momentum_management
 
           cargo clean -p basilisk-rs --release
 
           /usr/bin/time -f '%e' -o .github/tmp/warm-build-seconds.txt \
-            cargo build --release --example scenario_basic_orbit
+            cargo build --release --example scenario_mtb_momentum_management
 
           /usr/bin/time -f '%e' -o .github/tmp/run-seconds.txt \
-            ./target/release/examples/scenario_basic_orbit \
-            > .github/tmp/scenario-basic-orbit-output.txt
+            ./target/release/examples/scenario_mtb_momentum_management \
+            > .github/tmp/scenario-mtb-momentum-management-output.txt
 
           cold_build_seconds="$(tr -d '\n' < .github/tmp/cold-build-seconds.txt)"
           warm_build_seconds="$(tr -d '\n' < .github/tmp/warm-build-seconds.txt)"
           run_seconds="$(tr -d '\n' < .github/tmp/run-seconds.txt)"
-          binary_size_bytes="$(stat -c '%s' ./target/release/examples/scenario_basic_orbit)"
+          binary_size_bytes="$(stat -c '%s' ./target/release/examples/scenario_mtb_momentum_management)"
 
           build_size="$(
             awk -v bytes="${binary_size_bytes}" '
@@ -152,7 +152,7 @@ jobs:
             printf 'Passed: `%s`\n' '${{ steps.tests.outputs.passed }}'
             printf 'Failed: `%s`\n' '${{ steps.tests.outputs.failed }}'
             printf 'Build size: `%s`\n' "${build_size}"
-            printf 'scenario_basic_orbit runtime: `%ss`\n' "${run_seconds}"
+            printf 'scenario_mtb_momentum_management runtime: `%ss`\n' "${run_seconds}"
             printf 'Cold build time: `%s`\n' "${cold_build_time}"
             printf 'Warm build time: `%s`\n' "${warm_build_time}"
           } > .github/tmp/pr-comment.md

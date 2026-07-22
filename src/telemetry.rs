@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -105,18 +105,8 @@ where
     T: Clone + Default + TelemetryMessage + Send + Sync,
 {
     fn init(&mut self) {
-        if let Some(parent) = self.config.output_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create telemetry output directory");
-        }
-
         if self.file_handler.is_none() {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.config.output_path)
-                .expect("failed to open telemetry output file");
-
-            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+            self.file_handler = Some(open_appending_writer(&self.config.output_path));
         }
     }
 
@@ -140,18 +130,8 @@ where
     T: Clone + Default + TelemetryMessage + Send + Sync,
 {
     fn init(&mut self) {
-        if let Some(parent) = self.config.output_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create CSV output directory");
-        }
-
         if self.file_handler.is_none() {
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.config.output_path)
-                .expect("failed to open telemetry output file");
-
-            self.file_handler = Some(BufWriter::with_capacity(1024 * 1024, file));
+            self.file_handler = Some(open_appending_writer(&self.config.output_path));
         }
     }
 
@@ -214,6 +194,20 @@ where
             writeln!(&mut *file_handler).expect("failed to finish CSV row");
         }
     }
+}
+
+/// Open `path` for appending, creating parent directories as needed, wrapped in
+/// a large buffered writer.
+fn open_appending_writer(path: &Path) -> BufWriter<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create telemetry output directory");
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("failed to open telemetry output file");
+    BufWriter::with_capacity(1024 * 1024, file)
 }
 
 #[cfg(test)]

@@ -34,9 +34,20 @@ macro_rules! connect {
 
 /// Adds one or more modules to a simulation schedule.
 ///
-/// Each entry supplies the module name, module value, period in nanoseconds,
-/// and priority for a separate
+/// Each entry names a module and its scheduling parameters and expands to a
+/// separate
 /// [`Simulation::add_module`](crate::simulation::Simulation::add_module) call.
+/// Modules with a higher priority run earlier within a tick.
+///
+/// Two per-entry forms are accepted and may be mixed within one invocation:
+///
+/// ```text
+/// "name" => &mut module, period = <nanos>, priority = <n>;   // labeled
+/// "name" => &mut module, <nanos>, <n>;                        // positional
+/// ```
+///
+/// The labeled form makes the period and priority assigned to each module
+/// explicit at the call site; the positional form is the terse original.
 ///
 /// # Example
 ///
@@ -57,7 +68,7 @@ macro_rules! connect {
 /// let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
 ///
 /// schedule! { sim,
-///     "eclipse" => &mut eclipse, 10_000_000, 10;
+///     "eclipse" => &mut eclipse, period = 10_000_000, priority = 10;
 ///     "solar_flux" => &mut solar_flux, 10_000_000, 0;
 /// }
 ///
@@ -65,9 +76,39 @@ macro_rules! connect {
 /// ```
 #[macro_export]
 macro_rules! schedule {
-    ($simulation:expr, $( $name:literal => $module:expr, $period:expr, $priority:expr );+ $(;)?) => {{
-        $( ($simulation).add_module($name, $module, $period, $priority); )+
+    // Entry point: start the muncher with an empty statement accumulator.
+    ($simulation:expr, $($entries:tt)+) => {
+        $crate::schedule!(@munch ($simulation) () $($entries)+)
+    };
+
+    // No entries left: emit the accumulated `add_module` statements as a block.
+    (@munch ($simulation:expr) ($($body:tt)*)) => {{
+        $($body)*
     }};
+
+    // Labeled `period = .., priority = ..` form. Listed before the positional
+    // arm so `period = <expr>` matches these labels rather than being parsed as
+    // an assignment expression by the positional arm.
+    (@munch ($simulation:expr) ($($body:tt)*)
+        $name:literal => $module:expr, period = $period:expr, priority = $priority:expr
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::schedule!(@munch ($simulation)
+            ($($body)* ($simulation).add_module($name, $module, $period, $priority);)
+            $($($rest)*)?
+        )
+    };
+
+    // Positional `period, priority` form.
+    (@munch ($simulation:expr) ($($body:tt)*)
+        $name:literal => $module:expr, $period:expr, $priority:expr
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::schedule!(@munch ($simulation)
+            ($($body)* ($simulation).add_module($name, $module, $period, $priority);)
+            $($($rest)*)?
+        )
+    };
 }
 
 #[cfg(test)]

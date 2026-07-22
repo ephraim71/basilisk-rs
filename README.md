@@ -37,8 +37,26 @@ This is a convenience wrapper around two recipes:
   `assets/gravity/GGM03S.txt`.
 
 The recipes only run `curl`, so if you don't have [`just`](https://github.com/casey/just)
-installed you can also fetch each file by hand — see the `curl` invocations in
-`justfile`.
+installed you can fetch each file by hand instead:
+
+```bash
+# SPICE/ANISE kernels
+mkdir -p assets/anise
+curl --fail --location --progress-bar --output assets/anise/de440s.bsp \
+  https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp
+curl --fail --location --progress-bar --output assets/anise/earth_latest_high_prec.bpc \
+  https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_latest_high_prec.bpc
+curl --fail --location --progress-bar --output assets/anise/pck11.pca \
+  https://public-data.nyxspace.com/anise/v0.4/pck11.pca
+
+# Gravity model
+mkdir -p assets/gravity
+curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt \
+  https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData/LocalGravData/GGM03S.txt
+```
+
+If the `pck11.pca` download fails on a TLS certificate error, retry that one
+command with `--insecure` (the `just` recipe falls back to this automatically).
 
 ## Basic orbit scenario
 

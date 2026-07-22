@@ -111,11 +111,11 @@ fn main() {
         ),
     );
     schedule! { simulation,
-        "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 30;
-        "css1" => &mut css1, TASK_PERIOD_NANOS, 20;
-        "css2" => &mut css2, TASK_PERIOD_NANOS, 20;
-        "css3" => &mut css3, TASK_PERIOD_NANOS, 20;
-        "recorder" => &mut recorder, TASK_PERIOD_NANOS, 0;
+        "spacecraft" => &mut spacecraft, period=TASK_PERIOD_NANOS, priority=30;
+        "css1" => &mut css1, period=TASK_PERIOD_NANOS, priority=20;
+        "css2" => &mut css2, period=TASK_PERIOD_NANOS, priority=20;
+        "css3" => &mut css3, period=TASK_PERIOD_NANOS, priority=20;
+        "recorder" => &mut recorder, period=TASK_PERIOD_NANOS, priority=0;
     }
     simulation.run_for(DURATION_NANOS);
 

@@ -293,17 +293,17 @@ fn main() {
         ),
     );
     schedule! { simulation,
-        "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 100;
-        "navigation" => &mut navigation, TASK_PERIOD_NANOS, 90;
-        "magnetic_field" => &mut magnetic_field, TASK_PERIOD_NANOS, 80;
-        "inertial_reference" => &mut inertial_reference, TASK_PERIOD_NANOS, 70;
-        "tracking_error" => &mut tracking_error, TASK_PERIOD_NANOS, 60;
-        "mrp_feedback" => &mut mrp_feedback, TASK_PERIOD_NANOS, 50;
-        "rw_motor_torque" => &mut rw_motor_torque, TASK_PERIOD_NANOS, 40;
-        "tam" => &mut tam, TASK_PERIOD_NANOS, 30;
-        "tam_comm" => &mut tam_comm, TASK_PERIOD_NANOS, 20;
-        "momentum_management" => &mut momentum_management, TASK_PERIOD_NANOS, 10;
-        "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
+        "spacecraft" => &mut spacecraft, period=TASK_PERIOD_NANOS, priority=100;
+        "navigation" => &mut navigation, period=TASK_PERIOD_NANOS, priority=90;
+        "magnetic_field" => &mut magnetic_field, period=TASK_PERIOD_NANOS, priority=80;
+        "inertial_reference" => &mut inertial_reference, period=TASK_PERIOD_NANOS, priority=70;
+        "tracking_error" => &mut tracking_error, period=TASK_PERIOD_NANOS, priority=60;
+        "mrp_feedback" => &mut mrp_feedback, period=TASK_PERIOD_NANOS, priority=50;
+        "rw_motor_torque" => &mut rw_motor_torque, period=TASK_PERIOD_NANOS, priority=40;
+        "tam" => &mut tam, period=TASK_PERIOD_NANOS, priority=30;
+        "tam_comm" => &mut tam_comm, period=TASK_PERIOD_NANOS, priority=20;
+        "momentum_management" => &mut momentum_management, period=TASK_PERIOD_NANOS, priority=10;
+        "recorder" => &mut recorder, period=SAMPLE_PERIOD_NANOS, priority=0;
     }
     simulation.run_for(DURATION_NANOS);
 

@@ -162,10 +162,10 @@ fn main() {
         ),
     );
     schedule! { simulation,
-        "atmosphere" => &mut atmosphere, TASK_PERIOD_NANOS, 30;
-        "spacecraft" => &mut spacecraft, TASK_PERIOD_NANOS, 20;
-        "atmosphere_latch" => &mut atmosphere_latch, TASK_PERIOD_NANOS, 5;
-        "recorder" => &mut recorder, SAMPLE_PERIOD_NANOS, 0;
+        "atmosphere" => &mut atmosphere, period=TASK_PERIOD_NANOS, priority=30;
+        "spacecraft" => &mut spacecraft, period=TASK_PERIOD_NANOS, priority=20;
+        "atmosphere_latch" => &mut atmosphere_latch, period=TASK_PERIOD_NANOS, priority=5;
+        "recorder" => &mut recorder, period=SAMPLE_PERIOD_NANOS, priority=0;
     }
 
     let orbit_period_s =

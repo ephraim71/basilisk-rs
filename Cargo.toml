@@ -3,6 +3,9 @@ name = "basilisk-rs"
 version = "0.1.0"
 edition = "2024"
 description = "A Rust port of Basilisk"
+license = "ISC"
+repository = "https://github.com/ephraim71/basilisk-rs"
+readme = "README.md"
 
 [dependencies]
 anise = { version = "0.9.6", default-features = false }

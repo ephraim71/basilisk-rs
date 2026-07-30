@@ -102,4 +102,6 @@ BASILISK_REFERENCE_CSV_ZIP=/path/to/csvs.zip just verify-scenarios
 
 ## Contributing
 
-Contributions, reviews, and issues are welcome.
+Contributions, reviews, and issues are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for what background helps, how the crate is laid
+out, and where to start.

@@ -370,4 +370,35 @@ mod tests {
         drop(simulation);
         assert_eq!(updates.times_nanos, vec![0, 10_000_000_000, 20_000_000_000]);
     }
+
+    #[test]
+    fn chunked_run_completes_the_requested_duration() {
+        let mut updates = UpdateTimes::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.add_module("updates", &mut updates, 5, 0);
+
+        let completed = simulation.run_for_chunked_while(25, 10, || true);
+
+        assert!(completed);
+        assert_eq!(simulation.current_sim_nanos(), 25);
+    }
+
+    #[test]
+    fn chunked_run_stops_before_starting_the_next_chunk() {
+        let mut updates = UpdateTimes::default();
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        simulation.add_module("updates", &mut updates, 5, 0);
+        let mut predicate_calls = 0;
+
+        let completed = simulation.run_for_chunked_while(25, 10, || {
+            predicate_calls += 1;
+            predicate_calls <= 2
+        });
+
+        assert!(!completed);
+        assert_eq!(predicate_calls, 3);
+        assert_eq!(simulation.current_sim_nanos(), 20);
+    }
 }

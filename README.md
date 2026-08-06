@@ -4,6 +4,14 @@ A Rust translation of the [Basilisk astrodynamics framework](https://github.com/
 
 The project is under active development. Modules and scenarios are validated against Basilisk as they are ported.
 
+## Library usage
+
+Add the crate to a Rust project:
+
+```bash
+cargo add basilisk-rs@0.2.0
+```
+
 ## Setup
 
 Install Rust:

@@ -47,6 +47,7 @@ impl Module for ClockSync {
     fn update(&mut self, context: &SimulationContext) {
         if !self.initialized {
             self.reset_clock(context.current_sim_nanos);
+            return;
         }
 
         let sim_elapsed_nanos = (context
@@ -78,5 +79,47 @@ impl Module for ClockSync {
                 self.last_display_second = second;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hifitime::Epoch;
+
+    use super::ClockSync;
+    use crate::{Module, SimulationContext};
+
+    #[test]
+    fn first_update_uses_the_current_simulation_time_as_its_baseline() {
+        let mut clock = ClockSync::new(1.0, 0, false);
+        let context = SimulationContext {
+            current_sim_nanos: 10_000_000_000,
+            current_epoch: Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
+        };
+
+        clock.update(&context);
+
+        assert!(clock.initialized);
+        assert_eq!(clock.start_sim_nanos, context.current_sim_nanos);
+        assert_eq!(clock.overrun_counter, 0);
+    }
+
+    #[test]
+    fn init_clears_runtime_state() {
+        let mut clock = ClockSync::new(1.0, 0, false);
+        clock.initialized = true;
+        clock.overrun_counter = 3;
+
+        clock.init();
+
+        assert!(!clock.initialized);
+        assert_eq!(clock.overrun_counter, 0);
+    }
+
+    #[test]
+    fn nonpositive_acceleration_is_clamped_to_a_positive_value() {
+        let clock = ClockSync::new(0.0, 0, false);
+
+        assert_eq!(clock.accel_factor, 1.0e-9);
     }
 }

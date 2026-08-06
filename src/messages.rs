@@ -189,31 +189,39 @@ where
             MessageOverrideMode::Freeze => serde_json::to_value(self.read())?,
             _ => value,
         };
-        {
-            let mut override_rule = self
-                .override_rule
-                .write()
-                .expect("failed to lock output override for write");
-            if mode == MessageOverrideMode::Patch
-                && let Some(existing) = override_rule.as_ref()
-                && existing.mode == MessageOverrideMode::Patch
-            {
-                let mut merged = existing.value.clone();
-                merge_json(&mut merged, stored_value);
-                stored_value = merged;
-            }
-            *override_rule = Some(MessageOverride {
-                mode,
-                value: stored_value,
-            });
-        }
-
         let raw = self
             .raw_slot
             .read()
             .expect("failed to lock raw output message for read")
             .clone();
-        self.write(raw);
+        let existing = self
+            .override_rule
+            .read()
+            .expect("failed to lock output override for read")
+            .clone();
+        if mode == MessageOverrideMode::Patch
+            && let Some(existing) = existing
+            && existing.mode == MessageOverrideMode::Patch
+        {
+            let mut merged = existing.value;
+            merge_json(&mut merged, stored_value);
+            stored_value = merged;
+        }
+
+        let rule = MessageOverride {
+            mode,
+            value: stored_value,
+        };
+        let effective = apply_override_rule(raw, &rule)?;
+
+        *self
+            .override_rule
+            .write()
+            .expect("failed to lock output override for write") = Some(rule);
+        *self
+            .slot
+            .write()
+            .expect("failed to lock output message for write") = effective;
         Ok(())
     }
 
@@ -243,17 +251,24 @@ where
             return Ok(raw);
         };
 
-        match rule.mode {
-            MessageOverrideMode::Replace | MessageOverrideMode::Freeze => {
-                serde_json::from_value(rule.value)
-            }
-            MessageOverrideMode::Patch => {
-                let mut base = serde_json::to_value(raw)?;
-                merge_json(&mut base, rule.value);
-                serde_json::from_value(base)
-            }
-            MessageOverrideMode::Default => Ok(T::default()),
+        apply_override_rule(raw, &rule)
+    }
+}
+
+fn apply_override_rule<T>(raw: T, rule: &MessageOverride) -> Result<T, serde_json::Error>
+where
+    T: SimulationMessage,
+{
+    match rule.mode {
+        MessageOverrideMode::Replace | MessageOverrideMode::Freeze => {
+            serde_json::from_value(rule.value.clone())
         }
+        MessageOverrideMode::Patch => {
+            let mut base = serde_json::to_value(raw)?;
+            merge_json(&mut base, rule.value.clone());
+            serde_json::from_value(base)
+        }
+        MessageOverrideMode::Default => Ok(T::default()),
     }
 }
 
@@ -316,8 +331,8 @@ fn merge_json(base: &mut Value, patch: Value) {
 mod tests {
     use serde_json::json;
 
-    use super::{MessageOverrideMode, Output};
-    use crate::messages::PowerStorageStatusMsg;
+    use super::{ArrayMotorTorqueMsg, MessageOverrideMode, Output};
+    use crate::messages::{MAX_EFF_COUNT, PowerStorageStatusMsg};
 
     #[test]
     fn output_passes_raw_value_without_override() {
@@ -422,5 +437,119 @@ mod tests {
         assert_eq!(output.read().storage_level_j, 1.0);
         assert_eq!(output.read().storage_capacity_j, 2.0);
         assert_eq!(output.read().current_net_power_w, 3.0);
+    }
+
+    #[test]
+    fn replace_override_substitutes_the_complete_message() {
+        let output = Output::new(PowerStorageStatusMsg::default());
+
+        output
+            .set_override(
+                MessageOverrideMode::Replace,
+                json!({
+                    "storage_level_j": 4.0,
+                    "storage_capacity_j": 5.0,
+                    "current_net_power_w": 6.0,
+                }),
+            )
+            .unwrap();
+        output.write(PowerStorageStatusMsg {
+            storage_level_j: 10.0,
+            storage_capacity_j: 20.0,
+            current_net_power_w: 30.0,
+        });
+
+        assert_eq!(output.read().storage_level_j, 4.0);
+        assert_eq!(output.read().storage_capacity_j, 5.0);
+        assert_eq!(output.read().current_net_power_w, 6.0);
+    }
+
+    #[test]
+    fn default_override_emits_default_until_cleared() {
+        let output = Output::new(PowerStorageStatusMsg {
+            storage_level_j: 1.0,
+            storage_capacity_j: 2.0,
+            current_net_power_w: 3.0,
+        });
+
+        output
+            .set_override(MessageOverrideMode::Default, json!(null))
+            .unwrap();
+        output.write(PowerStorageStatusMsg {
+            storage_level_j: 10.0,
+            storage_capacity_j: 20.0,
+            current_net_power_w: 30.0,
+        });
+        assert_eq!(output.read().storage_level_j, 0.0);
+        assert_eq!(output.read().storage_capacity_j, 0.0);
+        assert_eq!(output.read().current_net_power_w, 0.0);
+
+        output.clear_override();
+        assert_eq!(output.read().storage_level_j, 10.0);
+        assert_eq!(output.read().storage_capacity_j, 20.0);
+        assert_eq!(output.read().current_net_power_w, 30.0);
+    }
+
+    #[test]
+    fn malformed_replace_is_rejected_without_installing_the_override() {
+        let output = Output::new(PowerStorageStatusMsg::default());
+
+        let result = output.set_override(
+            MessageOverrideMode::Replace,
+            json!({ "storage_level_j": "not a number" }),
+        );
+        assert!(result.is_err());
+
+        output.write(PowerStorageStatusMsg {
+            storage_level_j: 1.0,
+            storage_capacity_j: 2.0,
+            current_net_power_w: 3.0,
+        });
+        assert_eq!(output.read().storage_level_j, 1.0);
+        assert_eq!(output.read().storage_capacity_j, 2.0);
+        assert_eq!(output.read().current_net_power_w, 3.0);
+    }
+
+    #[test]
+    fn malformed_successive_patch_preserves_the_previous_valid_patch() {
+        let output = Output::new(PowerStorageStatusMsg::default());
+
+        output
+            .set_override(
+                MessageOverrideMode::Patch,
+                json!({ "current_net_power_w": 9.0 }),
+            )
+            .unwrap();
+        let result = output.set_override(
+            MessageOverrideMode::Patch,
+            json!({ "storage_capacity_j": "not a number" }),
+        );
+        assert!(result.is_err());
+
+        output.write(PowerStorageStatusMsg {
+            storage_level_j: 1.0,
+            storage_capacity_j: 2.0,
+            current_net_power_w: 3.0,
+        });
+        assert_eq!(output.read().storage_level_j, 1.0);
+        assert_eq!(output.read().storage_capacity_j, 2.0);
+        assert_eq!(output.read().current_net_power_w, 9.0);
+    }
+
+    #[test]
+    fn maximum_effector_array_round_trips_and_rejects_wrong_lengths() {
+        let mut message = ArrayMotorTorqueMsg::default();
+        for (index, value) in message.motor_torque_nm.iter_mut().enumerate() {
+            *value = index as f64 + 0.25;
+        }
+
+        let serialized = serde_json::to_value(&message).unwrap();
+        let round_tripped: ArrayMotorTorqueMsg =
+            serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(round_tripped, message);
+
+        let mut short = serialized;
+        short["motor_torque_nm"] = json!(vec![0.0; MAX_EFF_COUNT - 1]);
+        assert!(serde_json::from_value::<ArrayMotorTorqueMsg>(short).is_err());
     }
 }

@@ -1,9 +1,11 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
 use super::MAX_EFF_COUNT;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MtbArrayCommandMsg {
+    #[serde(with = "super::big_array")]
     pub dipole_cmds_am2: [f64; MAX_EFF_COUNT],
 }
 

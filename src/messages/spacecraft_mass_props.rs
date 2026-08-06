@@ -1,8 +1,9 @@
 use nalgebra::{Matrix3, Vector3};
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpacecraftMassPropsMsg {
     pub mass_kg: f64,
     pub center_of_mass_body_m: Vector3<f64>,

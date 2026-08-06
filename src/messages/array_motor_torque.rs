@@ -1,9 +1,11 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
 use super::MAX_EFF_COUNT;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayMotorTorqueMsg {
+    #[serde(with = "super::big_array")]
     pub motor_torque_nm: [f64; MAX_EFF_COUNT],
 }
 

@@ -680,6 +680,8 @@ mod tests {
 
     use hifitime::Epoch;
 
+    use serde::{Deserialize, Serialize};
+
     use crate::messages::{ArrayMotorTorqueMsg, AtmosphereMsg, Input, Output, SunSensorMsg};
     use crate::{Module, SimulationContext};
 
@@ -688,7 +690,7 @@ mod tests {
         TelemetryField, TelemetryMessage, validate_csv_schema,
     };
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     struct ReorderedMessage {
         first: f64,
         second: f64,

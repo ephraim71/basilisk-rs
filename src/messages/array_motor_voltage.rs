@@ -1,10 +1,12 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
 use super::MAX_EFF_COUNT;
 
 /// Aggregate reaction-wheel motor voltage command.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayMotorVoltageMsg {
+    #[serde(with = "super::big_array")]
     pub voltage_v: [f64; MAX_EFF_COUNT],
 }
 

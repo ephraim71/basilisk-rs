@@ -1,6 +1,7 @@
 use crate::telemetry::{TelemetryField, TelemetryMessage};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PowerStorageStatusMsg {
     pub storage_level_j: f64,
     pub storage_capacity_j: f64,

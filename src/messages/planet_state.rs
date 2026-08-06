@@ -1,8 +1,9 @@
 use nalgebra::{Matrix3, Vector3};
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlanetOrientation {
     pub inertial_to_fixed: Matrix3<f64>,
     pub inertial_to_fixed_dot: Matrix3<f64>,
@@ -17,7 +18,7 @@ impl PlanetOrientation {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanetStateMsg {
     pub position_inertial_m: Vector3<f64>,
     pub velocity_inertial_mps: Vector3<f64>,

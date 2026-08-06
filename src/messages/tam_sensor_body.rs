@@ -1,9 +1,10 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
 /// Three-axis magnetometer measurement expressed in the spacecraft body frame.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TamSensorBodyMsg {
     pub magnetic_field_body_t: Vector3<f64>,
 }

@@ -1,8 +1,9 @@
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
 use crate::telemetry::{TelemetryField, TelemetryMessage};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NavigationAttitudeMsg {
     pub time_tag_s: f64,
     pub sigma_bn: Vector3<f64>,

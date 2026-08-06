@@ -168,9 +168,13 @@ fn main() {
     .with_format(CsvFormat::Scenario);
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
-    connect!(&simulation,
-        &voltage_interface.motor_torque_out_msg => &mut reaction_wheels.rw_motor_cmd_in_msg,
-    );
+    for (output, wheel) in voltage_interface
+        .motor_torque_out_msgs
+        .iter()
+        .zip(reaction_wheels.wheels_mut())
+    {
+        simulation.connect(output, &mut wheel.motor_torque_in_msg);
+    }
     spacecraft.add_state_effector(reaction_wheels);
 
     connect!(&simulation,

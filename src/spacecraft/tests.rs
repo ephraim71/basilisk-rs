@@ -20,7 +20,7 @@ use crate::integrators::{
     Dopri45, Euler, Heun, Integrator, Midpoint, Ralston, Rk4, Rk4ThreeEighths, Rkf45,
 };
 use crate::messages::{
-    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg,
+    AtmosphereMsg, HingedRigidBodyMsg, Input, MotorTorqueMsg, Output, SpacecraftStateMsg,
 };
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
@@ -281,11 +281,16 @@ fn balanced_reaction_wheel_back_substitution_conserves_total_angular_momentum() 
     wheel_config.js_kg_m2 = wheel_js;
     let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
     reaction_wheels.add_reaction_wheel(wheel_config);
-    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[applied_torque_nm]));
+    let command = Output::new(MotorTorqueMsg {
+        motor_torque_nm: applied_torque_nm,
+    });
 
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        sim.connect(
+            &command,
+            &mut reaction_wheels.wheels_mut()[0].motor_torque_in_msg,
+        );
         spacecraft.add_state_effector(reaction_wheels);
         sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
         sim.run_for(1_000_000_000);
@@ -364,13 +369,16 @@ fn fully_coupled_reaction_wheel_spacecraft() -> Spacecraft {
 fn fully_coupled_reaction_wheel_conserves_total_angular_momentum() {
     let mut spacecraft = fully_coupled_reaction_wheel_spacecraft();
     let mut reaction_wheels = fully_coupled_reaction_wheel();
-    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+    let command = Output::new(MotorTorqueMsg::default());
 
     let diagnostics = spacecraft.diagnostics_out.clone();
     let h_initial;
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        sim.connect(
+            &command,
+            &mut reaction_wheels.wheels_mut()[0].motor_torque_in_msg,
+        );
         spacecraft.add_state_effector(reaction_wheels);
         sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
         sim.run_for(0);
@@ -439,11 +447,14 @@ fn fully_coupled_reaction_wheel_matches_reference_trajectory() {
     let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
     reaction_wheels.add_reaction_wheel(config);
 
-    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+    let command = Output::new(MotorTorqueMsg::default());
 
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        sim.connect(
+            &command,
+            &mut reaction_wheels.wheels_mut()[0].motor_torque_in_msg,
+        );
         spacecraft.add_state_effector(reaction_wheels);
         sim.add_module("spacecraft", &mut spacecraft, 100_000, 0);
         sim.run_for(500_000_000); // 0.5 s
@@ -492,13 +503,16 @@ fn fully_coupled_reaction_wheel_matches_reference_trajectory() {
 fn fully_coupled_reaction_wheel_conserves_rotational_energy() {
     let mut spacecraft = fully_coupled_reaction_wheel_spacecraft();
     let mut reaction_wheels = fully_coupled_reaction_wheel();
-    let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+    let command = Output::new(MotorTorqueMsg::default());
 
     let diagnostics = spacecraft.diagnostics_out.clone();
     let e_initial;
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+        sim.connect(
+            &command,
+            &mut reaction_wheels.wheels_mut()[0].motor_torque_in_msg,
+        );
         spacecraft.add_state_effector(reaction_wheels);
         sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
         sim.run_for(0);
@@ -567,15 +581,21 @@ fn mixed_reaction_wheel_models_conserve_total_angular_momentum() {
     let mut fully_coupled = ReactionWheelStateEffector::new("rw_fully_coupled");
     fully_coupled.add_reaction_wheel(fully_coupled_config);
 
-    let cmd_balanced = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
-    let cmd_fully_coupled = Output::new(ArrayMotorTorqueMsg::from_active(&[0.0]));
+    let cmd_balanced = Output::new(MotorTorqueMsg::default());
+    let cmd_fully_coupled = Output::new(MotorTorqueMsg::default());
 
     let diagnostics = spacecraft.diagnostics_out.clone();
     let h_initial;
     {
         let mut sim = Simulation::new(start_epoch(), false);
-        sim.connect(&cmd_balanced, &mut balanced.rw_motor_cmd_in_msg);
-        sim.connect(&cmd_fully_coupled, &mut fully_coupled.rw_motor_cmd_in_msg);
+        sim.connect(
+            &cmd_balanced,
+            &mut balanced.wheels_mut()[0].motor_torque_in_msg,
+        );
+        sim.connect(
+            &cmd_fully_coupled,
+            &mut fully_coupled.wheels_mut()[0].motor_torque_in_msg,
+        );
         spacecraft.add_state_effector(balanced);
         spacecraft.add_state_effector(fully_coupled);
         sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);

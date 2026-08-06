@@ -1,4 +1,4 @@
-use crate::messages::{ArrayMotorTorqueMsg, ArrayMotorVoltageMsg, Input, MAX_EFF_COUNT, Output};
+use crate::messages::{ArrayMotorVoltageMsg, Input, MAX_EFF_COUNT, MotorTorqueMsg, Output};
 use crate::{Module, SimulationContext};
 
 /// Configuration for converting reaction-wheel motor voltages into torques.
@@ -36,7 +36,7 @@ impl MotorVoltageInterfaceConfig {
 pub struct MotorVoltageInterface {
     pub config: MotorVoltageInterfaceConfig,
     pub voltage_in_msg: Input<ArrayMotorVoltageMsg>,
-    pub motor_torque_out_msg: Output<ArrayMotorTorqueMsg>,
+    pub motor_torque_out_msgs: Vec<Output<MotorTorqueMsg>>,
 }
 
 impl MotorVoltageInterface {
@@ -44,19 +44,26 @@ impl MotorVoltageInterface {
         if let Err(message) = config.validate() {
             panic!("invalid MotorVoltageInterfaceConfig: {message}");
         }
+        let motor_torque_out_msgs = config
+            .torque_gains_nm_per_v
+            .iter()
+            .map(|_| Output::default())
+            .collect();
         Self {
             config,
             voltage_in_msg: Input::default(),
-            motor_torque_out_msg: Output::default(),
+            motor_torque_out_msgs,
         }
     }
 
-    fn map_voltage_to_torque(&self, voltage: &ArrayMotorVoltageMsg) -> ArrayMotorTorqueMsg {
-        let mut torque = ArrayMotorTorqueMsg::default();
-        for (index, gain_nm_per_v) in self.config.torque_gains_nm_per_v.iter().enumerate() {
-            torque.motor_torque_nm[index] = voltage.voltage_v[index] * gain_nm_per_v;
+    fn map_voltage_to_torque(
+        &self,
+        voltage: &ArrayMotorVoltageMsg,
+        index: usize,
+    ) -> MotorTorqueMsg {
+        MotorTorqueMsg {
+            motor_torque_nm: voltage.voltage_v[index] * self.config.torque_gains_nm_per_v[index],
         }
-        torque
     }
 }
 
@@ -68,14 +75,16 @@ impl Module for MotorVoltageInterface {
                 self.config.name
             );
         }
-        self.motor_torque_out_msg
-            .write(ArrayMotorTorqueMsg::default());
+        for output in &self.motor_torque_out_msgs {
+            output.write(MotorTorqueMsg::default());
+        }
     }
 
     fn update(&mut self, _context: &SimulationContext) {
         let voltage = self.voltage_in_msg.read();
-        self.motor_torque_out_msg
-            .write(self.map_voltage_to_torque(&voltage));
+        for (index, output) in self.motor_torque_out_msgs.iter().enumerate() {
+            output.write(self.map_voltage_to_torque(&voltage, index));
+        }
     }
 }
 
@@ -96,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_active_voltage_slots_and_zero_fills_inactive_slots() {
+    fn maps_each_active_voltage_to_an_independent_output() {
         let mut voltage = ArrayMotorVoltageMsg::default();
         voltage.voltage_v[..4].copy_from_slice(&[10.0, -5.0, 2.5, 99.0]);
         let voltage_out = Output::new(voltage);
@@ -109,13 +118,12 @@ mod tests {
         interface.init();
         interface.update(&context());
 
-        let torque = interface.motor_torque_out_msg.read();
-        assert_eq!(torque.motor_torque_nm[..3], [0.2, -0.2, -0.25]);
-        assert!(
-            torque.motor_torque_nm[3..]
-                .iter()
-                .all(|value| *value == 0.0)
-        );
+        let torques: Vec<f64> = interface
+            .motor_torque_out_msgs
+            .iter()
+            .map(|output| output.read().motor_torque_nm)
+            .collect();
+        assert_eq!(torques, vec![0.2, -0.2, -0.25]);
     }
 
     #[test]

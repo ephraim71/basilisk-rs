@@ -56,7 +56,7 @@ mod tests {
     use crate::dynamics::reaction_wheel_state_effector::{
         ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
     };
-    use crate::messages::ArrayMotorTorqueMsg;
+    use crate::messages::MotorTorqueMsg;
     use crate::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
     use crate::simulation::Simulation;
     use crate::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -95,7 +95,9 @@ mod tests {
             0.02,
             0.4,
         ));
-        let rw_command = crate::messages::Output::new(ArrayMotorTorqueMsg::from_active(&[0.001]));
+        let rw_command = crate::messages::Output::new(MotorTorqueMsg {
+            motor_torque_nm: 0.001,
+        });
         let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu_1".to_string(),
             position_m: Vector3::new(0.0, 0.0, 0.0),
@@ -106,7 +108,10 @@ mod tests {
         let module_names = {
             let mut sim = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
             sim.connect(&spacecraft.state_out, &mut imu.input_state_msg);
-            sim.connect(&rw_command, &mut reaction_wheels.rw_motor_cmd_in_msg);
+            sim.connect(
+                &rw_command,
+                &mut reaction_wheels.wheels_mut()[0].motor_torque_in_msg,
+            );
             spacecraft.add_state_effector(reaction_wheels);
             sim.add_module("spacecraft", &mut spacecraft, 5_000_000, 10);
             sim.add_module("imu", &mut imu, 5_000_000, 0);

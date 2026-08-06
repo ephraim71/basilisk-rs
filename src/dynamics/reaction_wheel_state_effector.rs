@@ -3,7 +3,7 @@ use std::any::Any;
 use std::cell::RefCell;
 
 use crate::messages::{
-    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, Output, ReactionWheelStateMsg, RwSpeedMsg,
+    Input, MAX_EFF_COUNT, MotorTorqueMsg, Output, ReactionWheelStateMsg, RwSpeedMsg,
 };
 use crate::spacecraft::{BackSubMatrices, EffectorOutput, StateEffector, StateEffectorMassProps};
 
@@ -243,6 +243,7 @@ impl ReactionWheelStateEffectorConfig {
 #[derive(Clone, Debug)]
 pub struct ReactionWheel {
     pub config: ReactionWheelStateEffectorConfig,
+    pub motor_torque_in_msg: Input<MotorTorqueMsg>,
     pub state_out: Output<ReactionWheelStateMsg>,
     pub omega_radps: f64,
     pub theta_rad: f64,
@@ -281,6 +282,7 @@ impl ReactionWheel {
             w3_hat_b: gimbal_axis,
             fully_coupled_terms: RefCell::new(FullyCoupledOmegaTerms::default()),
             config,
+            motor_torque_in_msg: Input::default(),
             state_out: Output::default(),
         }
     }
@@ -618,12 +620,13 @@ impl ReactionWheel {
     }
 }
 
-/// Aggregate reaction-wheel state effector. Wheel order defines the mapping
-/// from `rw_motor_cmd_in_msg.motor_torque_nm[i]` to `wheels[i]` by insertion order.
+/// Aggregate reaction-wheel state effector.
+///
+/// Each registered wheel owns an independent scalar motor-torque input while
+/// the effector retains the coupled wheel-set dynamics.
 #[derive(Clone, Debug)]
 pub struct ReactionWheelStateEffector {
     pub name: String,
-    pub rw_motor_cmd_in_msg: Input<ArrayMotorTorqueMsg>,
     pub rw_speed_out_msg: Output<RwSpeedMsg>,
     wheels: Vec<ReactionWheel>,
 }
@@ -632,23 +635,34 @@ impl ReactionWheelStateEffector {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            rw_motor_cmd_in_msg: Input::default(),
             rw_speed_out_msg: Output::default(),
             wheels: Vec::new(),
         }
     }
 
-    pub fn add_reaction_wheel(&mut self, config: ReactionWheelStateEffectorConfig) {
+    /// Registers one wheel and returns its independently connectable ports.
+    pub fn add_reaction_wheel(
+        &mut self,
+        config: ReactionWheelStateEffectorConfig,
+    ) -> &mut ReactionWheel {
         assert!(
             self.wheels.len() < MAX_EFF_COUNT,
             "at most {MAX_EFF_COUNT} reaction wheels are supported"
         );
         self.wheels.push(ReactionWheel::new(config));
+        self.wheels
+            .last_mut()
+            .expect("registered reaction wheel should be available")
     }
 
     /// Reaction wheels in the same order used by the aggregate messages.
     pub fn wheels(&self) -> &[ReactionWheel] {
         &self.wheels
+    }
+
+    /// Mutable wheel access for topology wiring and initialization.
+    pub fn wheels_mut(&mut self) -> &mut [ReactionWheel] {
+        &mut self.wheels
     }
 
     fn jitter_wheel_count(&self) -> usize {
@@ -733,9 +747,9 @@ impl StateEffector for ReactionWheelStateEffector {
     }
 
     fn pre_integration(&mut self, _current_sim_nanos: u64, dt_seconds: f64) {
-        let command = self.rw_motor_cmd_in_msg.read();
-        for (index, wheel) in self.wheels.iter_mut().enumerate() {
-            wheel.pre_integration(dt_seconds, command.motor_torque_nm[index]);
+        for wheel in &mut self.wheels {
+            let command = wheel.motor_torque_in_msg.read();
+            wheel.pre_integration(dt_seconds, command.motor_torque_nm);
         }
     }
 
@@ -1057,7 +1071,7 @@ fn orthogonal_unit_vector_2(spin_axis_body: Vector3<f64>) -> Vector3<f64> {
 mod tests {
     use nalgebra::{Matrix3, Vector3};
 
-    use crate::messages::{ArrayMotorTorqueMsg, Output, SpacecraftStateMsg};
+    use crate::messages::{MotorTorqueMsg, Output, SpacecraftStateMsg};
     use crate::spacecraft::{BackSubMatrices, StateEffector};
 
     use super::{ReactionWheelStateEffector, ReactionWheelStateEffectorConfig};
@@ -1081,9 +1095,13 @@ mod tests {
         config.max_power_w = max_power_w;
         config.initial_omega_radps = initial_omega_radps;
         let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
-        reaction_wheels.add_reaction_wheel(config);
-        let command = Output::new(ArrayMotorTorqueMsg::from_active(&[command_nm]));
-        reaction_wheels.rw_motor_cmd_in_msg.connect(command.slot());
+        let command = Output::new(MotorTorqueMsg {
+            motor_torque_nm: command_nm,
+        });
+        reaction_wheels
+            .add_reaction_wheel(config)
+            .motor_torque_in_msg
+            .connect(command.slot());
         reaction_wheels
     }
 
@@ -1201,27 +1219,37 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_command_and_speed_messages_follow_wheel_order() {
+    fn independent_commands_and_speed_message_follow_wheel_order() {
         let mut reaction_wheels = ReactionWheelStateEffector::new("reaction_wheels");
-        reaction_wheels.add_reaction_wheel(ReactionWheelStateEffectorConfig::balanced(
-            "rw_x",
-            Vector3::zeros(),
-            Vector3::x(),
-            1.0,
-            10.0,
-        ));
-        reaction_wheels.add_reaction_wheel(ReactionWheelStateEffectorConfig::jitter_simple(
-            "rw_y",
-            Vector3::zeros(),
-            Vector3::y(),
-            1.0,
-            10.0,
-            1.0,
-            0.0,
-            0.0,
-        ));
-        let command = Output::new(ArrayMotorTorqueMsg::from_active(&[0.25, -0.5]));
-        reaction_wheels.rw_motor_cmd_in_msg.connect(command.slot());
+        let command_x = Output::new(MotorTorqueMsg {
+            motor_torque_nm: 0.25,
+        });
+        let command_y = Output::new(MotorTorqueMsg {
+            motor_torque_nm: -0.5,
+        });
+        reaction_wheels
+            .add_reaction_wheel(ReactionWheelStateEffectorConfig::balanced(
+                "rw_x",
+                Vector3::zeros(),
+                Vector3::x(),
+                1.0,
+                10.0,
+            ))
+            .motor_torque_in_msg
+            .connect(command_x.slot());
+        reaction_wheels
+            .add_reaction_wheel(ReactionWheelStateEffectorConfig::jitter_simple(
+                "rw_y",
+                Vector3::zeros(),
+                Vector3::y(),
+                1.0,
+                10.0,
+                1.0,
+                0.0,
+                0.0,
+            ))
+            .motor_torque_in_msg
+            .connect(command_y.slot());
 
         StateEffector::pre_integration(&mut reaction_wheels, 0, 0.1);
         assert_eq!(reaction_wheels.wheels()[0].u_current_nm, 0.25);

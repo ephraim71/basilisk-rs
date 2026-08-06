@@ -8,7 +8,7 @@
 mod common;
 
 use basilisk_rs::dynamics::gravity::GravBodyData;
-use basilisk_rs::dynamics::mtb_dynamic_effector::MtbEffector;
+use basilisk_rs::dynamics::mtb_dynamic_effector::{MtbConfig, MtbEffector};
 use basilisk_rs::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
@@ -208,10 +208,24 @@ fn main() {
 
     let start_epoch = Epoch::from_gregorian_utc(2019, 6, 27, 10, 23, 0, 0);
     let mut simulation = Simulation::new(start_epoch, false);
+    for wheel in reaction_wheels.wheels_mut() {
+        simulation.connect(
+            momentum_management.add_rw_motor_torque_output(),
+            &mut wheel.motor_torque_in_msg,
+        );
+    }
+    for (index, axis) in mtb_axes.iter().enumerate() {
+        let mtb = mtb_effector.add_mtb(MtbConfig {
+            name: format!("Mtb{index}"),
+            dipole_axis_body: *axis,
+            max_dipole_am2: 0.1,
+        });
+        simulation.connect(
+            momentum_management.add_mtb_command_output(),
+            &mut mtb.dipole_cmd_in_msg,
+        );
+    }
     connect!(&simulation,
-        &momentum_management.rw_motor_torque_out_msg => &mut reaction_wheels.rw_motor_cmd_in_msg,
-        &momentum_management.mtb_cmd_out_msg => &mut mtb_effector.mtb_cmd_in_msg,
-        &mtb_config_output => &mut mtb_effector.mtb_params_in_msg,
         &magnetic_field.output_magnetic_field_msg => &mut mtb_effector.mag_in_msg,
     );
     spacecraft.add_state_effector(reaction_wheels);

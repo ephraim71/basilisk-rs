@@ -1,8 +1,8 @@
 use nalgebra::{DMatrix, DVector, Matrix3, SymmetricEigen, Vector3};
 
 use crate::messages::{
-    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, MtbArrayCommandMsg, MtbArrayConfigMsg, Output,
-    RwArrayConfigMsg, RwSpeedMsg, TamSensorBodyMsg,
+    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, MagneticDipoleCommandMsg, MotorTorqueMsg,
+    MtbArrayCommandMsg, MtbArrayConfigMsg, Output, RwArrayConfigMsg, RwSpeedMsg, TamSensorBodyMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -29,7 +29,9 @@ pub struct MtbMomentumManagement {
     pub rw_motor_torque_in_msg: Input<ArrayMotorTorqueMsg>,
 
     pub mtb_cmd_out_msg: Output<MtbArrayCommandMsg>,
+    pub mtb_cmd_out_msgs: Vec<Output<MagneticDipoleCommandMsg>>,
     pub rw_motor_torque_out_msg: Output<ArrayMotorTorqueMsg>,
+    pub rw_motor_torque_out_msgs: Vec<Output<MotorTorqueMsg>>,
 
     /// RW configuration cached during initialization, as in upstream Reset().
     pub rw_config_params: RwArrayConfigMsg,
@@ -57,7 +59,9 @@ impl MtbMomentumManagement {
             rw_speeds_in_msg: Input::default(),
             rw_motor_torque_in_msg: Input::default(),
             mtb_cmd_out_msg: Output::default(),
+            mtb_cmd_out_msgs: Vec::new(),
             rw_motor_torque_out_msg: Output::default(),
+            rw_motor_torque_out_msgs: Vec::new(),
             rw_config_params: RwArrayConfigMsg::default(),
             mtb_config_params: MtbArrayConfigMsg::default(),
             tau_desired_mtb_body_nm: Vector3::zeros(),
@@ -69,6 +73,30 @@ impl MtbMomentumManagement {
             tau_ideal_rw_body_nm: [0.0; MAX_EFF_COUNT],
             wheel_speed_error_radps: [0.0; MAX_EFF_COUNT],
         }
+    }
+
+    /// Registers one independently connectable magnetic-dipole command output.
+    pub fn add_mtb_command_output(&mut self) -> &Output<MagneticDipoleCommandMsg> {
+        assert!(
+            self.mtb_cmd_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} MTB command outputs are supported"
+        );
+        self.mtb_cmd_out_msgs.push(Output::default());
+        self.mtb_cmd_out_msgs
+            .last()
+            .expect("registered MTB command output should be available")
+    }
+
+    /// Registers one independently connectable motor-torque command output.
+    pub fn add_rw_motor_torque_output(&mut self) -> &Output<MotorTorqueMsg> {
+        assert!(
+            self.rw_motor_torque_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} reaction-wheel command outputs are supported"
+        );
+        self.rw_motor_torque_out_msgs.push(Output::default());
+        self.rw_motor_torque_out_msgs
+            .last()
+            .expect("registered reaction-wheel command output should be available")
     }
 
     /// Check connectivity and cache the two static array-configuration messages.
@@ -210,8 +238,14 @@ impl MtbMomentumManagement {
 impl Module for MtbMomentumManagement {
     fn init(&mut self) {
         self.mtb_cmd_out_msg.write(MtbArrayCommandMsg::default());
+        for output in &self.mtb_cmd_out_msgs {
+            output.write(MagneticDipoleCommandMsg::default());
+        }
         self.rw_motor_torque_out_msg
             .write(ArrayMotorTorqueMsg::default());
+        for output in &self.rw_motor_torque_out_msgs {
+            output.write(MotorTorqueMsg::default());
+        }
         self.reset(0);
     }
 
@@ -221,6 +255,16 @@ impl Module for MtbMomentumManagement {
 
     fn update(&mut self, _context: &SimulationContext) {
         let (mtb_output, rw_output) = self.update_control();
+        for (index, output) in self.mtb_cmd_out_msgs.iter().enumerate() {
+            output.write(MagneticDipoleCommandMsg {
+                dipole_moment_am2: mtb_output.dipole_cmds_am2[index],
+            });
+        }
+        for (index, output) in self.rw_motor_torque_out_msgs.iter().enumerate() {
+            output.write(MotorTorqueMsg {
+                motor_torque_nm: rw_output.motor_torque_nm[index],
+            });
+        }
         self.mtb_cmd_out_msg.write(mtb_output);
         self.rw_motor_torque_out_msg.write(rw_output);
     }

@@ -88,6 +88,50 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// then costs a single line where the simulation is assembled instead of one
 /// line per port, and a port added to the module reaches clients without that
 /// assembly being touched.
+///
+/// ```
+/// use basilisk_rs::messages::Output;
+/// use basilisk_rs::overrides::{Mode, Overridable, Registry};
+/// use serde_json::json;
+///
+/// #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+/// struct GyroMsg {
+///     rate_dps: f64,
+/// }
+///
+/// struct Gyro {
+///     output_msg: Output<GyroMsg>,
+/// }
+///
+/// // Written once for the type. A port added here reaches every client without
+/// // the assembly below being touched.
+/// impl Overridable for Gyro {
+///     fn register_targets(
+///         &self,
+///         registry: &Registry,
+///         prefix: &str,
+///         group: &'static str,
+///     ) -> anyhow::Result<()> {
+///         registry.register(group, format!("{prefix}.output_msg"), &self.output_msg)
+///     }
+/// }
+///
+/// let gyro = Gyro {
+///     output_msg: Output::new(GyroMsg { rate_dps: 1.0 }),
+/// };
+///
+/// let registry = Registry::new();
+/// registry.register_module("GYRO", "gyro_0", &gyro)?;
+///
+/// // The name is what an operator addresses: `<prefix>.<port>`.
+/// registry.install("gyro_0.output_msg", Mode::Patch, json!({ "rate_dps": 9.0 }))?;
+///
+/// // The module reads its own port and sees the fault, without knowing one was
+/// // installed. What it published is still available separately.
+/// assert_eq!(gyro.output_msg.read().rate_dps, 9.0);
+/// assert_eq!(gyro.output_msg.read_upstream().rate_dps, 1.0);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub trait Overridable {
     /// Registers this module's targets under `prefix`, e.g. `gyro_0`, tagged
     /// with the hardware family `group`, e.g. `GYRO`.

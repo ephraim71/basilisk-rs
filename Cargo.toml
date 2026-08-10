@@ -9,6 +9,7 @@ readme = "README.md"
 
 [dependencies]
 anise = { version = "0.9.6", default-features = false }
+anyhow = "1.0.100"
 hifitime = "4.2.6"
 igrf = "0.2.0"
 indicatif = "0.17.11"

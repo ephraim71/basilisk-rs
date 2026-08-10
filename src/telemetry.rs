@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 
 use serde::Serialize;
 
-use crate::messages::Input;
+use crate::messages::{Input, SimulationMessage};
 use crate::{Module, SimulationContext};
 
 /// Samples buffered on the simulation thread before a batch is handed off to the
@@ -356,7 +356,7 @@ impl CsvRecorder {
     /// unrelated message types; the recorder is still scheduled only once.
     pub fn add_source<T>(&mut self, config: impl Into<CsvSourceConfig>) -> &mut Input<T>
     where
-        T: Clone + Default + TelemetryMessage + Send + Sync + 'static,
+        T: SimulationMessage + TelemetryMessage,
     {
         assert!(
             !self.header_written,
@@ -404,7 +404,7 @@ struct MessageCsvSource<T> {
 
 impl<T> CsvSource for MessageCsvSource<T>
 where
-    T: Clone + Default + TelemetryMessage + Send + Sync + 'static,
+    T: SimulationMessage + TelemetryMessage,
 {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
@@ -492,7 +492,7 @@ fn validate_csv_schema(topic: &str, format: CsvFormat, paths: &[String]) {
 
 impl<T> Module for Recorder<T>
 where
-    T: Clone + Default + TelemetryMessage + Send + Sync,
+    T: SimulationMessage + TelemetryMessage,
 {
     fn init(&mut self) {
         if self.writer.is_some() {

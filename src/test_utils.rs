@@ -1,4 +1,4 @@
-use crate::messages::Input;
+use crate::messages::{Input, SimulationMessage};
 use crate::{Module, SimulationContext};
 
 #[derive(Clone, Debug)]
@@ -18,7 +18,7 @@ impl<T> Default for MessageRecorder<T> {
 
 impl<T> Module for MessageRecorder<T>
 where
-    T: Clone + Default + Send + Sync,
+    T: SimulationMessage,
 {
     fn init(&mut self) {
         self.samples.clear();

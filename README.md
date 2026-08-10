@@ -9,7 +9,7 @@ The project is under active development. Modules and scenarios are validated aga
 Add the crate to a Rust project:
 
 ```bash
-cargo add basilisk-rs@0.2.0
+cargo add basilisk-rs@0.3.0
 ```
 
 ## Setup

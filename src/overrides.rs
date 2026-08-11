@@ -5,9 +5,10 @@
 //! vocabulary it speaks while doing so — [`Mode`], [`Rule`], [`RuleId`] — is
 //! declared here, in `mode`, because both halves need it and neither is its
 //! natural owner. What it does not give you is any way to find out
-//! what exists. A caller holding an [`Output`] can override it; a caller holding
-//! a whole simulation has no way to ask what is overridable, what fields a
-//! target has, or whether a hand-typed field name is real.
+//! what exists. A caller holding an [`Output`](crate::messages::Output) can
+//! override it; a caller holding a whole simulation has no way to ask what is
+//! overridable, what fields a target has, or whether a hand-typed field name is
+//! real.
 //!
 //! This module is that half. Everything injectable — a message a module
 //! publishes, one consumer's view of a message, a device's configuration, or
@@ -16,11 +17,10 @@
 //! installs one, and reports the value before and after. The registry stores
 //! them all behind that one trait, so a single control path serves every kind.
 //!
-//! There is one way in: [`Registry::register`] takes any
-//! [`Port`](crate::messages::Port) — an `Output` or an `Input` — and the
-//! [`TargetKind`] to file it under. The kind is always named rather than
-//! inferred, so a registration states what a client will see instead of leaving
-//! it to be deduced from which method was called.
+//! There is one way in: [`Registry::register`] takes any [`Port`] — an `Output`
+//! or an `Input` — and the [`TargetKind`] to file it under. The kind is always
+//! named rather than inferred, so a registration states what a client will see
+//! instead of leaving it to be deduced from which method was called.
 //!
 //! # Layout
 //!
@@ -408,7 +408,8 @@ impl Registry {
         module.register_targets(self, name, group)
     }
 
-    /// Registers one port — an [`Output`] or an [`Input`] — under `kind`.
+    /// Registers one port — an [`Output`](crate::messages::Output) or an
+    /// [`Input`](crate::messages::Input) — under `kind`.
     ///
     /// The kind is always named rather than inferred from the port type, so
     /// every registration says on its own line what a client will see. It is a

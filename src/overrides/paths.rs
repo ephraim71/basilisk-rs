@@ -37,11 +37,21 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
 
     let paths = match mode {
         Mode::ReplaceAt => patch_operation_paths(value)?,
-        _ => payload_paths(value),
+        _ => {
+            reject_dotted_keys(value, "")?;
+            payload_paths(value)
+        }
     };
 
     for path in paths {
         if known.contains(path.as_str()) || indexes_a_known_array(spec, &path) {
+            continue;
+        }
+        // A `replaceAt` names one location, and a location may be a whole
+        // object. The schema lists only leaves, so a container is recognised by
+        // having leaves beneath it rather than by being listed itself. The value
+        // is left to the apply, which deserialises it as that field's type.
+        if mode == Mode::ReplaceAt && known.iter().any(|leaf| descends_from(leaf, &path)) {
             continue;
         }
         bail!(
@@ -138,6 +148,41 @@ pub(super) fn children_of_null_fields(
             default: Value::Null,
         })
         .collect()
+}
+
+/// Refuses an object key that carries the path separator.
+///
+/// The schema advertises nested fields in dotted form, so the natural mistake is
+/// to send one back as a single key: `{"orientation.spin": 1.0}`. That key is not
+/// the path it looks like — serde matches keys literally, finds no field of that
+/// name, and ignores it — but flattening the payload turns it into exactly the
+/// dotted path a real nested field produces, so it passed the unknown-field check
+/// and installed a rule that could never do anything.
+///
+/// Checked on the payload only. The same walk derives the schema from a message
+/// type, where a key with a dot in it is not reachable from a Rust field name.
+fn reject_dotted_keys(value: &Value, prefix: &str) -> Result<()> {
+    let Value::Object(map) = value else {
+        return Ok(());
+    };
+    for (key, child) in map {
+        if key.contains('.') {
+            let nested = key.replace('.', "\": {\"");
+            let closing = "}".repeat(key.matches('.').count());
+            bail!(
+                "'{key}' is a path, not a field name: a patch nests, so send \
+                 {{\"{nested}\": ...{closing}}} instead, or use replaceAt to \
+                 address a path directly"
+            );
+        }
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        reject_dotted_keys(child, &path)?;
+    }
+    Ok(())
 }
 
 /// Whether `path` names something strictly inside `parent`.

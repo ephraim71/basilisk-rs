@@ -854,3 +854,179 @@ fn a_mode_name_this_crate_does_not_define_is_refused() {
         );
     }
 }
+
+/// The schema advertises nested fields in dotted form, so sending one back as a
+/// single key is the natural mistake — and flattening the payload turned that key
+/// into exactly the path a real nested field produces. It passed the
+/// unknown-field check, serde ignored it, and a rule was installed that could
+/// never do anything.
+#[test]
+fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
+    use crate::messages::{PlanetOrientation, PlanetStateMsg};
+
+    let registry = Registry::new();
+    let output = Output::new(PlanetStateMsg {
+        orientation: Some(PlanetOrientation::identity()),
+        ..PlanetStateMsg::default()
+    });
+    registry
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .unwrap();
+
+    let error = registry
+        .install(
+            "earth.output_msg",
+            Mode::Patch,
+            json!({ "orientation.inertial_to_fixed": 1.0 }),
+        )
+        .expect_err("a dotted key was accepted as the path it resembles");
+
+    assert!(
+        error.to_string().contains("is a path, not a field name"),
+        "the error did not explain the mistake: {error}"
+    );
+    assert!(
+        output.installed_overrides().is_empty(),
+        "a rule that can never apply was installed anyway"
+    );
+}
+
+/// `replaceAt` names one location, and a location may be a whole object. The
+/// schema lists only leaves, so a container path was in no known set and was
+/// reported as an unknown field even though its pointer resolved.
+#[test]
+fn a_replace_at_may_address_a_whole_object_valued_field() {
+    use crate::messages::{PlanetOrientation, PlanetStateMsg};
+    use nalgebra::Matrix3;
+
+    let registry = Registry::new();
+    let output = Output::new(PlanetStateMsg {
+        orientation: Some(PlanetOrientation::identity()),
+        ..PlanetStateMsg::default()
+    });
+    registry
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .unwrap();
+
+    let mut replacement = PlanetOrientation::identity();
+    replacement.inertial_to_fixed = Matrix3::from_diagonal_element(3.0);
+    let replacement = serde_json::to_value(replacement).unwrap();
+
+    registry
+        .install(
+            "earth.output_msg",
+            Mode::ReplaceAt,
+            json!([{ "op": "replace", "path": "/orientation", "value": replacement }]),
+        )
+        .expect("replacing a whole object-valued field was refused");
+
+    let orientation = output.read().orientation.expect("the option was cleared");
+    assert_eq!(
+        orientation.inertial_to_fixed,
+        Matrix3::from_diagonal_element(3.0)
+    );
+
+    // Accepting containers must not accept a misspelled one: `orientatio` has no
+    // leaf beneath it, so it is still a name error.
+    let error = registry
+        .install(
+            "earth.output_msg",
+            Mode::ReplaceAt,
+            json!([{ "op": "replace", "path": "/orientatio", "value": {} }]),
+        )
+        .expect_err("a misspelled container path was accepted");
+    assert!(
+        error.to_string().contains("unknown field 'orientatio'"),
+        "{error}"
+    );
+}
+
+/// The registry keeps a clone of an input it registered. With the connection held
+/// directly rather than shared, `connect` replaced only the original's, and the
+/// two then disagreed about which producer they read — the module saw the new one
+/// while the registry reported, and froze, a value from the old one.
+#[test]
+fn a_registered_input_follows_a_later_reconnect() {
+    let producer_one = Output::new(ReadingMsg {
+        value: 1.0,
+        ..ReadingMsg::default()
+    });
+    let producer_two = Output::new(ReadingMsg {
+        value: 2.0,
+        ..ReadingMsg::default()
+    });
+
+    let mut input: Input<ReadingMsg> = Input::default();
+    producer_one.connect_to(&mut input);
+
+    let registry = Registry::new();
+    registry
+        .register("READING", "reading.input_msg", &input, TargetKind::Input)
+        .unwrap();
+
+    producer_two.connect_to(&mut input);
+
+    assert_eq!(input.read().value, 2.0, "the input itself did not rewire");
+    assert_eq!(
+        registry.upstream("reading.input_msg").unwrap()["value"]
+            .as_f64()
+            .unwrap(),
+        2.0,
+        "the registry still reads the producer the input was disconnected from"
+    );
+
+    // A freeze captures what the target reads now. Against a stale connection it
+    // pinned the consumer to a value no current producer ever published.
+    registry
+        .install("reading.input_msg", Mode::Freeze, json!({}))
+        .unwrap();
+    assert_eq!(
+        input.read().value,
+        2.0,
+        "the freeze pinned a value from the disconnected producer"
+    );
+}
+
+/// Cloning a port aliases it rather than duplicating it, so a collection of
+/// inputs has to be built one at a time. `vec![Input::default(); n]` yields one
+/// input under `n` names: before the connection was shared this was already true
+/// of the rule stack, so a fault injected into one sensor's view silently applied
+/// to every sibling built alongside it.
+#[test]
+fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
+    let producers: Vec<Output<ReadingMsg>> = (0..3)
+        .map(|index| {
+            Output::new(ReadingMsg {
+                value: index as f64,
+                ..ReadingMsg::default()
+            })
+        })
+        .collect();
+
+    let mut inputs: Vec<Input<ReadingMsg>> = (0..3).map(|_| Input::default()).collect();
+    for (input, producer) in inputs.iter_mut().zip(&producers) {
+        producer.connect_to(input);
+    }
+
+    // Each input reads its own producer.
+    for (index, input) in inputs.iter().enumerate() {
+        assert_eq!(
+            input.read().value,
+            index as f64,
+            "input {index} is wired to the wrong producer"
+        );
+    }
+
+    // A fault on one is invisible to the others.
+    let registry = Registry::new();
+    registry
+        .register("READING", "reading.0", &inputs[0], TargetKind::Input)
+        .unwrap();
+    registry
+        .install("reading.0", Mode::Patch, json!({ "value": 99.0 }))
+        .unwrap();
+
+    assert_eq!(inputs[0].read().value, 99.0, "the fault did not apply");
+    assert_eq!(inputs[1].read().value, 1.0, "the fault leaked to a sibling");
+    assert_eq!(inputs[2].read().value, 2.0, "the fault leaked to a sibling");
+}

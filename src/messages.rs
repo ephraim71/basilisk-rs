@@ -439,14 +439,27 @@ impl<T: Clone + Default> Default for Output<T> {
 
 #[derive(Clone, Debug)]
 pub struct Input<T> {
-    slot: Option<Arc<RwLock<T>>>,
+    /// Shared so that every clone of this input sees the same wiring.
+    ///
+    /// Cloning a port aliases it; it does not duplicate it. `vec![Input::default();
+    /// n]` therefore yields one input under `n` names — the same connection and
+    /// the same rule stack — so a collection of ports has to be built one at a
+    /// time. [`Output`] has always behaved this way; this field is what makes an
+    /// input agree with it.
+    ///
+    /// The registry keeps a clone of an input it registered. With the connection
+    /// held directly, `connect` replaced only the original's, and the two then
+    /// disagreed about which producer they read: the module saw the new one while
+    /// the registry still reported — and froze — a value from the old one, which
+    /// is a fault against a value no current producer published.
+    slot: Arc<RwLock<Option<Arc<RwLock<T>>>>>,
     overrides: Overrides,
 }
 
 impl<T> Default for Input<T> {
     fn default() -> Self {
         Self {
-            slot: None,
+            slot: Arc::new(RwLock::new(None)),
             overrides: Overrides::default(),
         }
     }
@@ -454,11 +467,20 @@ impl<T> Default for Input<T> {
 
 impl<T> Input<T> {
     pub fn is_connected(&self) -> bool {
-        self.slot.is_some()
+        self.slot
+            .read()
+            .expect("failed to lock input connection for read")
+            .is_some()
     }
 
+    /// Takes `&mut self` though it no longer needs it: wiring an input is an
+    /// assembly-time act, and requiring exclusive access is what stops a module
+    /// from rewiring its own input while the simulation runs.
     pub(crate) fn connect(&mut self, slot: Arc<RwLock<T>>) {
-        self.slot = Some(slot);
+        *self
+            .slot
+            .write()
+            .expect("failed to lock input connection for write") = Some(slot);
     }
 
     /// The rules in force, innermost first. Empty when nothing is overridden.
@@ -489,8 +511,14 @@ impl<T: Clone + Default> Input<T> {
     /// This is not necessarily what the simulation produced: if the producer's
     /// output is itself overridden, this is the producer's *effective* value.
     pub fn read_upstream(&self) -> T {
-        self.slot
-            .as_ref()
+        // The producer handle is cloned out and the connection lock released
+        // before the value lock is taken, so the two are never held at once.
+        let producer = self
+            .slot
+            .read()
+            .expect("failed to lock input connection for read")
+            .clone();
+        producer
             .map(|slot| {
                 slot.read()
                     .expect("failed to lock input message for read")

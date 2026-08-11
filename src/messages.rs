@@ -24,7 +24,7 @@
 //! overridden and whether a request is well formed**; this module decides
 //! **what an installed rule does to a value**.
 //!
-//! The line between them is privacy, not taste. `OverrideCell` is a private
+//! The line between them is privacy, not taste. `Overrides` is a private
 //! field of [`Output`] with private methods that [`Output::write`] calls, so it
 //! cannot move without widening that surface. [`crate::overrides`] touches only
 //! the public API of these ports, which is why it *can* sit apart.
@@ -37,7 +37,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
-use crate::overrides::rule::{Mode, Rule, RuleId, apply_override, next_rule_id};
+use crate::overrides::rule::{Mode, Rule, RuleId, fold_rules, next_rule_id};
 
 mod array_motor_torque;
 mod array_motor_voltage;
@@ -163,19 +163,28 @@ impl<T> SimulationMessage for T where
 
 /// The override rules behind an `Output` or an `Input`, innermost first.
 ///
+/// Custody, not arithmetic. What a stack *computes* is
+/// [`crate::overrides::rule`]'s answer, and the same one whether the stack is
+/// stored or merely proposed; what is here is which stack belongs to this port,
+/// who may change it, and when a fold is allowed to become the value readers
+/// see — see [`Self::install`], which folds a copy and commits only if that
+/// succeeded.
+///
 /// A stack rather than a single rule because a fault has an owner. Merging
 /// successive patches into one rule loses that: the merged rule carries one
 /// id, so removing the fault that owns it either takes the others with it or
 /// cannot reach it at all. Layers keep each fault removable on its own.
 ///
+/// Mutated through `&self` rather than `&mut self`, which is what lets the
+/// registry hold a second handle on a port while the module keeps using its own.
 /// Both directions of a connection need identical semantics, so this lives here
 /// once rather than being reimplemented on each side.
 #[derive(Clone, Debug, Default)]
-struct OverrideCell {
+struct Overrides {
     rules: Arc<RwLock<Vec<Rule>>>,
 }
 
-impl OverrideCell {
+impl Overrides {
     fn snapshot(&self) -> Vec<Rule> {
         self.rules
             .read()
@@ -191,23 +200,6 @@ impl OverrideCell {
             .is_empty()
     }
 
-    /// Lays `rules` over `upstream` in order, innermost first.
-    ///
-    /// Starts at the outermost absolute rule. `Replace`, `Freeze` and `Default`
-    /// define the whole message, so nothing below one can be observed while it
-    /// is installed — but the layers stay in the stack, and reappear when it is
-    /// removed. Discarding them instead would let a timed `replace` destroy a
-    /// fault that was already running.
-    fn fold<T: SimulationMessage>(rules: &[Rule], upstream: T) -> Result<T, serde_json::Error> {
-        let visible = rules
-            .iter()
-            .rposition(|rule| !rule.mode.is_relative())
-            .unwrap_or(0);
-        rules[visible..]
-            .iter()
-            .try_fold(upstream, |value, rule| apply_override(rule, value))
-    }
-
     /// The value `mode` and `value` would produce, without installing anything.
     ///
     /// Takes the same already-sampled `freeze_source` as [`Self::install`], so
@@ -221,7 +213,7 @@ impl OverrideCell {
     ) -> Result<T, serde_json::Error> {
         let mut rules = self.snapshot();
         rules.push(Rule::new(mode, value, freeze_source, RuleId::UNINSTALLED));
-        Self::fold(&rules, upstream)
+        fold_rules(&rules, upstream)
     }
 
     /// Installs a rule, returning its id and the value the whole stack now
@@ -257,7 +249,7 @@ impl OverrideCell {
         // stay lost.
         let mut candidates = rules.clone();
         candidates.push(candidate);
-        let effective = Self::fold(&candidates, upstream)?;
+        let effective = fold_rules(&candidates, upstream)?;
 
         *rules = candidates;
         Ok((id, effective))
@@ -282,7 +274,7 @@ impl OverrideCell {
     }
 
     fn apply_installed<T: SimulationMessage>(&self, upstream: T) -> Result<T, serde_json::Error> {
-        Self::fold(&self.snapshot(), upstream)
+        fold_rules(&self.snapshot(), upstream)
     }
 }
 
@@ -310,7 +302,7 @@ impl OverrideCell {
 pub struct Output<T> {
     slot: Arc<RwLock<T>>,
     raw_slot: Arc<RwLock<T>>,
-    overrides: OverrideCell,
+    overrides: Overrides,
 }
 
 impl<T> Output<T> {
@@ -341,7 +333,7 @@ impl<T: Clone> Output<T> {
         Self {
             slot: Arc::new(RwLock::new(initial.clone())),
             raw_slot: Arc::new(RwLock::new(initial)),
-            overrides: OverrideCell::default(),
+            overrides: Overrides::default(),
         }
     }
 
@@ -386,7 +378,7 @@ where
     /// The value a `freeze` would capture, sampled before any rule lock is
     /// taken. `None` for every other mode, which ignores it.
     ///
-    /// See [`OverrideCell::install`] for why this cannot be read inside it.
+    /// See [`Overrides::install`] for why this cannot be read inside it.
     fn freeze_source(&self, mode: Mode) -> Result<Option<Value>, serde_json::Error> {
         match mode {
             Mode::Freeze => serde_json::to_value(self.read()).map(Some),
@@ -471,14 +463,14 @@ impl<T: Clone + Default> Default for Output<T> {
 #[derive(Clone, Debug)]
 pub struct Input<T> {
     slot: Option<Arc<RwLock<T>>>,
-    overrides: OverrideCell,
+    overrides: Overrides,
 }
 
 impl<T> Default for Input<T> {
     fn default() -> Self {
         Self {
             slot: None,
-            overrides: OverrideCell::default(),
+            overrides: Overrides::default(),
         }
     }
 }

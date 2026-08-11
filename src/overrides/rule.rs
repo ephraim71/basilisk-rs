@@ -5,14 +5,17 @@
 //! the registry in the parent module addresses them by name. Neither is the
 //! natural owner, so they sit here.
 //!
-//! [`apply_override`] is the other half of the same subject — what one rule
-//! *does* to a value — and lives beside the modes it dispatches on. Adding a
-//! mode is then one file: a variant, a line in [`Mode::is_relative`], and an
-//! arm. Split across two modules, as it was, the two halves could disagree
-//! about which modes exist and only a test would say so.
+//! What a rule *does* to a value lives here too, in both its numbers:
+//! [`apply_override`] for one rule, [`fold_rules`] for a whole stack. They sit
+//! beside the modes they dispatch on, so adding a mode is one file — a variant,
+//! a line in [`Mode::is_relative`], and an arm in each. Split across modules, as
+//! they were, the halves could disagree about which modes exist and only a test
+//! would say so.
 //!
-//! `OverrideCell::fold` composes the stack and calls [`apply_override`] once per
-//! visible layer. That is the seam: composition there, one layer's meaning here.
+//! What is *not* here is custody. [`crate::messages`] owns each port's stack and
+//! decides when a fold is allowed to become the value readers see; this file only
+//! answers what a given stack computes, and answers it the same way for a
+//! candidate stack as for an installed one.
 //!
 //! Not public as a path: every type is re-exported from [`crate::overrides`],
 //! and one way in is better than two.
@@ -28,8 +31,8 @@ use crate::messages::SimulationMessage;
 ///
 /// [`Self::Patch`] and [`Self::ReplaceAt`] are **relative**: they modify
 /// what they are laid over. The rest are absolute — they define the whole
-/// message and mask everything below them while installed. `OverrideCell::fold`
-/// turns on that split, so a new mode has to declare which side it is on.
+/// message and mask everything below them while installed. `fold_rules` turns
+/// on that split, so a new mode has to declare which side it is on.
 ///
 /// Renamed `camelCase` rather than `lowercase` so `ReplaceAt` reaches the
 /// wire as `replaceAt`. Every other variant is a single word and
@@ -242,4 +245,30 @@ pub(crate) fn apply_override<T: SimulationMessage>(
         }
         Mode::Default => Ok(T::default()),
     }
+}
+
+/// Produces the value a whole stack yields when laid over `upstream`, innermost
+/// first.
+///
+/// The plural of [`apply_override`], and not merely a loop over it: it starts at
+/// the outermost absolute rule. `Replace`, `Freeze` and `Default` define the
+/// whole message, so nothing below one can be observed while it is installed —
+/// but the layers stay in the stack, and reappear when it is removed. Discarding
+/// them instead would let a timed `replace` destroy a fault that was already
+/// running.
+///
+/// Takes the rules as an argument rather than reading them from a port: a
+/// candidate stack has to be folded *before* it is stored, which is what lets a
+/// rejected rule leave the installed ones untouched.
+pub(crate) fn fold_rules<T: SimulationMessage>(
+    rules: &[Rule],
+    upstream: T,
+) -> Result<T, serde_json::Error> {
+    let visible = rules
+        .iter()
+        .rposition(|rule| !rule.mode.is_relative())
+        .unwrap_or(0);
+    rules[visible..]
+        .iter()
+        .try_fold(upstream, |value, rule| apply_override(rule, value))
 }

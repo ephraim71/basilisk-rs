@@ -16,6 +16,12 @@
 //! installs one, and reports the value before and after. The registry stores
 //! them all behind that one trait, so a single control path serves every kind.
 //!
+//! There is one way in: [`Registry::register`] takes any
+//! [`Port`](crate::messages::Port) — an `Output` or an `Input` — and the
+//! [`TargetKind`] to file it under. The kind is always named rather than
+//! inferred, so a registration states what a client will see instead of leaving
+//! it to be deduced from which method was called.
+//!
 //! # Layout
 //!
 //! | file | holds |
@@ -70,7 +76,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use crate::messages::{Input, Output, SimulationMessage};
+use crate::messages::Port;
 
 use paths::{children_of_null_fields, reject_unknown_paths, require_complete_replacement};
 use schema::leaf_fields;
@@ -91,7 +97,7 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 ///
 /// ```
 /// use basilisk_rs::messages::Output;
-/// use basilisk_rs::overrides::{Mode, Overridable, Registry};
+/// use basilisk_rs::overrides::{Mode, Overridable, Registry, TargetKind};
 /// use serde_json::json;
 ///
 /// #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -112,7 +118,12 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 ///         prefix: &str,
 ///         group: &'static str,
 ///     ) -> anyhow::Result<()> {
-///         registry.register(group, format!("{prefix}.output_msg"), &self.output_msg)
+///         registry.register(
+///             group,
+///             format!("{prefix}.output_msg"),
+///             &self.output_msg,
+///             TargetKind::Output,
+///         )
 ///     }
 /// }
 ///
@@ -175,13 +186,16 @@ pub trait Target: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Implementation: one `Entry<B>` serving all four kinds
+// Implementation: one `Entry<B>` serving every kind
 // ---------------------------------------------------------------------------
 
-/// The handful of operations a target kind must supply.
+/// The handful of operations a target must supply, in JSON terms.
 ///
 /// Schema generation and payload checking are derived from these once, in
-/// [`Entry`], rather than reimplemented per kind.
+/// [`Entry`], rather than reimplemented per kind. Private because the only
+/// implementation is the blanket one below: a caller supplies a
+/// [`Port`] and this crate adapts it, so there is nothing here for an
+/// application to implement.
 trait TargetBackend: Send + Sync {
     fn type_name(&self) -> &'static str;
     fn type_default(&self) -> Result<Value>;
@@ -195,83 +209,48 @@ trait TargetBackend: Send + Sync {
     fn rules(&self) -> Vec<Rule>;
 }
 
-struct OutputBackend<T>(Output<T>);
-
-impl<T: SimulationMessage> TargetBackend for OutputBackend<T> {
+/// One implementation serving both directions.
+///
+/// [`Port`] is the whole reason this is one block rather than two: the adapters
+/// it replaced were identical apart from the type they wrapped, and a second
+/// copy of a body is a second place for a fix to be forgotten.
+impl<P: Port> TargetBackend for P {
     fn type_name(&self) -> &'static str {
-        std::any::type_name::<T>()
+        std::any::type_name::<P::Message>()
     }
 
     fn type_default(&self) -> Result<Value> {
-        Ok(serde_json::to_value(T::default())?)
+        Ok(serde_json::to_value(P::Message::default())?)
     }
 
     fn upstream(&self) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.read_upstream())?)
+        Ok(serde_json::to_value(Port::read_upstream(self))?)
     }
 
     fn effective(&self) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.read())?)
+        Ok(serde_json::to_value(Port::read(self))?)
     }
 
     fn preview(&self, mode: Mode, value: Value) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.preview_override(mode, value)?)?)
+        Ok(serde_json::to_value(Port::preview_override(
+            self, mode, value,
+        )?)?)
     }
 
     fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
-        Ok(self.0.set_override(mode, value)?)
+        Ok(Port::set_override(self, mode, value)?)
     }
 
     fn clear(&self) {
-        self.0.clear_override();
+        Port::clear_override(self);
     }
 
     fn clear_rule(&self, id: RuleId) -> bool {
-        self.0.clear_override_by_id(id)
+        Port::clear_override_by_id(self, id)
     }
 
     fn rules(&self) -> Vec<Rule> {
-        self.0.installed_overrides()
-    }
-}
-
-struct InputBackend<T>(Input<T>);
-
-impl<T: SimulationMessage> TargetBackend for InputBackend<T> {
-    fn type_name(&self) -> &'static str {
-        std::any::type_name::<T>()
-    }
-
-    fn type_default(&self) -> Result<Value> {
-        Ok(serde_json::to_value(T::default())?)
-    }
-
-    fn upstream(&self) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.read_upstream())?)
-    }
-
-    fn effective(&self) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.read())?)
-    }
-
-    fn preview(&self, mode: Mode, value: Value) -> Result<Value> {
-        Ok(serde_json::to_value(self.0.preview_override(mode, value)?)?)
-    }
-
-    fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
-        Ok(self.0.set_override(mode, value)?)
-    }
-
-    fn clear(&self) {
-        self.0.clear_override();
-    }
-
-    fn clear_rule(&self, id: RuleId) -> bool {
-        self.0.clear_override_by_id(id)
-    }
-
-    fn rules(&self) -> Vec<Rule> {
-        self.0.installed_overrides()
+        Port::installed_overrides(self)
     }
 }
 
@@ -429,83 +408,36 @@ impl Registry {
         module.register_targets(self, name, group)
     }
 
-    /// Registers a published message.
-    pub fn register<T>(
-        &self,
-        group: &'static str,
-        name: impl Into<String>,
-        output: &Output<T>,
-    ) -> Result<()>
-    where
-        T: SimulationMessage,
-    {
-        self.register_as(group, name, output, TargetKind::Output)
-    }
-
-    /// Registers anything backed by an [`Output`] under an explicit
-    /// [`TargetKind`], including a [`TargetKind::Custom`] one the application
-    /// names for itself.
+    /// Registers one port — an [`Output`] or an [`Input`] — under `kind`.
     ///
-    /// Every leaf of `T` is registered, without bounds. A kind is a label for
-    /// the operator, never a restriction: two targets of different kinds accept
-    /// exactly the same commands.
-    pub fn register_as<T>(
-        &self,
-        group: &'static str,
-        name: impl Into<String>,
-        output: &Output<T>,
-        kind: TargetKind,
-    ) -> Result<()>
-    where
-        T: SimulationMessage,
-    {
-        self.insert(
-            name.into(),
-            Arc::new(Entry {
-                backend: OutputBackend(output.clone()),
-                kind,
-                group,
-            }),
-        )
-    }
-
-    /// Registers one consumer's view of a message.
+    /// The kind is always named rather than inferred from the port type, so
+    /// every registration says on its own line what a client will see. It is a
+    /// label for the operator and never a restriction: two targets of different
+    /// kinds accept exactly the same commands. [`TargetKind::Custom`] carries a
+    /// word this crate has no opinion about, which is how an application
+    /// describes hardware in its own vocabulary.
     ///
-    /// Must be called *after* the input is connected: an unconnected input
-    /// reads `T::default()`, so its upstream value would be wrong.
-    pub fn register_input<T>(
+    /// Every leaf of the message type is registered, without bounds.
+    ///
+    /// A port that cannot yet report honestly is refused — see
+    /// [`Port::registration_refusal`], which is how an input registered before
+    /// it was wired is caught here rather than left to describe faults against a
+    /// value no producer published.
+    pub fn register<P: Port + 'static>(
         &self,
         group: &'static str,
         name: impl Into<String>,
-        input: &Input<T>,
-    ) -> Result<()>
-    where
-        T: SimulationMessage,
-    {
-        self.register_input_as(group, name, input, TargetKind::Input)
-    }
-
-    pub fn register_input_as<T>(
-        &self,
-        group: &'static str,
-        name: impl Into<String>,
-        input: &Input<T>,
+        port: &P,
         kind: TargetKind,
-    ) -> Result<()>
-    where
-        T: SimulationMessage,
-    {
+    ) -> Result<()> {
         let name = name.into();
-        if !input.is_connected() {
-            bail!(
-                "input target '{name}' was registered before it was connected; \
-                 register inputs after wiring or they will report the type default"
-            );
+        if let Some(refusal) = port.registration_refusal() {
+            bail!("override target '{name}' cannot be registered: {refusal}");
         }
         self.insert(
             name,
             Arc::new(Entry {
-                backend: InputBackend(input.clone()),
+                backend: port.clone(),
                 kind,
                 group,
             }),

@@ -63,7 +63,7 @@ fn registry_with_reading() -> (Registry, Output<ReadingMsg>) {
     let registry = Registry::new();
     let output = Output::new(reading(3.25));
     registry
-        .register("SENSOR", "sensor_0.output_msg", &output)
+        .register("SENSOR", "sensor_0.output_msg", &output, TargetKind::Output)
         .unwrap();
     (registry, output)
 }
@@ -72,7 +72,7 @@ fn registry_with_config() -> (Registry, Output<DeviceConfig>) {
     let registry = Registry::new();
     let config = Output::new(device_config());
     registry
-        .register_as("SENSOR", "sensor_0.config", &config, CONFIG)
+        .register("SENSOR", "sensor_0.config", &config, CONFIG)
         .unwrap();
     (registry, config)
 }
@@ -219,7 +219,7 @@ fn registering_the_same_name_twice_is_an_error() {
     let other = Output::new(reading(0.0));
 
     let error = registry
-        .register("SENSOR", "sensor_0.output_msg", &other)
+        .register("SENSOR", "sensor_0.output_msg", &other, TargetKind::Output)
         .unwrap_err()
         .to_string();
 
@@ -235,7 +235,12 @@ fn an_input_target_overrides_only_that_consumer() {
     producer.connect_to(&mut faulted);
     producer.connect_to(&mut healthy);
     registry
-        .register_input("SENSOR", "consumer_0.input_msg", &faulted)
+        .register(
+            "SENSOR",
+            "consumer_0.input_msg",
+            &faulted,
+            TargetKind::Input,
+        )
         .unwrap();
 
     registry
@@ -260,7 +265,7 @@ fn registering_an_unconnected_input_is_refused() {
     let orphan: Input<ReadingMsg> = Input::default();
 
     let error = registry
-        .register_input("SENSOR", "consumer_0.input_msg", &orphan)
+        .register("SENSOR", "consumer_0.input_msg", &orphan, TargetKind::Input)
         .unwrap_err()
         .to_string();
 
@@ -461,10 +466,20 @@ fn one_module_type_can_be_registered_under_two_groups() {
     let primary = Output::new(reading(1.0));
     let redundant = Output::new(reading(2.0));
     registry
-        .register("PRIMARY", "sensor_p.output_msg", &primary)
+        .register(
+            "PRIMARY",
+            "sensor_p.output_msg",
+            &primary,
+            TargetKind::Output,
+        )
         .unwrap();
     registry
-        .register("ARRAY", "sensor_a0.output_msg", &redundant)
+        .register(
+            "ARRAY",
+            "sensor_a0.output_msg",
+            &redundant,
+            TargetKind::Output,
+        )
         .unwrap();
 
     assert_eq!(
@@ -486,10 +501,15 @@ fn targets_enumerates_every_registration_in_name_order() {
     let reading_out = Output::new(reading(1.0));
     let config_out = Output::new(device_config());
     registry
-        .register("SENSOR", "sensor_0.output_msg", &reading_out)
+        .register(
+            "SENSOR",
+            "sensor_0.output_msg",
+            &reading_out,
+            TargetKind::Output,
+        )
         .unwrap();
     registry
-        .register_as("DEVICE", "device_0.config", &config_out, CONFIG)
+        .register("DEVICE", "device_0.config", &config_out, CONFIG)
         .unwrap();
 
     let listed = registry.targets();
@@ -505,7 +525,7 @@ fn targets_enumerates_every_registration_in_name_order() {
 }
 
 // ---------------------------------------------------------------------------
-// pointerReplace paths
+// replaceAt paths
 // ---------------------------------------------------------------------------
 
 /// A config with an array, so element paths have something to resolve against.
@@ -523,7 +543,7 @@ fn registry_with_vector() -> (Registry, Output<VectorConfig>) {
         sample_hz: 200.0,
     });
     registry
-        .register_as("DEVICE", "device_0.config", &output, CONFIG)
+        .register("DEVICE", "device_0.config", &output, CONFIG)
         .unwrap();
     (registry, output)
 }
@@ -538,7 +558,7 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
     registry
         .install(
             "device_0.config",
-            Mode::PointerReplace,
+            Mode::ReplaceAt,
             json!([{ "op": "replace", "path": "/bias_xyz/2", "value": 0.5 }]),
         )
         .expect("an element of a registered array was refused");
@@ -547,13 +567,13 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
 }
 
 #[test]
-fn a_pointer_replace_naming_a_field_the_type_does_not_have_is_refused_with_a_suggestion() {
+fn a_replace_at_naming_a_field_the_type_does_not_have_is_refused_with_a_suggestion() {
     let (registry, _output) = registry_with_vector();
 
     let error = registry
         .install(
             "device_0.config",
-            Mode::PointerReplace,
+            Mode::ReplaceAt,
             json!([{ "op": "replace", "path": "/sample_hs", "value": 1.0 }]),
         )
         .expect_err("a misspelled field was accepted");
@@ -572,7 +592,7 @@ fn an_index_under_a_field_that_is_not_an_array_is_refused() {
     let error = registry
         .install(
             "device_0.config",
-            Mode::PointerReplace,
+            Mode::ReplaceAt,
             json!([{ "op": "replace", "path": "/sample_hz/0", "value": 1.0 }]),
         )
         .expect_err("an index into a scalar was accepted");
@@ -581,13 +601,13 @@ fn an_index_under_a_field_that_is_not_an_array_is_refused() {
 }
 
 #[test]
-fn a_pointer_replace_document_that_is_not_a_list_of_operations_is_refused() {
+fn a_replace_at_document_that_is_not_a_list_of_operations_is_refused() {
     let (registry, _output) = registry_with_vector();
 
     let error = registry
         .install(
             "device_0.config",
-            Mode::PointerReplace,
+            Mode::ReplaceAt,
             json!({ "bias_xyz": [1.0, 2.0, 3.0] }),
         )
         .expect_err("a merge document was accepted as a patch document");
@@ -633,7 +653,7 @@ fn a_replace_may_name_fields_the_type_default_leaves_unpopulated() {
     let registry = Registry::new();
     let output = Output::new(PlanetStateMsg::default());
     registry
-        .register("PLANET", "earth.output_msg", &output)
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let complete = serde_json::to_value(PlanetStateMsg {
@@ -667,7 +687,7 @@ fn a_patch_may_name_a_field_inside_an_option_the_module_populated() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output)
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let spun = serde_json::to_value(Matrix3::from_diagonal_element(2.0)).unwrap();
@@ -702,7 +722,7 @@ fn a_typo_inside_an_option_is_still_refused() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output)
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let error = registry
@@ -736,7 +756,7 @@ fn a_valid_field_with_an_unusable_value_reports_the_value_not_the_name() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output)
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let error = registry
@@ -772,7 +792,7 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
     // `orientation` is None here, and None in PlanetStateMsg::default().
     let output = Output::new(PlanetStateMsg::default());
     registry
-        .register("PLANET", "earth.output_msg", &output)
+        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let mut payload = serde_json::to_value(PlanetStateMsg {
@@ -795,4 +815,42 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
         error.contains("invalid type") || error.contains("expected"),
         "the value error says nothing about the value: {error}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// mode names on the wire
+// ---------------------------------------------------------------------------
+
+/// The wire spelling is part of the contract with every client, so it is
+/// asserted rather than left to `rename_all` to keep right.
+#[test]
+fn every_mode_serialises_to_the_name_a_client_sends() {
+    for (mode, name) in [
+        (Mode::Replace, "replace"),
+        (Mode::Patch, "patch"),
+        (Mode::Freeze, "freeze"),
+        (Mode::Default, "default"),
+        (Mode::ReplaceAt, "replaceAt"),
+    ] {
+        assert_eq!(serde_json::to_value(mode).unwrap(), json!(name));
+        assert_eq!(
+            serde_json::from_value::<Mode>(json!(name)).unwrap(),
+            mode,
+            "'{name}' did not round-trip"
+        );
+    }
+}
+
+/// This crate carries no deprecated mode spellings, so a name it does not
+/// define is refused rather than quietly mapped onto one it does. An
+/// application that wants to keep honouring a name it has retired does that in
+/// its own parser, where the saved scenarios needing it actually live.
+#[test]
+fn a_mode_name_this_crate_does_not_define_is_refused() {
+    for undefined in ["pointerReplace", "jsonPatch", "replaceat", "replace_at"] {
+        assert!(
+            serde_json::from_value::<Mode>(json!(undefined)).is_err(),
+            "'{undefined}' deserialised into a mode this crate never named"
+        );
+    }
 }

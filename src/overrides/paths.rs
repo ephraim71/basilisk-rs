@@ -26,7 +26,7 @@ pub(super) fn payload_paths(value: &Value) -> Vec<String> {
 /// success.
 ///
 /// Where the paths come from depends on the mode. A merge document is walked; a
-/// [`Mode::PointerReplace`] document carries its paths inside the
+/// [`Mode::ReplaceAt`] document carries its paths inside the
 /// operations, in pointer rather than dotted form.
 pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value) -> Result<()> {
     let known: BTreeSet<&str> = spec
@@ -36,7 +36,7 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
         .collect();
 
     let paths = match mode {
-        Mode::PointerReplace => patch_operation_paths(value)?,
+        Mode::ReplaceAt => patch_operation_paths(value)?,
         _ => payload_paths(value),
     };
 
@@ -69,7 +69,7 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
 ///
 /// Zeroing a sample rate while reporting success is a worse failure than any
 /// fault an operator meant to inject, so the shortfall is refused here instead.
-/// Every other mode is unaffected: `patch` and `pointerReplace` are partial by
+/// Every other mode is unaffected: `patch` and `replaceAt` are partial by
 /// definition, and `freeze` and `default` supply no payload to be short.
 pub(super) fn require_complete_replacement(
     spec: &TargetSpec,
@@ -134,7 +134,7 @@ pub(super) fn children_of_null_fields(
     let paths = match mode {
         // A malformed document is reported by `reject_unknown_paths`, which runs
         // next and raises the same error rather than an empty path list.
-        Mode::PointerReplace => patch_operation_paths(value).unwrap_or_default(),
+        Mode::ReplaceAt => patch_operation_paths(value).unwrap_or_default(),
         _ => payload_paths(value),
     };
 
@@ -182,16 +182,14 @@ fn indexes_a_known_array(spec: &TargetSpec, path: &str) -> bool {
 fn patch_operation_paths(document: &Value) -> Result<Vec<String>> {
     document
         .as_array()
-        .with_context(|| {
-            format!("a pointerReplace value must be an array of operations: {document}")
-        })?
+        .with_context(|| format!("a replaceAt value must be an array of operations: {document}"))?
         .iter()
         .map(|operation| {
             operation
                 .get("path")
                 .and_then(Value::as_str)
                 .map(pointer_to_dotted)
-                .with_context(|| format!("a pointerReplace operation needs a 'path': {operation}"))
+                .with_context(|| format!("a replaceAt operation needs a 'path': {operation}"))
         })
         .collect()
 }

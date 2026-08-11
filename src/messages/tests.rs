@@ -452,7 +452,7 @@ fn freeze_override_holds_effective_value() {
 }
 
 // -----------------------------------------------------------------------
-// pointerReplace: addressing one element of a vector
+// replaceAt: addressing one element of a vector
 // -----------------------------------------------------------------------
 
 fn spinning(rate: [f64; 3]) -> SpacecraftStateMsg {
@@ -467,12 +467,12 @@ fn replace_at(path: &str, value: f64) -> serde_json::Value {
 }
 
 #[test]
-fn a_pointer_replace_changes_one_element_and_leaves_its_siblings_upstream() {
+fn a_replace_at_changes_one_element_and_leaves_its_siblings_upstream() {
     let output = Output::new(SpacecraftStateMsg::default());
     output.write(spinning([1.0, 2.0, 3.0]));
 
     output
-        .set_override(Mode::PointerReplace, replace_at("/omega_radps/1", 9.0))
+        .set_override(Mode::ReplaceAt, replace_at("/omega_radps/1", 9.0))
         .unwrap();
 
     assert_eq!(
@@ -491,9 +491,9 @@ fn a_pointer_replace_changes_one_element_and_leaves_its_siblings_upstream() {
 
 /// `fold` starts at the outermost **absolute** rule, so a mode that is
 /// relative but not recognised as one would mask every layer beneath it.
-/// `Patch` and `PointerReplace` must both count as relative.
+/// `Patch` and `ReplaceAt` must both count as relative.
 #[test]
-fn a_pointer_replace_layer_does_not_mask_the_patch_beneath_it() {
+fn a_replace_at_layer_does_not_mask_the_patch_beneath_it() {
     let output = Output::new(SpacecraftStateMsg::default());
     output.write(spinning([1.0, 2.0, 3.0]));
 
@@ -501,7 +501,7 @@ fn a_pointer_replace_layer_does_not_mask_the_patch_beneath_it() {
         .set_override(Mode::Patch, json!({ "sigma_bn": [7.0, 0.0, 0.0] }))
         .unwrap();
     output
-        .set_override(Mode::PointerReplace, replace_at("/omega_radps/0", 9.0))
+        .set_override(Mode::ReplaceAt, replace_at("/omega_radps/0", 9.0))
         .unwrap();
 
     let effective = output.read();
@@ -516,12 +516,12 @@ fn a_pointer_replace_layer_does_not_mask_the_patch_beneath_it() {
 }
 
 #[test]
-fn a_replace_masks_a_pointer_replace_and_gives_it_back_when_it_is_removed() {
+fn a_replace_masks_a_replace_at_and_gives_it_back_when_it_is_removed() {
     let output = Output::new(SpacecraftStateMsg::default());
     output.write(spinning([1.0, 2.0, 3.0]));
 
     output
-        .set_override(Mode::PointerReplace, replace_at("/omega_radps/1", 9.0))
+        .set_override(Mode::ReplaceAt, replace_at("/omega_radps/1", 9.0))
         .unwrap();
     let absolute = output
         .set_override(
@@ -540,13 +540,13 @@ fn a_replace_masks_a_pointer_replace_and_gives_it_back_when_it_is_removed() {
 }
 
 #[test]
-fn pointer_replace_refuses_every_operation_but_replace() {
+fn replace_at_refuses_every_operation_but_replace() {
     let output = Output::new(SpacecraftStateMsg::default());
 
     for operation in ["add", "remove", "move", "copy", "test"] {
         let error = output
             .set_override(
-                Mode::PointerReplace,
+                Mode::ReplaceAt,
                 json!([{ "op": operation, "path": "/omega_radps/0", "value": 1.0 }]),
             )
             .expect_err("{operation} was accepted");
@@ -559,12 +559,12 @@ fn pointer_replace_refuses_every_operation_but_replace() {
 }
 
 #[test]
-fn a_pointer_replace_path_that_does_not_resolve_is_refused_not_ignored() {
+fn a_replace_at_path_that_does_not_resolve_is_refused_not_ignored() {
     let output = Output::new(SpacecraftStateMsg::default());
     output.write(spinning([1.0, 2.0, 3.0]));
 
     let error = output
-        .set_override(Mode::PointerReplace, replace_at("/omega_radps/7", 9.0))
+        .set_override(Mode::ReplaceAt, replace_at("/omega_radps/7", 9.0))
         .expect_err("an index past the end of a fixed vector was accepted");
     assert!(error.to_string().contains("does not resolve"), "{error}");
 
@@ -574,13 +574,10 @@ fn a_pointer_replace_path_that_does_not_resolve_is_refused_not_ignored() {
 }
 
 #[test]
-fn a_pointer_replace_value_that_is_not_an_operation_list_is_refused() {
+fn a_replace_at_value_that_is_not_an_operation_list_is_refused() {
     let output = Output::new(SpacecraftStateMsg::default());
     let error = output
-        .set_override(
-            Mode::PointerReplace,
-            json!({ "omega_radps": [1.0, 2.0, 3.0] }),
-        )
+        .set_override(Mode::ReplaceAt, json!({ "omega_radps": [1.0, 2.0, 3.0] }))
         .expect_err("a merge document was accepted as a patch document");
     assert!(error.to_string().contains("must be an array"), "{error}");
 }

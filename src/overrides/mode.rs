@@ -16,13 +16,13 @@ use serde_json::Value;
 
 /// How a rule produces its value from the one beneath it.
 ///
-/// [`Self::Patch`] and [`Self::PointerReplace`] are **relative**: they modify
+/// [`Self::Patch`] and [`Self::ReplaceAt`] are **relative**: they modify
 /// what they are laid over. The rest are absolute — they define the whole
 /// message and mask everything below them while installed. `OverrideCell::fold`
 /// turns on that split, so a new mode has to declare which side it is on.
 ///
-/// Renamed `camelCase` rather than `lowercase` so `PointerReplace` reaches the
-/// wire as `pointerReplace`. Every other variant is a single word and
+/// Renamed `camelCase` rather than `lowercase` so `ReplaceAt` reaches the
+/// wire as `replaceAt`. Every other variant is a single word and
 /// unaffected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,10 +40,15 @@ pub enum Mode {
     /// field, an ECEF position — that turns a single-axis fault into a
     /// whole-vector freeze.
     ///
-    /// Named for what it accepts rather than for RFC 6902 as a whole: every
-    /// other operation of that RFC is refused. See `apply_pointer_replace` for
-    /// which, and why.
-    PointerReplace,
+    /// Named for the one thing it does — replace the value *at* a path — rather
+    /// than for RFC 6902 as a whole: every other operation of that RFC is
+    /// refused. See `apply_replace_at` for which, and why.
+    ///
+    /// Do not read the shared prefix with [`Self::Replace`] as kinship. That
+    /// one is absolute and defines the whole message; this one is relative and
+    /// touches only the paths it names. They sit on opposite sides of the split
+    /// `fold` cares about.
+    ReplaceAt,
 }
 
 impl Mode {
@@ -53,7 +58,7 @@ impl Mode {
     /// Public because a client has to know it to describe the mode honestly, and
     /// deriving it a second time downstream is how the two answers drift.
     pub fn is_relative(self) -> bool {
-        matches!(self, Self::Patch | Self::PointerReplace)
+        matches!(self, Self::Patch | Self::ReplaceAt)
     }
 }
 

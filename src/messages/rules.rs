@@ -27,7 +27,7 @@ use super::SimulationMessage;
 ///
 /// Arrays follow RFC 7396: they are replaced whole rather than merged
 /// element-wise, since a merge document has no way to name one element. That is
-/// what [`Mode::PointerReplace`] exists for.
+/// what [`Mode::ReplaceAt`] exists for.
 fn merge_json(base: &mut Value, patch: Value) {
     match (base, patch) {
         (Value::Object(base_map), Value::Object(patch_map)) => {
@@ -68,19 +68,16 @@ fn merge_json(base: &mut Value, patch: Value) {
 /// Paths are RFC 6901 pointers, which [`Value::pointer_mut`] resolves. A
 /// pointer that does not resolve is an error, so an index past the end of a
 /// fixed-size vector is reported as such rather than silently doing nothing.
-fn apply_pointer_replace(base: &mut Value, document: &Value) -> Result<(), serde_json::Error> {
-    let operations = document.as_array().ok_or_else(|| {
-        json_error(format!(
-            "a pointerReplace value must be an array: {document}"
-        ))
-    })?;
+fn apply_replace_at(base: &mut Value, document: &Value) -> Result<(), serde_json::Error> {
+    let operations = document
+        .as_array()
+        .ok_or_else(|| json_error(format!("a replaceAt value must be an array: {document}")))?;
 
     for operation in operations {
-        let name = operation.get("op").and_then(Value::as_str).ok_or_else(|| {
-            json_error(format!(
-                "a pointerReplace operation needs 'op': {operation}"
-            ))
-        })?;
+        let name = operation
+            .get("op")
+            .and_then(Value::as_str)
+            .ok_or_else(|| json_error(format!("a replaceAt operation needs 'op': {operation}")))?;
         if name != "replace" {
             return Err(json_error(format!(
                 "this mode implements the 'replace' operation of RFC 6902 and no other, \
@@ -94,21 +91,17 @@ fn apply_pointer_replace(base: &mut Value, document: &Value) -> Result<(), serde
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                json_error(format!(
-                    "a pointerReplace operation needs 'path': {operation}"
-                ))
+                json_error(format!("a replaceAt operation needs 'path': {operation}"))
             })?;
-        let value = operation.get("value").ok_or_else(|| {
-            json_error(format!(
-                "a pointerReplace replace needs 'value': {operation}"
-            ))
-        })?;
+        let value = operation
+            .get("value")
+            .ok_or_else(|| json_error(format!("a replaceAt replace needs 'value': {operation}")))?;
 
         match base.pointer_mut(path) {
             Some(slot) => *slot = value.clone(),
             None => {
                 return Err(json_error(format!(
-                    "pointerReplace path '{path}' does not resolve on this value"
+                    "replaceAt path '{path}' does not resolve on this value"
                 )));
             }
         }
@@ -138,9 +131,9 @@ pub(super) fn apply_override<T: SimulationMessage>(
             merge_json(&mut base, rule.value.clone());
             serde_json::from_value(base)
         }
-        Mode::PointerReplace => {
+        Mode::ReplaceAt => {
             let mut base = serde_json::to_value(upstream)?;
-            apply_pointer_replace(&mut base, &rule.value)?;
+            apply_replace_at(&mut base, &rule.value)?;
             serde_json::from_value(base)
         }
         Mode::Default => Ok(T::default()),

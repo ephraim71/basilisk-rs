@@ -8,12 +8,12 @@
 //! | Re-exports | every concrete message type, one per file in `messages/` |
 //! | Message contract | [`SimulationMessage`] — what a type must satisfy to travel |
 //! | Override rules | the layer stack behind a port; what each mode *does* is `messages/rules.rs` |
-//! | Ports | [`Output`] and [`Input`] — the handles modules actually hold |
+//! | Ports | [`Output`] and [`Input`] — the handles modules actually hold, and [`Port`], the override surface they share |
 //!
 //! # Overrides: what lives here, and what does not
 //!
 //! This module owns the **mechanics**: the stack of rules behind a port, how they
-//! fold together, and what a `patch` or a `pointerReplace` does to a JSON value.
+//! fold together, and what a `patch` or a `replaceAt` does to a JSON value.
 //! The vocabulary those mechanics speak — [`Mode`], [`Rule`], [`RuleId`] — is
 //! declared in [`crate::overrides`] and used here, not defined here. This module
 //! has no idea what a *target* is, cannot enumerate what is injectable, and never
@@ -575,6 +575,141 @@ impl<T: SimulationMessage> Input<T> {
             .overrides
             .install(mode, value, freeze_source, self.read_upstream())?;
         Ok(id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the two ports have in common
+// ---------------------------------------------------------------------------
+
+/// The override surface an [`Output`] and an [`Input`] both present.
+///
+/// The two are unrelated types with, as it turns out, exactly the same seven
+/// operations. Without a trait saying so, anything that wanted to accept either
+/// had to be written twice — which is what the registry did, down to two backend
+/// adapters whose bodies differed only in the type they wrapped.
+///
+/// Declared here rather than beside the registry because it is a fact about
+/// ports, and because [`crate::overrides`] already depends on this module while
+/// the reverse dependency is only on `overrides::mode`. A blanket
+/// implementation over this trait is what lets one registration path serve both
+/// directions.
+///
+/// The methods deliberately mirror the inherent ones rather than replacing them.
+/// `output.read()` is called on every tick throughout a simulation, and moving
+/// it onto a trait would mean every one of those callers importing the trait to
+/// keep compiling.
+/// `Clone` is a supertrait because registering a port means handing the registry
+/// its own handle on the same message — every port here clones to a second
+/// handle rather than a copy of the value, which is what lets a fault installed
+/// through the registry be visible to the module holding the original.
+pub trait Port: Clone + Send + Sync {
+    /// The message this port carries.
+    type Message: SimulationMessage;
+
+    /// The value a reader sees, with every installed rule folded in.
+    fn read(&self) -> Self::Message;
+
+    /// The value before any rule — what the port would carry if nothing were
+    /// installed.
+    fn read_upstream(&self) -> Self::Message;
+
+    fn preview_override(
+        &self,
+        mode: Mode,
+        value: Value,
+    ) -> Result<Self::Message, serde_json::Error>;
+
+    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error>;
+
+    fn clear_override(&self);
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool;
+
+    /// The rules in force, innermost first.
+    fn installed_overrides(&self) -> Vec<Rule>;
+
+    /// Why this port cannot be registered as a target yet, if it cannot.
+    ///
+    /// A port that would misreport its own upstream value has to be refused at
+    /// registration rather than allowed to serve wrong answers later. Only
+    /// [`Input`] has such a state, so the default is that there is no reason.
+    fn registration_refusal(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+impl<T: SimulationMessage> Port for Output<T> {
+    type Message = T;
+
+    fn read(&self) -> T {
+        Output::read(self)
+    }
+
+    fn read_upstream(&self) -> T {
+        Output::read_upstream(self)
+    }
+
+    fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
+        Output::preview_override(self, mode, value)
+    }
+
+    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
+        Output::set_override(self, mode, value)
+    }
+
+    fn clear_override(&self) {
+        Output::clear_override(self);
+    }
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool {
+        Output::clear_override_by_id(self, id)
+    }
+
+    fn installed_overrides(&self) -> Vec<Rule> {
+        Output::installed_overrides(self)
+    }
+}
+
+impl<T: SimulationMessage> Port for Input<T> {
+    type Message = T;
+
+    fn read(&self) -> T {
+        Input::read(self)
+    }
+
+    fn read_upstream(&self) -> T {
+        Input::read_upstream(self)
+    }
+
+    fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
+        Input::preview_override(self, mode, value)
+    }
+
+    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
+        Input::set_override(self, mode, value)
+    }
+
+    fn clear_override(&self) {
+        Input::clear_override(self);
+    }
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool {
+        Input::clear_override_by_id(self, id)
+    }
+
+    fn installed_overrides(&self) -> Vec<Rule> {
+        Input::installed_overrides(self)
+    }
+
+    /// An unconnected input reads `T::default()`, so it would report that as the
+    /// upstream value and describe a fault against a number no producer ever
+    /// published. Registering has to wait until the wiring is done.
+    fn registration_refusal(&self) -> Option<&'static str> {
+        (!self.is_connected()).then_some(
+            "it was registered before it was connected; register inputs after \
+             wiring or they will report the type default",
+        )
     }
 }
 

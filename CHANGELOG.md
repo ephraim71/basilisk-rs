@@ -13,16 +13,24 @@ actually have written against. Nothing has a deprecated alias.
 - `overrides` module: a registry of everything a fault can be injected into,
   addressed by name. `Registry` holds them; `Target` is the trait each one
   implements; `Overridable` lets a module list its own ports in one call.
+  `Registry::register` is the single way in: it takes any `messages::Port` and
+  the `TargetKind` to file it under, so one path serves outputs, inputs,
+  configurations and whatever an application names for itself. The kind is
+  always given rather than inferred from which method was called.
+- `messages::Port`, the override surface `Output<T>` and `Input<T>` share. The
+  two have identical operations, and without a trait saying so anything wanting
+  to accept either had to be written twice.
 - Schemas derived at runtime from `T::default()`, so a field added to a message
   type is advertised without anything being hand-maintained: `TargetSpec`,
   `FieldSpec`, `TargetKind`.
 - `TargetKind::Custom(&'static str)`, so an application can name a kind this
   crate has no opinion about and have it reach a client verbatim.
-- `Mode::PointerReplace`, a mode 0.3.0 did not have: the `replace` operation of
-  RFC 6902 and no other, which unlike `Mode::Patch` can address a single element
-  of an array. A merge replaces an array wholesale, so `Patch` cannot change one
-  component of a vector without pinning its siblings to whatever the sender
-  happened to write.
+- `Mode::ReplaceAt`, a mode 0.3.0 did not have: the `replace` operation of
+  RFC 6902 and no other, reaching the wire as `replaceAt`. Each path is an
+  RFC 6901 pointer naming any one field or array element, which unlike
+  `Mode::Patch` can address a single element of an array. A merge replaces an
+  array wholesale, so `Patch` cannot change one component of a vector without
+  pinning its siblings to whatever the sender happened to write.
 - `Mode::is_relative`, so a client can describe a mode without re-deriving
   whether it composes with the rule beneath it or masks it.
 - Overriding an `Input` at all. 0.3.0's `Input<T>` held only a slot, so a fault

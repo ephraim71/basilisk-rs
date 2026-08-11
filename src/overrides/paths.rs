@@ -38,7 +38,7 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
     let paths = match mode {
         Mode::ReplaceAt => patch_operation_paths(value)?,
         _ => {
-            reject_dotted_keys(value, "")?;
+            reject_dotted_keys(value, Some(&spec.type_default))?;
             payload_paths(value)
         }
     };
@@ -150,23 +150,21 @@ pub(super) fn children_of_null_fields(
         .collect()
 }
 
-/// Refuses an object key that carries the path separator.
+/// Refuses a dotted key that only *looks* like the path it flattens to.
 ///
-/// The schema advertises nested fields in dotted form, so the natural mistake is
-/// to send one back as a single key: `{"orientation.spin": 1.0}`. That key is not
-/// the path it looks like — serde matches keys literally, finds no field of that
-/// name, and ignores it — but flattening the payload turns it into exactly the
-/// dotted path a real nested field produces, so it passed the unknown-field check
-/// and installed a rule that could never do anything.
-///
-/// Checked on the payload only. The same walk derives the schema from a message
-/// type, where a key with a dot in it is not reachable from a Rust field name.
-fn reject_dotted_keys(value: &Value, prefix: &str) -> Result<()> {
+/// Flattening turns `{"a.b": 1}` into the same path as `{"a": {"b": 1}}`, so
+/// without this a key serde would ignore passed the unknown-field check. A field
+/// renamed to carry a dot is addressed by exactly such a key, so the type's own
+/// shape decides: legitimate where the object at this position really has that
+/// key. Where the shape cannot say — an option the default holds as `null` — the
+/// key is refused.
+fn reject_dotted_keys(value: &Value, shape: Option<&Value>) -> Result<()> {
     let Value::Object(map) = value else {
         return Ok(());
     };
+    let here = shape.and_then(Value::as_object);
     for (key, child) in map {
-        if key.contains('.') {
+        if key.contains('.') && !here.is_some_and(|fields| fields.contains_key(key)) {
             let nested = key.replace('.', "\": {\"");
             let closing = "}".repeat(key.matches('.').count());
             bail!(
@@ -175,12 +173,7 @@ fn reject_dotted_keys(value: &Value, prefix: &str) -> Result<()> {
                  address a path directly"
             );
         }
-        let path = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        reject_dotted_keys(child, &path)?;
+        reject_dotted_keys(child, here.and_then(|fields| fields.get(key)))?;
     }
     Ok(())
 }

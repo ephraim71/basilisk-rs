@@ -58,7 +58,7 @@ actually have written against. Nothing has a deprecated alias.
 
 ### Changed
 
-Three items, and these are the only ones that can affect code written against
+Four items, and these are the only ones that can affect code written against
 0.3.0. The override surface was reworked substantially before release, but the
 rest of that rework renamed items that 0.3.0 either kept private or never had,
 so it is not listed here — a changelog that reports internal churn as breaking
@@ -77,6 +77,13 @@ makes it harder to find the changes that are.
   not serde-able can no longer be read through an `Input`. Reading an input now
   folds any rule installed on that consumer's view, and folding is defined in
   terms of JSON.
+- Cloning an `Input<T>` now aliases its connection instead of copying it, so a
+  clone follows a later `connect`. `vec![Input::default(); n]` therefore yields
+  one input under `n` names, where 0.3.0 let each entry be wired to a different
+  producer; build a collection with `(0..n).map(|_| Input::default()).collect()`
+  instead. The rule stack was already shared this way, so such a collection also
+  already shared one set of overrides — the two halves now agree, and `Output`
+  has always aliased on clone.
 
 ### Removed
 

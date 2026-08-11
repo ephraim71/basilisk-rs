@@ -21,9 +21,8 @@ pub struct CssWlsEst {
 impl CssWlsEst {
     pub fn new(config: CssWlsEstConfig) -> Self {
         Self {
-            // Built one at a time, not `vec![_; n]`: cloning a port aliases it
-            // rather than duplicating it, so that macro would give every sensor
-            // the same connection and the same override stack.
+            // Not `vec![_; n]`: cloning a port aliases it, so every sensor would
+            // share one connection and one override stack.
             css_data_in_msgs: (0..config.sensor_normals_body.len())
                 .map(|_| Input::default())
                 .collect(),

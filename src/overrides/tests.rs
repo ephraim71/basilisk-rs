@@ -855,11 +855,9 @@ fn a_mode_name_this_crate_does_not_define_is_refused() {
     }
 }
 
-/// The schema advertises nested fields in dotted form, so sending one back as a
-/// single key is the natural mistake — and flattening the payload turned that key
-/// into exactly the path a real nested field produces. It passed the
-/// unknown-field check, serde ignored it, and a rule was installed that could
-/// never do anything.
+/// Flattening made a dotted key indistinguishable from the nesting it resembles,
+/// so a key serde ignores passed the check and installed a rule that never
+/// applied.
 #[test]
 fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     use crate::messages::{PlanetOrientation, PlanetStateMsg};
@@ -891,9 +889,8 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     );
 }
 
-/// `replaceAt` names one location, and a location may be a whole object. The
-/// schema lists only leaves, so a container path was in no known set and was
-/// reported as an unknown field even though its pointer resolved.
+/// A location may be a whole object, but the schema lists only leaves, so a
+/// container path was reported as an unknown field though its pointer resolved.
 #[test]
 fn a_replace_at_may_address_a_whole_object_valued_field() {
     use crate::messages::{PlanetOrientation, PlanetStateMsg};
@@ -941,10 +938,9 @@ fn a_replace_at_may_address_a_whole_object_valued_field() {
     );
 }
 
-/// The registry keeps a clone of an input it registered. With the connection held
-/// directly rather than shared, `connect` replaced only the original's, and the
-/// two then disagreed about which producer they read — the module saw the new one
-/// while the registry reported, and froze, a value from the old one.
+/// The registry keeps a clone. With the connection held directly, `connect`
+/// replaced only the original's, so the registry reported — and froze — a value
+/// from the producer the input had been disconnected from.
 #[test]
 fn a_registered_input_follows_a_later_reconnect() {
     let producer_one = Output::new(ReadingMsg {
@@ -987,11 +983,9 @@ fn a_registered_input_follows_a_later_reconnect() {
     );
 }
 
-/// Cloning a port aliases it rather than duplicating it, so a collection of
-/// inputs has to be built one at a time. `vec![Input::default(); n]` yields one
-/// input under `n` names: before the connection was shared this was already true
-/// of the rule stack, so a fault injected into one sensor's view silently applied
-/// to every sibling built alongside it.
+/// Cloning a port aliases it, so a collection has to be built one at a time.
+/// `vec![Input::default(); n]` shared one rule stack even before it shared a
+/// connection, so a fault on one sensor applied to every sibling.
 #[test]
 fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
     let producers: Vec<Output<ReadingMsg>> = (0..3)
@@ -1029,4 +1023,46 @@ fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
     assert_eq!(inputs[0].read().value, 99.0, "the fault did not apply");
     assert_eq!(inputs[1].read().value, 1.0, "the fault leaked to a sibling");
     assert_eq!(inputs[2].read().value, 2.0, "the fault leaked to a sibling");
+}
+
+/// A field renamed to carry a dot is addressed by exactly the flat key the check
+/// above refuses, so the type's own shape has to decide which is which.
+#[test]
+fn a_field_whose_name_contains_the_separator_is_still_addressable() {
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+    #[serde(default)]
+    struct RenamedConfig {
+        #[serde(rename = "gain.value")]
+        gain_value: f64,
+        plain: f64,
+    }
+
+    let registry = Registry::new();
+    let output = Output::new(RenamedConfig::default());
+    registry
+        .register("CFG", "device.config", &output, CONFIG)
+        .unwrap();
+
+    // The schema advertises it in the only form serde accepts.
+    let spec = registry.spec("device.config").unwrap();
+    assert!(
+        spec.fields.iter().any(|field| field.path == "gain.value"),
+        "the renamed field was not advertised: {:?}",
+        spec.fields
+    );
+
+    registry
+        .install("device.config", Mode::Patch, json!({ "gain.value": 5.0 }))
+        .expect("the renamed field was refused as a path");
+    assert_eq!(output.read().gain_value, 5.0);
+    assert_eq!(output.read().plain, 0.0, "the sibling was disturbed");
+
+    // A dot the type cannot account for is still refused.
+    let error = registry
+        .install("device.config", Mode::Patch, json!({ "plain.value": 1.0 }))
+        .expect_err("an unaccounted dotted key was accepted");
+    assert!(
+        error.to_string().contains("is a path, not a field name"),
+        "{error}"
+    );
 }

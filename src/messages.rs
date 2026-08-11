@@ -37,7 +37,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
-use crate::overrides::mode::{Mode, Rule, RuleId, next_rule_id};
+use crate::overrides::rule::{Mode, Rule, RuleId, apply_override, next_rule_id};
 
 mod array_motor_torque;
 mod array_motor_voltage;
@@ -78,10 +78,6 @@ mod translation_reference;
 mod vehicle_config;
 
 /// Not a message type: what a single override rule computes.
-mod rules;
-
-use rules::apply_override;
-
 pub use array_motor_torque::ArrayMotorTorqueMsg;
 pub use array_motor_voltage::ArrayMotorVoltageMsg;
 pub use atmosphere::AtmosphereMsg;

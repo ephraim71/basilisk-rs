@@ -62,7 +62,7 @@
 //! contract with *its* clients and would otherwise be frozen by this crate.
 //! [`Registry::targets`] is the door for building one.
 
-pub(crate) mod mode;
+pub(crate) mod rule;
 
 mod paths;
 mod schema;
@@ -81,7 +81,7 @@ use crate::messages::Port;
 use paths::{children_of_null_fields, reject_unknown_paths, require_complete_replacement};
 use schema::leaf_fields;
 
-pub use mode::{Mode, Rule, RuleId};
+pub use rule::{Mode, Rule, RuleId};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
 // ---------------------------------------------------------------------------

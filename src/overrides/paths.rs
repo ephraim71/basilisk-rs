@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use super::mode::Mode;
+use super::rule::Mode;
 use super::schema::{FieldSpec, TargetSpec, walk_leaves};
 
 /// The leaf paths an override payload actually addresses.

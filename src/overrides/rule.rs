@@ -1,20 +1,124 @@
-//! What a single rule computes.
+//! What a rule is, and what it computes.
 //!
-//! `OverrideCell::fold` stores and composes rules; this decides what
-//! one of them does to a value. `apply_override` is the seam between the two —
-//! `fold` calls it once per visible layer.
+//! [`Mode`], [`Rule`] and [`RuleId`] are the vocabulary both halves of the
+//! feature speak: the port machinery in [`crate::messages`] applies rules, and
+//! the registry in the parent module addresses them by name. Neither is the
+//! natural owner, so they sit here.
 //!
-//! A child module of `messages` because that is whose mechanics it implements,
-//! not for access: everything it touches is public now that the rule vocabulary
-//! lives in [`crate::overrides::mode`]. `OverrideCell::fold` is the only caller,
-//! and keeping the two together is what makes the seam between "compose the
-//! stack" and "apply one layer" legible.
+//! [`apply_override`] is the other half of the same subject — what one rule
+//! *does* to a value — and lives beside the modes it dispatches on. Adding a
+//! mode is then one file: a variant, a line in [`Mode::is_relative`], and an
+//! arm. Split across two modules, as it was, the two halves could disagree
+//! about which modes exist and only a test would say so.
+//!
+//! `OverrideCell::fold` composes the stack and calls [`apply_override`] once per
+//! visible layer. That is the seam: composition there, one layer's meaning here.
+//!
+//! Not public as a path: every type is re-exported from [`crate::overrides`],
+//! and one way in is better than two.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::overrides::mode::{Mode, Rule};
+use crate::messages::SimulationMessage;
 
-use super::SimulationMessage;
+/// How a rule produces its value from the one beneath it.
+///
+/// [`Self::Patch`] and [`Self::ReplaceAt`] are **relative**: they modify
+/// what they are laid over. The rest are absolute — they define the whole
+/// message and mask everything below them while installed. `OverrideCell::fold`
+/// turns on that split, so a new mode has to declare which side it is on.
+///
+/// Renamed `camelCase` rather than `lowercase` so `ReplaceAt` reaches the
+/// wire as `replaceAt`. Every other variant is a single word and
+/// unaffected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Mode {
+    Replace,
+    Patch,
+    Freeze,
+    Default,
+    /// The `replace` operation of RFC 6902 — **that one and no other** — which
+    /// unlike [`Self::Patch`] can address a single element of an array.
+    ///
+    /// A merge replaces an array wholesale, so `Patch` cannot change one
+    /// component of a vector without also pinning its siblings to whatever the
+    /// sender happened to write. On a live value — a body rate, a magnetic
+    /// field, an ECEF position — that turns a single-axis fault into a
+    /// whole-vector freeze.
+    ///
+    /// Named for the one thing it does — replace the value *at* a path — rather
+    /// than for RFC 6902 as a whole: every other operation of that RFC is
+    /// refused. See `apply_replace_at` below for which, and why.
+    ///
+    /// Do not read the shared prefix with [`Self::Replace`] as kinship. That
+    /// one is absolute and defines the whole message; this one is relative and
+    /// touches only the paths it names. They sit on opposite sides of the split
+    /// `fold` cares about.
+    ReplaceAt,
+}
+
+impl Mode {
+    /// Whether this rule modifies the value beneath it rather than replacing the
+    /// whole message.
+    ///
+    /// Public because a client has to know it to describe the mode honestly, and
+    /// deriving it a second time downstream is how the two answers drift.
+    pub fn is_relative(self) -> bool {
+        matches!(self, Self::Patch | Self::ReplaceAt)
+    }
+}
+
+/// Identifies one installed rule.
+///
+/// A timed fault must clear the rule *it* installed. Without an id, a timer that
+/// fires after a second rule was applied to the same target clears the second
+/// one.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct RuleId(u64);
+
+impl RuleId {
+    /// The identity of a rule that is installed nowhere.
+    ///
+    /// A previewed candidate is folded alongside the installed stack but never
+    /// stored, so it needs an identity that cannot collide with one that is.
+    /// [`next_rule_id`] counts up from 1 and never issues this.
+    pub(crate) const UNINSTALLED: Self = Self(0);
+}
+
+pub(crate) fn next_rule_id() -> RuleId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    RuleId(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// One rule in force on a port: what to do, with what, and which fault owns it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rule {
+    pub mode: Mode,
+    pub value: Value,
+    pub id: RuleId,
+}
+
+impl Rule {
+    /// Builds the rule `mode` and `value` ask for.
+    ///
+    /// A `freeze` stores the value it captured rather than the (empty) payload
+    /// that requested it, so the rule stands on its own once installed.
+    /// `freeze_source` carries that capture; every other mode ignores it.
+    pub(crate) fn new(mode: Mode, value: Value, freeze_source: Option<Value>, id: RuleId) -> Self {
+        Self {
+            mode,
+            value: match mode {
+                Mode::Freeze => freeze_source.unwrap_or(value),
+                _ => value,
+            },
+            id,
+        }
+    }
+}
 
 /// Overlays `patch` onto `base`, descending only where both sides are objects.
 ///
@@ -120,7 +224,7 @@ fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
 }
 
 /// Produces the value `rule` yields when laid over `upstream`.
-pub(super) fn apply_override<T: SimulationMessage>(
+pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,
 ) -> Result<T, serde_json::Error> {

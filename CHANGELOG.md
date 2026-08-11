@@ -11,12 +11,15 @@ actually have written against. Nothing has a deprecated alias.
 ### Added
 
 - `overrides` module: a registry of everything a fault can be injected into,
-  addressed by name. `Registry` holds them; `Target` is the trait each one
-  implements; `Overridable` lets a module list its own ports in one call.
-  `Registry::register` is the single way in: it takes any `messages::Port` and
-  the `TargetKind` to file it under, so one path serves outputs, inputs,
+  addressed by name. `Registry` holds them; `Target` is the one type each one
+  is, whatever it wraps; `Overridable` lets a module list its own ports in one
+  call. `Registry::register` is the single way in: it takes any `messages::Port`
+  and the `TargetKind` to file it under, so one path serves outputs, inputs,
   configurations and whatever an application names for itself. The kind is
   always given rather than inferred from which method was called.
+  `Target` is a struct with no public constructor rather than a trait, so
+  registering a port is the only way to produce one and no target can exist
+  that skips the name and shape checks `Target::install` applies.
 - `messages::Port`, the override surface `Output<T>` and `Input<T>` share. The
   two have identical operations, and without a trait saying so anything wanting
   to accept either had to be written twice.

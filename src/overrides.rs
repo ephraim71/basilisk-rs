@@ -12,10 +12,11 @@
 //!
 //! This module is that half. Everything injectable — a message a module
 //! publishes, one consumer's view of a message, a device's configuration, or
-//! whatever an application layers on top of a port — is a [`Target`]:
+//! whatever an application layers on top of a port — becomes a [`Target`]:
 //! it describes its own schema, judges a proposed override against that schema,
-//! installs one, and reports the value before and after. The registry stores
-//! them all behind that one trait, so a single control path serves every kind.
+//! installs one, and reports the value before and after. One concrete type
+//! wrapping any [`Port`], so a single control path serves every kind and no
+//! target can reach the registry without the checks below.
 //!
 //! There is one way in: [`Registry::register`] takes any [`Port`] — an `Output`
 //! or an `Input` — and the [`TargetKind`] to file it under. The kind is always
@@ -26,13 +27,13 @@
 //!
 //! | file | holds |
 //! |---|---|
-//! | this one | the two public traits, the one implementation behind them, and the registry |
+//! | this one | [`Target`], the port operations it wraps, and the registry |
 //! | `mode` | [`Mode`], [`Rule`], [`RuleId`] — the vocabulary both halves share |
 //! | `schema` | [`TargetKind`], [`FieldSpec`], [`TargetSpec`], and the walk that derives them from `T::default()` |
 //! | `paths` | whether a payload may name what it names, and the "did you mean" when it may not |
 //!
-//! `Entry<B>` and the registry share this file because the registry constructs
-//! `Entry` directly, reading fields that are private to it. Splitting them
+//! [`Target`] and the registry share this file because the registry constructs
+//! targets directly, reading fields that are private to them. Splitting them
 //! would mean widening those fields for no gain.
 //!
 //! # The two gates
@@ -57,7 +58,7 @@
 //! # What is deliberately not here
 //!
 //! No JSON envelope. The registry hands back [`TargetSpec`] and
-//! `Arc<dyn Target>`; deciding what a manifest or a status dump looks
+//! `Arc<Target>`; deciding what a manifest or a status dump looks
 //! like on the wire is the application's business, because that shape is a
 //! contract with *its* clients and would otherwise be frozen by this crate.
 //! [`Registry::targets`] is the door for building one.
@@ -85,7 +86,7 @@ pub use rule::{Mode, Rule, RuleId};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
 // ---------------------------------------------------------------------------
-// Abstraction: the two public traits
+// Abstraction: what an application implements
 // ---------------------------------------------------------------------------
 
 /// A module that can list its own overridable ports.
@@ -154,48 +155,14 @@ pub trait Overridable {
     ) -> Result<()>;
 }
 
-/// Something a fault can be injected into.
-pub trait Target: Send + Sync {
-    /// The schema and type default. Static; needs no running simulation.
-    fn spec(&self) -> Result<TargetSpec>;
-
-    /// Whether this override would be accepted, without installing it.
-    fn validate(&self, mode: Mode, value: &Value) -> Result<()>;
-
-    /// Validates, then installs. Returns the id of the new rule.
-    fn install(&self, mode: Mode, value: Value) -> Result<RuleId>;
-
-    fn clear(&self);
-
-    /// Removes the one layer `id` names, leaving every other rule in force.
-    /// Returns whether that layer was there to remove.
-    fn clear_rule(&self, id: RuleId) -> bool;
-
-    /// The rules in force, innermost first. Empty when nothing is overridden.
-    fn rules(&self) -> Vec<Rule>;
-
-    /// The value before *this* target's override.
-    ///
-    /// For an output that is what the simulation produced. For an input it is
-    /// the producer's effective value, which is itself overridden if the
-    /// producer has a rule — it is not ground truth.
-    fn upstream(&self) -> Result<Value>;
-
-    /// The value after this target's override.
-    fn effective(&self) -> Result<Value>;
-}
-
-// ---------------------------------------------------------------------------
-// Implementation: one `Entry<B>` serving every kind
-// ---------------------------------------------------------------------------
-
-/// The handful of operations a target must supply, in JSON terms.
+/// The port operations a target is built from, in JSON terms.
 ///
 /// Schema generation and payload checking are derived from these once, in
-/// [`Entry`], rather than reimplemented per kind. Private because the only
-/// implementation is the blanket one below: a caller supplies a
-/// [`Port`] and this crate adapts it, so there is nothing here for an
-/// application to implement.
+/// [`Target`], rather than reimplemented per kind. Private, and reachable only
+/// through the blanket implementation below: a caller supplies a [`Port`] and
+/// this crate adapts it, so there is nothing here for an application to
+/// implement and no way to supply a target that skips [`Target::install`]'s
+/// checks.
 trait TargetBackend: Send + Sync {
     fn type_name(&self) -> &'static str;
     fn type_default(&self) -> Result<Value>;
@@ -254,13 +221,95 @@ impl<P: Port> TargetBackend for P {
     }
 }
 
-struct Entry<B> {
-    backend: B,
+/// Something a fault can be injected into.
+///
+/// One registered [`Port`], plus the two labels the registration supplied and
+/// the port itself has no way to know. Every kind is this one type: the port is
+/// held type-erased, so targets carrying unrelated message types can share one
+/// map without the registry knowing what any of them carries.
+///
+/// Only [`Registry::register`] builds one, which is what makes the name and
+/// shape checks impossible to route around — there is no unvalidated target to
+/// construct, because there is no other constructor.
+pub struct Target {
+    backend: Box<dyn TargetBackend>,
     kind: TargetKind,
     group: &'static str,
 }
 
-impl<B: TargetBackend> Entry<B> {
+impl Target {
+    fn new<P: Port + 'static>(port: &P, kind: TargetKind, group: &'static str) -> Self {
+        Self {
+            backend: Box::new(port.clone()),
+            kind,
+            group,
+        }
+    }
+
+    /// The schema and type default. Static; needs no running simulation.
+    pub fn spec(&self) -> Result<TargetSpec> {
+        let type_default = self.backend.type_default()?;
+        Ok(TargetSpec {
+            kind: self.kind,
+            group: self.group,
+            type_name: self.backend.type_name(),
+            fields: leaf_fields(&type_default),
+            type_default,
+        })
+    }
+
+    /// Three checks, all about shape rather than plausibility: the payload may
+    /// only name fields the target has, a `replace` must name all of them, and
+    /// the result has to be a well-formed value of the message type. Any value
+    /// that survives those is installed — a fault is allowed to be absurd, and a
+    /// simulation that cannot survive one is the result being sought.
+    ///
+    /// Unknown paths are reported before a shortfall, so a misspelling in an
+    /// otherwise complete `replace` reads as the typo it is rather than as a
+    /// missing field plus an unknown one.
+    ///
+    /// One apply, not two: `check_payload` has to apply the payload to
+    /// learn which fields the result has, so it already answers the third check
+    /// on the way to the first.
+    pub fn validate(&self, mode: Mode, value: &Value) -> Result<()> {
+        self.check_payload(mode, value)
+    }
+
+    /// Validates, then installs. Returns the id of the new rule.
+    pub fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
+        self.check_payload(mode, &value)?;
+        self.backend.install(mode, value)
+    }
+
+    pub fn clear(&self) {
+        self.backend.clear();
+    }
+
+    /// Removes the one layer `id` names, leaving every other rule in force.
+    /// Returns whether that layer was there to remove.
+    pub fn clear_rule(&self, id: RuleId) -> bool {
+        self.backend.clear_rule(id)
+    }
+
+    /// The rules in force, innermost first. Empty when nothing is overridden.
+    pub fn rules(&self) -> Vec<Rule> {
+        self.backend.rules()
+    }
+
+    /// The value before *this* target's override.
+    ///
+    /// For an output that is what the simulation produced. For an input it is
+    /// the producer's effective value, which is itself overridden if the
+    /// producer has a rule — it is not ground truth.
+    pub fn upstream(&self) -> Result<Value> {
+        self.backend.upstream()
+    }
+
+    /// The value after this target's override.
+    pub fn effective(&self) -> Result<Value> {
+        self.backend.effective()
+    }
+
     /// The policy both entry points share, derived once from one spec so the
     /// two checks cannot disagree about what the target's fields are.
     /// Checks the payload's names against the message it would *produce*, not
@@ -322,63 +371,6 @@ impl<B: TargetBackend> Entry<B> {
     }
 }
 
-/// One implementation serves every kind: `Entry<B>` is a [`Target`] for any
-/// backend, so a new kind needs a backend and no new target logic.
-impl<B: TargetBackend> Target for Entry<B> {
-    fn spec(&self) -> Result<TargetSpec> {
-        let type_default = self.backend.type_default()?;
-        Ok(TargetSpec {
-            kind: self.kind,
-            group: self.group,
-            type_name: self.backend.type_name(),
-            fields: leaf_fields(&type_default),
-            type_default,
-        })
-    }
-
-    /// Three checks, all about shape rather than plausibility: the payload may
-    /// only name fields the target has, a `replace` must name all of them, and
-    /// the result has to be a well-formed value of the message type. Any value
-    /// that survives those is installed — a fault is allowed to be absurd, and a
-    /// simulation that cannot survive one is the result being sought.
-    ///
-    /// Unknown paths are reported before a shortfall, so a misspelling in an
-    /// otherwise complete `replace` reads as the typo it is rather than as a
-    /// missing field plus an unknown one.
-    ///
-    /// One apply, not two: [`Self::check_payload`] has to apply the payload to
-    /// learn which fields the result has, so it already answers the third check
-    /// on the way to the first.
-    fn validate(&self, mode: Mode, value: &Value) -> Result<()> {
-        self.check_payload(mode, value)
-    }
-
-    fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
-        self.check_payload(mode, &value)?;
-        self.backend.install(mode, value)
-    }
-
-    fn clear(&self) {
-        self.backend.clear();
-    }
-
-    fn clear_rule(&self, id: RuleId) -> bool {
-        self.backend.clear_rule(id)
-    }
-
-    fn rules(&self) -> Vec<Rule> {
-        self.backend.rules()
-    }
-
-    fn upstream(&self) -> Result<Value> {
-        self.backend.upstream()
-    }
-
-    fn effective(&self) -> Result<Value> {
-        self.backend.effective()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Registry: the entry point callers hold
 // ---------------------------------------------------------------------------
@@ -390,7 +382,7 @@ impl<B: TargetBackend> Target for Entry<B> {
 /// and a schema dump see one registry.
 #[derive(Clone, Default)]
 pub struct Registry {
-    targets: Arc<Mutex<BTreeMap<String, Arc<dyn Target>>>>,
+    targets: Arc<Mutex<BTreeMap<String, Arc<Target>>>>,
 }
 
 impl Registry {
@@ -435,17 +427,10 @@ impl Registry {
         if let Some(refusal) = port.registration_refusal() {
             bail!("override target '{name}' cannot be registered: {refusal}");
         }
-        self.insert(
-            name,
-            Arc::new(Entry {
-                backend: port.clone(),
-                kind,
-                group,
-            }),
-        )
+        self.insert(name, Arc::new(Target::new(port, kind, group)))
     }
 
-    fn insert(&self, name: String, target: Arc<dyn Target>) -> Result<()> {
+    fn insert(&self, name: String, target: Arc<Target>) -> Result<()> {
         let mut targets = self.lock();
         if targets.contains_key(&name) {
             bail!("override target '{name}' is already registered");
@@ -516,7 +501,7 @@ impl Registry {
     ///
     /// A snapshot. Targets registered afterwards are not in it, and the registry
     /// lock is not held while the caller works through the result.
-    pub fn targets(&self) -> Vec<(String, Arc<dyn Target>)> {
+    pub fn targets(&self) -> Vec<(String, Arc<Target>)> {
         self.lock()
             .iter()
             .map(|(name, target)| (name.clone(), Arc::clone(target)))
@@ -530,7 +515,7 @@ impl Registry {
     /// spelling that was never wrong. The two cases need different answers
     /// because they have different fixes: correct the name, or wire the
     /// registry up in the first place.
-    fn target(&self, name: &str) -> Result<Arc<dyn Target>> {
+    fn target(&self, name: &str) -> Result<Arc<Target>> {
         let targets = self.lock();
         if targets.is_empty() {
             bail!(
@@ -544,7 +529,7 @@ impl Registry {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, Arc<dyn Target>>> {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, Arc<Target>>> {
         self.targets.lock().expect("override registry lock")
     }
 }

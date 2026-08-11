@@ -1,37 +1,17 @@
 //! Messages, the ports that carry them, and the override rules that can be laid
 //! over one in flight.
 //!
-//! This module is four things at once, which is worth knowing before reading it:
-//!
 //! | region | holds |
 //! |---|---|
 //! | Re-exports | every concrete message type, one per file in `messages/` |
 //! | Message contract | [`SimulationMessage`] — what a type must satisfy to travel |
-//! | Override rules | the layer stack behind a port; what each mode *does* is `messages/rules.rs` |
+//! | Override rules | the layer stack behind a port; what each mode *does* is `overrides/rule.rs` |
 //! | Ports | [`Output`] and [`Input`] — the handles modules actually hold, and [`Port`], the override surface they share |
 //!
-//! # Overrides: what lives here, and what does not
-//!
-//! This module owns the **mechanics**: the stack of rules behind a port, how they
-//! fold together, and what a `patch` or a `replaceAt` does to a JSON value.
-//! The vocabulary those mechanics speak — [`Mode`], [`Rule`], [`RuleId`] — is
-//! declared in [`crate::overrides`] and used here, not defined here. This module
-//! has no idea what a *target* is, cannot enumerate what is injectable, and never
-//! validates a field name.
-//!
-//! That half — the registry, the schema derived from `T::default()` and the
-//! unknown-path check — is [`crate::overrides`]. It decides **what may be
-//! overridden and whether a request is well formed**; this module decides
-//! **what an installed rule does to a value**.
-//!
-//! The line between them is privacy, not taste. `Overrides` is a private
-//! field of [`Output`] with private methods that [`Output::write`] calls, so it
-//! cannot move without widening that surface. [`crate::overrides`] touches only
-//! the public API of these ports, which is why it *can* sit apart.
-//!
-//! Neither module renders JSON. What a manifest or a status dump looks like on
-//! the wire is a contract with an application's clients, so that shape belongs
-//! to the application — see [`crate::overrides::Registry::targets`].
+//! This module owns **custody**: which stack belongs to which port, who may
+//! change it, and when a fold becomes the value readers see. It neither computes
+//! nor validates — [`crate::overrides`] does both, and knows what a *target* is,
+//! which this module does not.
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -77,7 +57,6 @@ mod thruster_command;
 mod translation_reference;
 mod vehicle_config;
 
-/// Not a message type: what a single override rule computes.
 pub use array_motor_torque::ArrayMotorTorqueMsg;
 pub use array_motor_voltage::ArrayMotorVoltageMsg;
 pub use atmosphere::AtmosphereMsg;
@@ -243,10 +222,8 @@ impl Overrides {
 
         let candidate = Rule::new(mode, value, freeze_source, next_rule_id());
         let id = candidate.id;
-        // Validate against a copy and commit only on success. Undoing a failed
-        // install in place cannot be done by removing the candidate alone: an
-        // absolute rule displaces everything beneath it, and those layers would
-        // stay lost.
+        // Fold a copy and commit only on success, so a rejected rule leaves the
+        // installed stack exactly as it was.
         let mut candidates = rules.clone();
         candidates.push(candidate);
         let effective = fold_rules(&candidates, upstream)?;
@@ -576,12 +553,6 @@ impl<T: SimulationMessage> Input<T> {
 /// operations. Without a trait saying so, anything that wanted to accept either
 /// had to be written twice — which is what the registry did, down to two backend
 /// adapters whose bodies differed only in the type they wrapped.
-///
-/// Declared here rather than beside the registry because it is a fact about
-/// ports, and because [`crate::overrides`] already depends on this module while
-/// the reverse dependency is only on `overrides::mode`. A blanket
-/// implementation over this trait is what lets one registration path serve both
-/// directions.
 ///
 /// The methods deliberately mirror the inherent ones rather than replacing them.
 /// `output.read()` is called on every tick throughout a simulation, and moving

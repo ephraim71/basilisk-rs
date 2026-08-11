@@ -56,11 +56,10 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
 /// Refuses a [`Mode::Replace`] that does not name every field.
 ///
 /// `replace` advertises "a complete message", and without this it is not one.
-/// Message and config types carry `#[serde(default)]` so that a new field does
-/// not invalidate stored values, which also means a partial document
-/// deserialises happily — omitted fields come back as `T::default()` rather than
-/// as an error. So a payload naming one field is accepted, reported as
-/// installed, and silently resets every field it did not mention:
+/// A partial document can deserialise happily rather than erroring — an
+/// `Option` field is `None` when absent, and a type carrying `#[serde(default)]`
+/// fills in every omission. Where that holds, a payload naming one field is
+/// accepted, reported as installed, and silently resets what it did not mention:
 ///
 /// ```text
 /// baseline               { bias: 0.1, scale: 4.0, sample_hz: 200.0 }
@@ -104,18 +103,10 @@ pub(super) fn require_complete_replacement(
 
 /// The payload's paths that reach under a field the value holds as `null`.
 ///
-/// An `Option` that is `None` serialises to a null leaf, so it advertises no
-/// children — and a payload naming one of them names something no runtime value
-/// can confirm *or deny*. Calling that a misspelling denies a field that does
-/// exist: `PlanetStateMsg::default()` has `orientation: None`, so a replacement
-/// filling it in was told `unknown field 'orientation.inertial_to_fixed'` when
-/// the field was real and only its value was wrong.
-///
-/// Settling it properly needs a static schema of the type; this crate derives its
-/// schema from values and cannot see into a `None`. So these paths are treated as
-/// plausible, which lets the apply's own error be the one that surfaces. The
-/// narrowness matters: a name with no such parent is still a name error and still
-/// gets its suggestion.
+/// A `None` advertises no children, so a payload naming one names something no
+/// runtime value can confirm *or deny* — see `Target::check_payload`. Treated as
+/// plausible so the apply's own error surfaces instead. Narrowly: a name with no
+/// such parent is still a name error and still gets its suggestion.
 pub(super) fn children_of_null_fields(
     spec: &TargetSpec,
     mode: Mode,

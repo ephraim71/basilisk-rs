@@ -1,24 +1,11 @@
 //! What a rule is, and what it computes.
 //!
 //! [`Mode`], [`Rule`] and [`RuleId`] are the vocabulary both halves of the
-//! feature speak: the port machinery in [`crate::messages`] applies rules, and
-//! the registry in the parent module addresses them by name. Neither is the
-//! natural owner, so they sit here.
-//!
-//! What a rule *does* to a value lives here too, in both its numbers:
-//! [`apply_override`] for one rule, [`fold_rules`] for a whole stack. They sit
-//! beside the modes they dispatch on, so adding a mode is one file — a variant,
-//! a line in [`Mode::is_relative`], and an arm in each. Split across modules, as
-//! they were, the halves could disagree about which modes exist and only a test
-//! would say so.
-//!
-//! What is *not* here is custody. [`crate::messages`] owns each port's stack and
-//! decides when a fold is allowed to become the value readers see; this file only
-//! answers what a given stack computes, and answers it the same way for a
-//! candidate stack as for an installed one.
-//!
-//! Not public as a path: every type is re-exported from [`crate::overrides`],
-//! and one way in is better than two.
+//! feature speak, and what a rule *does* to a value is here in both its
+//! numbers: [`apply_override`] for one, [`fold_rules`] for a stack. Custody is
+//! not — [`crate::messages`] owns each port's stack and decides when a fold
+//! becomes visible; this file answers what a given stack computes, identically
+//! for a candidate stack and an installed one.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

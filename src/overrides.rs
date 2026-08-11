@@ -1,67 +1,20 @@
 //! The registry of things a fault can be injected into.
 //!
-//! [`crate::messages`] gives every port the *mechanics* of an override: the stack
-//! of rules behind a port, and what a `patch` or a `replace` does to a value. The
-//! vocabulary it speaks while doing so — [`Mode`], [`Rule`], [`RuleId`] — is
-//! declared here, in `mode`, because both halves need it and neither is its
-//! natural owner. What it does not give you is any way to find out
-//! what exists. A caller holding an [`Output`](crate::messages::Output) can
-//! override it; a caller holding a whole simulation has no way to ask what is
-//! overridable, what fields a target has, or whether a hand-typed field name is
-//! real.
+//! [`crate::messages`] can override a port you already hold. It cannot tell you
+//! what exists — what is overridable, what fields it has, or whether a
+//! hand-typed field name is real. This module is that half: anything injectable
+//! becomes a [`Target`], and [`Registry::register`] is the only way to make one.
 //!
-//! This module is that half. Everything injectable — a message a module
-//! publishes, one consumer's view of a message, a device's configuration, or
-//! whatever an application layers on top of a port — becomes a [`Target`]:
-//! it describes its own schema, judges a proposed override against that schema,
-//! installs one, and reports the value before and after. One concrete type
-//! wrapping any [`Port`], so a single control path serves every kind and no
-//! target can reach the registry without the checks below.
-//!
-//! There is one way in: [`Registry::register`] takes any [`Port`] — an `Output`
-//! or an `Input` — and the [`TargetKind`] to file it under. The kind is always
-//! named rather than inferred, so a registration states what a client will see
-//! instead of leaving it to be deduced from which method was called.
-//!
-//! # Layout
+//! Every path a payload names is checked against the type here, because serde
+//! silently ignores a field it does not recognise — without the check a typo
+//! reports success and changes nothing.
 //!
 //! | file | holds |
 //! |---|---|
-//! | this one | [`Target`], the port operations it wraps, and the registry |
-//! | `mode` | [`Mode`], [`Rule`], [`RuleId`] — the vocabulary both halves share |
-//! | `schema` | [`TargetKind`], [`FieldSpec`], [`TargetSpec`], and the walk that derives them from `T::default()` |
+//! | this one | [`Target`] and the registry |
+//! | `rule` | [`Mode`], [`Rule`], [`RuleId`], and what they compute |
+//! | `schema` | [`TargetKind`], [`FieldSpec`], [`TargetSpec`], derived from `T::default()` |
 //! | `paths` | whether a payload may name what it names, and the "did you mean" when it may not |
-//!
-//! [`Target`] and the registry share this file because the registry constructs
-//! targets directly, reading fields that are private to them. Splitting them
-//! would mean widening those fields for no gain.
-//!
-//! # The two gates
-//!
-//! A proposed override passes two independent checks before it is visible:
-//!
-//! 1. **Here**, in [`Target::install`]: every path the payload names must
-//!    exist on the type. Serde would silently ignore an unknown field, so
-//!    without this a typo reports success and changes nothing.
-//! 2. **In [`crate::messages`]**, inside the port: the folded result must
-//!    deserialise back into the message type, and that trial runs on a *copy* of
-//!    the rule stack so a rejected rule cannot disturb the rules already
-//!    installed.
-//!
-//! The first is about names, the second about values. Neither subsumes the
-//! other, but the first is built *on* the second: it asks the port to apply the
-//! payload without installing it, and compares the names the payload used
-//! against the message that came back. Only the round trip knows which fields
-//! exist on the value at hand, because an `Option` that is `None` in
-//! `T::default()` has children the default cannot show.
-//!
-//! # What is deliberately not here
-//!
-//! No JSON envelope. The registry hands back [`TargetSpec`] and
-//! `Arc<Target>`; deciding what a manifest or a status dump looks
-//! like on the wire is the application's business, because that shape is a
-//! contract with *its* clients and would otherwise be frozen by this crate.
-//! [`Registry::targets`] is the door for building one.
 
 pub(crate) mod rule;
 
@@ -85,16 +38,10 @@ use schema::leaf_fields;
 pub use rule::{Mode, Rule, RuleId};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
-// ---------------------------------------------------------------------------
-// Abstraction: what an application implements
-// ---------------------------------------------------------------------------
-
 /// A module that can list its own overridable ports.
 ///
-/// Implemented once per module *type*, listing its ports. Exposing an instance
-/// then costs a single line where the simulation is assembled instead of one
-/// line per port, and a port added to the module reaches clients without that
-/// assembly being touched.
+/// Implemented once per module *type*, so exposing an instance costs one line
+/// rather than one per port.
 ///
 /// ```
 /// use basilisk_rs::messages::Output;
@@ -156,13 +103,6 @@ pub trait Overridable {
 }
 
 /// The port operations a target is built from, in JSON terms.
-///
-/// Schema generation and payload checking are derived from these once, in
-/// [`Target`], rather than reimplemented per kind. Private, and reachable only
-/// through the blanket implementation below: a caller supplies a [`Port`] and
-/// this crate adapts it, so there is nothing here for an application to
-/// implement and no way to supply a target that skips [`Target::install`]'s
-/// checks.
 trait TargetBackend: Send + Sync {
     fn type_name(&self) -> &'static str;
     fn type_default(&self) -> Result<Value>;
@@ -176,11 +116,6 @@ trait TargetBackend: Send + Sync {
     fn rules(&self) -> Vec<Rule>;
 }
 
-/// One implementation serving both directions.
-///
-/// [`Port`] is the whole reason this is one block rather than two: the adapters
-/// it replaced were identical apart from the type they wrapped, and a second
-/// copy of a body is a second place for a fix to be forgotten.
 impl<P: Port> TargetBackend for P {
     fn type_name(&self) -> &'static str {
         std::any::type_name::<P::Message>()
@@ -223,14 +158,12 @@ impl<P: Port> TargetBackend for P {
 
 /// Something a fault can be injected into.
 ///
-/// One registered [`Port`], plus the two labels the registration supplied and
-/// the port itself has no way to know. Every kind is this one type: the port is
-/// held type-erased, so targets carrying unrelated message types can share one
-/// map without the registry knowing what any of them carries.
+/// One registered [`Port`], plus the `kind` and `group` labels the port itself
+/// has no way to know. The port is held type-erased, so targets carrying
+/// unrelated message types share one map.
 ///
-/// Only [`Registry::register`] builds one, which is what makes the name and
-/// shape checks impossible to route around — there is no unvalidated target to
-/// construct, because there is no other constructor.
+/// [`Registry::register`] is the only constructor, so no target can exist that
+/// skips [`Self::install`]'s checks.
 pub struct Target {
     backend: Box<dyn TargetBackend>,
     kind: TargetKind,
@@ -258,19 +191,13 @@ impl Target {
         })
     }
 
-    /// Three checks, all about shape rather than plausibility: the payload may
-    /// only name fields the target has, a `replace` must name all of them, and
-    /// the result has to be a well-formed value of the message type. Any value
-    /// that survives those is installed — a fault is allowed to be absurd, and a
-    /// simulation that cannot survive one is the result being sought.
+    /// Shape only: the payload may name just fields the target has, a `replace`
+    /// must name all of them, and the result must be a well-formed value of the
+    /// message type. Values are never judged — an absurd fault is the point.
     ///
     /// Unknown paths are reported before a shortfall, so a misspelling in an
     /// otherwise complete `replace` reads as the typo it is rather than as a
     /// missing field plus an unknown one.
-    ///
-    /// One apply, not two: `check_payload` has to apply the payload to
-    /// learn which fields the result has, so it already answers the third check
-    /// on the way to the first.
     pub fn validate(&self, mode: Mode, value: &Value) -> Result<()> {
         self.check_payload(mode, value)
     }
@@ -310,51 +237,41 @@ impl Target {
         self.backend.effective()
     }
 
-    /// The policy both entry points share, derived once from one spec so the
-    /// two checks cannot disagree about what the target's fields are.
     /// Checks the payload's names against the message it would *produce*, not
     /// against `T::default()`.
     ///
-    /// The default cannot answer the question on its own. An `Option` field is
-    /// `None` there, so it serialises to one null leaf and advertises no
-    /// children — while a payload that fills it in names those children, and
-    /// they are real fields of the type. Deriving the check from the default
-    /// refused a complete, correctly typed replacement of
+    /// The default cannot answer the question. An `Option` field is `None`
+    /// there, so it advertises no children — while a payload that fills it in
+    /// names those children, and they are real fields of the type. Checking
+    /// against the default refused a complete, correctly typed replacement of
     /// `PlanetStateMsg { orientation: Some(..), .. }` as naming a field that
-    /// "does not exist". The same held for a `patch` of any option a module had
-    /// already populated. Enums and maps fail the same way for the same reason.
+    /// "does not exist", and did the same to a `patch` of any option a module
+    /// had populated. Enums and maps fail the same way.
     ///
-    /// So the candidate is asked instead: the payload applied and round-tripped
-    /// through `T`. Serde has already dropped whatever it did not recognise by
-    /// then, which makes the comparison exact rather than approximate — a name
-    /// the payload uses and the candidate lacks is precisely a name serde
-    /// ignored, which is the whole failure this check exists to catch.
+    /// The candidate is asked instead — the payload applied and round-tripped
+    /// through `T`. Serde has already dropped what it did not recognise by then,
+    /// so a name the payload uses and the candidate lacks is precisely a name
+    /// serde ignored, which is the failure this exists to catch.
     fn check_payload(&self, mode: Mode, value: &Value) -> Result<()> {
         let mut spec = self.spec()?;
 
         match self.backend.preview(mode, value.clone()) {
-            // The payload applies. The message it produced is then the authority
-            // on which fields exist, and any name the payload used that is absent
-            // from it is exactly a name serde ignored.
+            // The message produced is the authority on which fields exist.
             Ok(candidate) => {
                 spec.fields = leaf_fields(&candidate);
                 reject_unknown_paths(&spec, mode, value)?;
                 require_complete_replacement(&spec, mode, value)
             }
-            // The payload does not apply, and there are two very different
-            // reasons for that. Its values may be wrong — `inertial_to_fixed:
-            // "not a matrix"` — in which case the apply's own error is the
-            // truthful answer and reporting "unknown field" would deny a field
-            // that exists. Or it may name something that is not a field at all,
-            // which for a `pointerReplace` fails in the apply too, as a pointer
-            // that would not resolve.
+            // Two very different reasons the payload might not apply. Its
+            // values may be wrong — `inertial_to_fixed: "not a matrix"` — where
+            // the apply's own error is the truthful answer and "unknown field"
+            // would deny a field that exists. Or it names nothing real, which
+            // for a `replaceAt` fails in the apply as an unresolvable pointer.
             //
-            // Names are judged against every inhabitation reachable *without*
-            // applying: the type default, plus the value the port holds right
-            // now, which may have options populated that the default leaves
-            // `None`. A name unknown to both is a name error, and gets its
-            // suggestion. Anything else means the names were plausible and the
-            // values were not, so the apply's error stands.
+            // So names are judged against everything reachable *without*
+            // applying: the type default, plus what the port holds now, which
+            // may have options the default leaves `None`. Unknown to both is a
+            // name error. Otherwise the apply's error stands.
             Err(apply_error) => {
                 if let Ok(effective) = self.backend.effective() {
                     spec.fields.extend(leaf_fields(&effective));
@@ -403,19 +320,16 @@ impl Registry {
     /// Registers one port — an [`Output`](crate::messages::Output) or an
     /// [`Input`](crate::messages::Input) — under `kind`.
     ///
-    /// The kind is always named rather than inferred from the port type, so
-    /// every registration says on its own line what a client will see. It is a
-    /// label for the operator and never a restriction: two targets of different
-    /// kinds accept exactly the same commands. [`TargetKind::Custom`] carries a
-    /// word this crate has no opinion about, which is how an application
-    /// describes hardware in its own vocabulary.
+    /// `kind` is a label for the operator, never a restriction: targets of
+    /// different kinds accept exactly the same commands. [`TargetKind::Custom`]
+    /// carries a word this crate has no opinion about.
     ///
     /// Every leaf of the message type is registered, without bounds.
     ///
-    /// A port that cannot yet report honestly is refused — see
-    /// [`Port::registration_refusal`], which is how an input registered before
-    /// it was wired is caught here rather than left to describe faults against a
-    /// value no producer published.
+    /// Refuses a port that cannot yet report honestly — see
+    /// [`Port::registration_refusal`], which catches an input registered before
+    /// it was wired, rather than letting it describe faults against a value no
+    /// producer published.
     pub fn register<P: Port + 'static>(
         &self,
         group: &'static str,
@@ -494,12 +408,7 @@ impl Registry {
 
     /// Every registered target with its name, in name order.
     ///
-    /// This is how an application builds its own schema dump or status view: the
-    /// registry deliberately publishes no JSON envelope of its own, because that
-    /// shape is a contract with the application's clients rather than with this
-    /// crate's.
-    ///
-    /// A snapshot. Targets registered afterwards are not in it, and the registry
+    /// A snapshot: targets registered afterwards are not in it, and the registry
     /// lock is not held while the caller works through the result.
     pub fn targets(&self) -> Vec<(String, Arc<Target>)> {
         self.lock()
@@ -508,13 +417,10 @@ impl Registry {
             .collect()
     }
 
-    /// An empty registry is reported as such rather than as a missing name.
-    ///
-    /// A simulation that registered nothing refuses every command, and
-    /// "unknown target 'x'" reads as a typo — sending an operator to check a
-    /// spelling that was never wrong. The two cases need different answers
-    /// because they have different fixes: correct the name, or wire the
-    /// registry up in the first place.
+    /// An empty registry is reported as such rather than as a missing name: the
+    /// two have different fixes — correct the name, or wire the registry up at
+    /// all — and "unknown target 'x'" would send an operator to check a spelling
+    /// that was never wrong.
     fn target(&self, name: &str) -> Result<Arc<Target>> {
         let targets = self.lock();
         if targets.is_empty() {

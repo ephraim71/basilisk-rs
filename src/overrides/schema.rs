@@ -77,12 +77,6 @@ pub struct FieldSpec {
 #[serde(rename_all = "camelCase")]
 pub struct TargetSpec {
     pub kind: TargetKind,
-    /// The hardware family this target belongs to, e.g. `GYRO` or `THRUSTER`.
-    ///
-    /// A deployment role rather than a property of the type: the same module
-    /// type may be one unit in one role and an array of them in another.
-    /// Supplied per registration rather than derived from the type.
-    pub group: &'static str,
     pub type_name: &'static str,
     /// `T::default()`, which is what the `default` override mode applies.
     ///

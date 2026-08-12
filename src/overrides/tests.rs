@@ -63,7 +63,7 @@ fn registry_with_reading() -> (Registry, Output<ReadingMsg>) {
     let registry = Registry::new();
     let output = Output::new(reading(3.25));
     registry
-        .register("SENSOR", "sensor_0.output_msg", &output, TargetKind::Output)
+        .register("sensor_0.output_msg", &output, TargetKind::Output)
         .unwrap();
     (registry, output)
 }
@@ -72,7 +72,7 @@ fn registry_with_config() -> (Registry, Output<DeviceConfig>) {
     let registry = Registry::new();
     let config = Output::new(device_config());
     registry
-        .register("SENSOR", "sensor_0.config", &config, CONFIG)
+        .register("sensor_0.config", &config, CONFIG)
         .unwrap();
     (registry, config)
 }
@@ -219,7 +219,7 @@ fn registering_the_same_name_twice_is_an_error() {
     let other = Output::new(reading(0.0));
 
     let error = registry
-        .register("SENSOR", "sensor_0.output_msg", &other, TargetKind::Output)
+        .register("sensor_0.output_msg", &other, TargetKind::Output)
         .unwrap_err()
         .to_string();
 
@@ -235,12 +235,7 @@ fn an_input_target_overrides_only_that_consumer() {
     producer.connect_to(&mut faulted);
     producer.connect_to(&mut healthy);
     registry
-        .register(
-            "SENSOR",
-            "consumer_0.input_msg",
-            &faulted,
-            TargetKind::Input,
-        )
+        .register("consumer_0.input_msg", &faulted, TargetKind::Input)
         .unwrap();
 
     registry
@@ -265,7 +260,7 @@ fn registering_an_unconnected_input_is_refused() {
     let orphan: Input<ReadingMsg> = Input::default();
 
     let error = registry
-        .register("SENSOR", "consumer_0.input_msg", &orphan, TargetKind::Input)
+        .register("consumer_0.input_msg", &orphan, TargetKind::Input)
         .unwrap_err()
         .to_string();
 
@@ -457,39 +452,31 @@ fn an_empty_registry_says_so_rather_than_blaming_the_name() {
     assert!(error.contains("sensor_0.config"), "{error}");
 }
 
-/// The group is a deployment role, not a property of the type: the same module
-/// type can be one unit in one role and an array of them in another. So it has
-/// to be supplied per registration rather than derived from the type.
+/// The same module type is often flown twice — one unit in one role, an array of
+/// them in another — so two registrations of one type have to stay independent.
+/// A fault on either must not reach the other.
 #[test]
-fn one_module_type_can_be_registered_under_two_groups() {
+fn one_module_type_can_be_registered_under_two_names() {
     let registry = Registry::new();
     let primary = Output::new(reading(1.0));
     let redundant = Output::new(reading(2.0));
     registry
-        .register(
-            "PRIMARY",
-            "sensor_p.output_msg",
-            &primary,
-            TargetKind::Output,
-        )
+        .register("sensor_p.output_msg", &primary, TargetKind::Output)
         .unwrap();
     registry
-        .register(
-            "ARRAY",
-            "sensor_a0.output_msg",
-            &redundant,
-            TargetKind::Output,
+        .register("sensor_a0.output_msg", &redundant, TargetKind::Output)
+        .unwrap();
+
+    registry
+        .install(
+            "sensor_p.output_msg",
+            Mode::Patch,
+            json!({ "angle_deg": 9.0 }),
         )
         .unwrap();
 
-    assert_eq!(
-        registry.spec("sensor_p.output_msg").unwrap().group,
-        "PRIMARY"
-    );
-    assert_eq!(
-        registry.spec("sensor_a0.output_msg").unwrap().group,
-        "ARRAY"
-    );
+    assert_eq!(primary.read().angle_deg, 9.0);
+    assert_eq!(redundant.read().angle_deg, 2.0, "the sibling is untouched");
 }
 
 /// The registry publishes no JSON of its own, so this is the seam an application
@@ -501,26 +488,23 @@ fn targets_enumerates_every_registration_in_name_order() {
     let reading_out = Output::new(reading(1.0));
     let config_out = Output::new(device_config());
     registry
-        .register(
-            "SENSOR",
-            "sensor_0.output_msg",
-            &reading_out,
-            TargetKind::Output,
-        )
+        .register("sensor_0.output_msg", &reading_out, TargetKind::Output)
         .unwrap();
     registry
-        .register("DEVICE", "device_0.config", &config_out, CONFIG)
+        .register("device_0.config", &config_out, CONFIG)
         .unwrap();
 
     let listed = registry.targets();
     let names: Vec<&str> = listed.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["device_0.config", "sensor_0.output_msg"]);
 
-    let groups: Vec<&str> = listed
+    // Each spec travels with its own target rather than with its position, so the
+    // reordering the map does cannot pair a name with someone else's schema.
+    let kinds: Vec<&str> = listed
         .iter()
-        .map(|(_, target)| target.spec().unwrap().group)
+        .map(|(_, target)| target.spec().unwrap().kind.as_str())
         .collect();
-    assert_eq!(groups, ["DEVICE", "SENSOR"]);
+    assert_eq!(kinds, ["config", "output"]);
     assert_eq!(names, registry.target_names());
 }
 
@@ -543,7 +527,7 @@ fn registry_with_vector() -> (Registry, Output<VectorConfig>) {
         sample_hz: 200.0,
     });
     registry
-        .register("DEVICE", "device_0.config", &output, CONFIG)
+        .register("device_0.config", &output, CONFIG)
         .unwrap();
     (registry, output)
 }
@@ -653,7 +637,7 @@ fn a_replace_may_name_fields_the_type_default_leaves_unpopulated() {
     let registry = Registry::new();
     let output = Output::new(PlanetStateMsg::default());
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let complete = serde_json::to_value(PlanetStateMsg {
@@ -687,7 +671,7 @@ fn a_patch_may_name_a_field_inside_an_option_the_module_populated() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let spun = serde_json::to_value(Matrix3::from_diagonal_element(2.0)).unwrap();
@@ -722,7 +706,7 @@ fn a_typo_inside_an_option_is_still_refused() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let error = registry
@@ -756,7 +740,7 @@ fn a_valid_field_with_an_unusable_value_reports_the_value_not_the_name() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let error = registry
@@ -792,7 +776,7 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
     // `orientation` is None here, and None in PlanetStateMsg::default().
     let output = Output::new(PlanetStateMsg::default());
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let mut payload = serde_json::to_value(PlanetStateMsg {
@@ -868,7 +852,7 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let error = registry
@@ -902,7 +886,7 @@ fn a_replace_at_may_address_a_whole_object_valued_field() {
         ..PlanetStateMsg::default()
     });
     registry
-        .register("PLANET", "earth.output_msg", &output, TargetKind::Output)
+        .register("earth.output_msg", &output, TargetKind::Output)
         .unwrap();
 
     let mut replacement = PlanetOrientation::identity();
@@ -957,7 +941,7 @@ fn a_registered_input_follows_a_later_reconnect() {
 
     let registry = Registry::new();
     registry
-        .register("READING", "reading.input_msg", &input, TargetKind::Input)
+        .register("reading.input_msg", &input, TargetKind::Input)
         .unwrap();
 
     producer_two.connect_to(&mut input);
@@ -1014,7 +998,7 @@ fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
     // A fault on one is invisible to the others.
     let registry = Registry::new();
     registry
-        .register("READING", "reading.0", &inputs[0], TargetKind::Input)
+        .register("reading.0", &inputs[0], TargetKind::Input)
         .unwrap();
     registry
         .install("reading.0", Mode::Patch, json!({ "value": 99.0 }))
@@ -1039,9 +1023,7 @@ fn a_field_whose_name_contains_the_separator_is_still_addressable() {
 
     let registry = Registry::new();
     let output = Output::new(RenamedConfig::default());
-    registry
-        .register("CFG", "device.config", &output, CONFIG)
-        .unwrap();
+    registry.register("device.config", &output, CONFIG).unwrap();
 
     // The schema advertises it in the only form serde accepts.
     let spec = registry.spec("device.config").unwrap();

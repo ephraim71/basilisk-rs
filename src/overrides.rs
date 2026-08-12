@@ -60,14 +60,8 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// // Written once for the type. A port added here reaches every client without
 /// // the assembly below being touched.
 /// impl Overridable for Gyro {
-///     fn register_targets(
-///         &self,
-///         registry: &Registry,
-///         prefix: &str,
-///         group: &'static str,
-///     ) -> anyhow::Result<()> {
+///     fn register_targets(&self, registry: &Registry, prefix: &str) -> anyhow::Result<()> {
 ///         registry.register(
-///             group,
 ///             format!("{prefix}.output_msg"),
 ///             &self.output_msg,
 ///             TargetKind::Output,
@@ -80,7 +74,7 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// };
 ///
 /// let registry = Registry::new();
-/// registry.register_module("GYRO", "gyro_0", &gyro)?;
+/// registry.register_module("gyro_0", &gyro)?;
 ///
 /// // The name is what an operator addresses: `<prefix>.<port>`.
 /// registry.install("gyro_0.output_msg", Mode::Patch, json!({ "rate_dps": 9.0 }))?;
@@ -92,14 +86,8 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub trait Overridable {
-    /// Registers this module's targets under `prefix`, e.g. `gyro_0`, tagged
-    /// with the hardware family `group`, e.g. `GYRO`.
-    fn register_targets(
-        &self,
-        registry: &Registry,
-        prefix: &str,
-        group: &'static str,
-    ) -> Result<()>;
+    /// Registers this module's targets under `prefix`, e.g. `gyro_0`.
+    fn register_targets(&self, registry: &Registry, prefix: &str) -> Result<()>;
 }
 
 /// The port operations a target is built from, in JSON terms.
@@ -158,24 +146,22 @@ impl<P: Port> TargetBackend for P {
 
 /// Something a fault can be injected into.
 ///
-/// One registered [`Port`], plus the `kind` and `group` labels the port itself
-/// has no way to know. The port is held type-erased, so targets carrying
-/// unrelated message types share one map.
+/// One registered [`Port`], plus the `kind` label the port itself has no way to
+/// know. The port is held type-erased, so targets carrying unrelated message
+/// types share one map.
 ///
 /// [`Registry::register`] is the only constructor, so no target can exist that
 /// skips [`Self::install`]'s checks.
 pub struct Target {
     backend: Box<dyn TargetBackend>,
     kind: TargetKind,
-    group: &'static str,
 }
 
 impl Target {
-    fn new<P: Port + 'static>(port: &P, kind: TargetKind, group: &'static str) -> Self {
+    fn new<P: Port + 'static>(port: &P, kind: TargetKind) -> Self {
         Self {
             backend: Box::new(port.clone()),
             kind,
-            group,
         }
     }
 
@@ -184,7 +170,6 @@ impl Target {
         let type_default = self.backend.type_default()?;
         Ok(TargetSpec {
             kind: self.kind,
-            group: self.group,
             type_name: self.backend.type_name(),
             fields: leaf_fields(&type_default),
             type_default,
@@ -307,14 +292,9 @@ impl Registry {
         Self::default()
     }
 
-    /// Registers every target a module exposes, under `name`, tagged `group`.
-    pub fn register_module(
-        &self,
-        group: &'static str,
-        name: &str,
-        module: &dyn Overridable,
-    ) -> Result<()> {
-        module.register_targets(self, name, group)
+    /// Registers every target a module exposes, under `name`.
+    pub fn register_module(&self, name: &str, module: &dyn Overridable) -> Result<()> {
+        module.register_targets(self, name)
     }
 
     /// Registers one port — an [`Output`](crate::messages::Output) or an
@@ -332,7 +312,6 @@ impl Registry {
     /// producer published.
     pub fn register<P: Port + 'static>(
         &self,
-        group: &'static str,
         name: impl Into<String>,
         port: &P,
         kind: TargetKind,
@@ -341,7 +320,7 @@ impl Registry {
         if let Some(refusal) = port.registration_refusal() {
             bail!("override target '{name}' cannot be registered: {refusal}");
         }
-        self.insert(name, Arc::new(Target::new(port, kind, group)))
+        self.insert(name, Arc::new(Target::new(port, kind)))
     }
 
     fn insert(&self, name: String, target: Arc<Target>) -> Result<()> {

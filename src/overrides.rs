@@ -12,7 +12,7 @@
 //! | file | holds |
 //! |---|---|
 //! | this one | [`Target`] and the registry |
-//! | `rule` | [`Mode`], [`Rule`], [`RuleId`], and what they compute |
+//! | `rule` | [`Request`], [`Rule`], [`RuleId`], and what they compute |
 //! | `schema` | [`TargetKind`], [`FieldSpec`], [`TargetSpec`], derived from `T::default()` |
 //! | `paths` | whether a payload may name what it names, and the "did you mean" when it may not |
 
@@ -32,10 +32,10 @@ use serde_json::Value;
 
 use crate::messages::Port;
 
-use paths::{children_of_null_fields, reject_unknown_paths, require_complete_replacement};
+use paths::{children_of_null_fields, reject_unknown_paths};
 use schema::leaf_fields;
 
-pub use rule::{Mode, Rule, RuleId};
+pub use rule::{Document, Mode, Pointer, ReplaceOp, Request, Rule, RuleId, Selection};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
 /// A module that can list its own overridable ports.
@@ -45,7 +45,7 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 ///
 /// ```
 /// use basilisk_rs::messages::Output;
-/// use basilisk_rs::overrides::{Mode, Overridable, Registry, TargetKind};
+/// use basilisk_rs::overrides::{Overridable, Registry, Request, TargetKind};
 /// use serde_json::json;
 ///
 /// #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -77,7 +77,7 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// registry.register_module("gyro_0", &gyro)?;
 ///
 /// // The name is what an operator addresses: `<prefix>.<port>`.
-/// registry.install("gyro_0.output_msg", Mode::Patch, json!({ "rate_dps": 9.0 }))?;
+/// registry.install("gyro_0.output_msg", Request::replace(json!({ "rate_dps": 9.0 }))?)?;
 ///
 /// // The module reads its own port and sees the fault, without knowing one was
 /// // installed. What it published is still available separately.
@@ -97,8 +97,8 @@ trait TargetBackend: Send + Sync {
     fn upstream(&self) -> Result<Value>;
     fn effective(&self) -> Result<Value>;
     /// The value this target would take, without installing anything.
-    fn preview(&self, mode: Mode, value: Value) -> Result<Value>;
-    fn install(&self, mode: Mode, value: Value) -> Result<RuleId>;
+    fn preview(&self, request: Request) -> Result<Value>;
+    fn install(&self, request: Request) -> Result<RuleId>;
     fn clear(&self);
     fn clear_rule(&self, id: RuleId) -> bool;
     fn rules(&self) -> Vec<Rule>;
@@ -121,14 +121,14 @@ impl<P: Port> TargetBackend for P {
         Ok(serde_json::to_value(Port::read(self))?)
     }
 
-    fn preview(&self, mode: Mode, value: Value) -> Result<Value> {
+    fn preview(&self, request: Request) -> Result<Value> {
         Ok(serde_json::to_value(Port::preview_override(
-            self, mode, value,
+            self, request,
         )?)?)
     }
 
-    fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
-        Ok(Port::set_override(self, mode, value)?)
+    fn install(&self, request: Request) -> Result<RuleId> {
+        Ok(Port::set_override(self, request)?)
     }
 
     fn clear(&self) {
@@ -176,21 +176,60 @@ impl Target {
         })
     }
 
-    /// Shape only: the payload may name just fields the target has, a `replace`
-    /// must name all of them, and the result must be a well-formed value of the
-    /// message type. Values are never judged — an absurd fault is the point.
+    /// Shape only: the payload may name just fields the target has, and the
+    /// result must be a well-formed value of the message type. Values are never
+    /// judged — an absurd fault is the point.
     ///
-    /// Unknown paths are reported before a shortfall, so a misspelling in an
-    /// otherwise complete `replace` reads as the typo it is rather than as a
-    /// missing field plus an unknown one.
-    pub fn validate(&self, mode: Mode, value: &Value) -> Result<()> {
-        self.check_payload(mode, value)
+    /// The names are checked against the message the payload would *produce*,
+    /// not against `T::default()`. The default cannot answer the question: an
+    /// `Option` field is `None` there, so it advertises no children — while a
+    /// payload that fills it in names those children, and they are real fields
+    /// of the type. Checking against the default refused a complete, correctly
+    /// typed replacement of `PlanetStateMsg { orientation: Some(..), .. }` as
+    /// naming a field that "does not exist". Enums and maps fail the same way.
+    ///
+    /// The candidate is asked instead — the payload applied and round-tripped
+    /// through `T`. Serde has already dropped what it did not recognise by then,
+    /// so a name the payload uses and the candidate lacks is precisely a name
+    /// serde ignored, which is the failure this exists to catch.
+    pub fn validate(&self, request: &Request) -> Result<()> {
+        let mut spec = self.spec()?;
+
+        match self.backend.preview(request.clone()) {
+            // The message produced is the authority on which fields exist.
+            Ok(candidate) => {
+                spec.fields = leaf_fields(&candidate);
+                reject_unknown_paths(&spec, request)
+            }
+            // Two very different reasons the payload might not apply. Its
+            // values may be wrong — `inertial_to_fixed: "not a matrix"` — where
+            // the apply's own error is the truthful answer and "unknown field"
+            // would deny a field that exists. Or it names nothing real, which
+            // fails in the apply as an unresolvable pointer.
+            //
+            // So names are judged against everything reachable *without*
+            // applying: the type default, plus what the port holds now, which
+            // may have options the default leaves `None`. Unknown to both is a
+            // name error. Otherwise the apply's error stands.
+            Err(apply_error) => {
+                if let Ok(effective) = self.backend.effective() {
+                    spec.fields.extend(leaf_fields(&effective));
+                }
+                // Neither value can see inside an option that is `None` in both,
+                // so a path under one is not evidence of a misspelling.
+                let unprovable = children_of_null_fields(&spec, request);
+                spec.fields.extend(unprovable);
+
+                reject_unknown_paths(&spec, request)?;
+                Err(apply_error)
+            }
+        }
     }
 
     /// Validates, then installs. Returns the id of the new rule.
-    pub fn install(&self, mode: Mode, value: Value) -> Result<RuleId> {
-        self.check_payload(mode, &value)?;
-        self.backend.install(mode, value)
+    pub fn install(&self, request: Request) -> Result<RuleId> {
+        self.validate(&request)?;
+        self.backend.install(request)
     }
 
     pub fn clear(&self) {
@@ -220,56 +259,6 @@ impl Target {
     /// The value after this target's override.
     pub fn effective(&self) -> Result<Value> {
         self.backend.effective()
-    }
-
-    /// Checks the payload's names against the message it would *produce*, not
-    /// against `T::default()`.
-    ///
-    /// The default cannot answer the question. An `Option` field is `None`
-    /// there, so it advertises no children — while a payload that fills it in
-    /// names those children, and they are real fields of the type. Checking
-    /// against the default refused a complete, correctly typed replacement of
-    /// `PlanetStateMsg { orientation: Some(..), .. }` as naming a field that
-    /// "does not exist", and did the same to a `patch` of any option a module
-    /// had populated. Enums and maps fail the same way.
-    ///
-    /// The candidate is asked instead — the payload applied and round-tripped
-    /// through `T`. Serde has already dropped what it did not recognise by then,
-    /// so a name the payload uses and the candidate lacks is precisely a name
-    /// serde ignored, which is the failure this exists to catch.
-    fn check_payload(&self, mode: Mode, value: &Value) -> Result<()> {
-        let mut spec = self.spec()?;
-
-        match self.backend.preview(mode, value.clone()) {
-            // The message produced is the authority on which fields exist.
-            Ok(candidate) => {
-                spec.fields = leaf_fields(&candidate);
-                reject_unknown_paths(&spec, mode, value)?;
-                require_complete_replacement(&spec, mode, value)
-            }
-            // Two very different reasons the payload might not apply. Its
-            // values may be wrong — `inertial_to_fixed: "not a matrix"` — where
-            // the apply's own error is the truthful answer and "unknown field"
-            // would deny a field that exists. Or it names nothing real, which
-            // for a `replaceAt` fails in the apply as an unresolvable pointer.
-            //
-            // So names are judged against everything reachable *without*
-            // applying: the type default, plus what the port holds now, which
-            // may have options the default leaves `None`. Unknown to both is a
-            // name error. Otherwise the apply's error stands.
-            Err(apply_error) => {
-                if let Ok(effective) = self.backend.effective() {
-                    spec.fields.extend(leaf_fields(&effective));
-                }
-                // Neither value can see inside an option that is `None` in both,
-                // so a path under one is not evidence of a misspelling.
-                let unprovable = children_of_null_fields(&spec, mode, value);
-                spec.fields.extend(unprovable);
-
-                reject_unknown_paths(&spec, mode, value)?;
-                Err(apply_error)
-            }
-        }
     }
 }
 
@@ -332,13 +321,13 @@ impl Registry {
         Ok(())
     }
 
-    pub fn install(&self, target: &str, mode: Mode, value: Value) -> Result<RuleId> {
-        self.target(target)?.install(mode, value)
+    pub fn install(&self, target: &str, request: Request) -> Result<RuleId> {
+        self.target(target)?.install(request)
     }
 
     /// Whether an override would be accepted, without installing it.
-    pub fn validate(&self, target: &str, mode: Mode, value: &Value) -> Result<()> {
-        self.target(target)?.validate(mode, value)
+    pub fn validate(&self, target: &str, request: &Request) -> Result<()> {
+        self.target(target)?.validate(request)
     }
 
     pub fn clear(&self, target: &str) -> Result<()> {

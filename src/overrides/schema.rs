@@ -64,7 +64,9 @@ impl Serialize for TargetKind {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldSpec {
-    /// Dotted path from the root of the target, e.g. `bias.x` or `sample_hz`.
+    /// RFC 6901 pointer from the root of the target, e.g. `/bias/x` or
+    /// `/sample_hz`. The same syntax a `replace` document addresses and a
+    /// `freeze` names, so a client never translates between two spellings.
     pub path: String,
     /// `number`, `integer`, `boolean`, `string`, `array`, `object` or `null`.
     pub kind: &'static str,
@@ -99,7 +101,16 @@ fn value_kind(value: &Value) -> &'static str {
     }
 }
 
-/// Visits every addressable leaf of `value` with its dotted path.
+/// Escapes a member name for use in an RFC 6901 pointer.
+///
+/// The two escapes exist because `/` separates segments and `~` introduces an
+/// escape, so a field whose name contains either would otherwise be unaddressable.
+/// Order matters: `~` first, or the `/` escape's own tilde would be escaped again.
+fn escape_segment(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// Visits every addressable leaf of `value` with its RFC 6901 pointer.
 ///
 /// Objects recurse; arrays do not. A JSON merge replaces an array wholesale, so
 /// an element path would advertise a per-index patch the merge cannot honour.
@@ -109,16 +120,18 @@ fn value_kind(value: &Value) -> &'static str {
 /// One walk serves both the schema and the payload check, so a target cannot
 /// advertise a path shape that the check then reads differently. That is why
 /// this is shared with [`super::paths`] rather than duplicated there.
+///
+/// Pointers rather than dotted paths, and that choice is load-bearing: dotted
+/// joining flattens `{"a.b": 1}` and `{"a": {"b": 1}}` to the same string, so a
+/// mistyped path could not be told from a field whose name contains a dot.
+/// Those are `/a.b` and `/a/b` here, and the name check separates them without
+/// help.
 pub(super) fn walk_leaves<F: FnMut(&str, &Value)>(prefix: &str, value: &Value, visit: &mut F) {
     if let Value::Object(map) = value
         && !map.is_empty()
     {
         for (key, child) in map {
-            let path = if prefix.is_empty() {
-                key.clone()
-            } else {
-                format!("{prefix}.{key}")
-            };
+            let path = format!("{prefix}/{}", escape_segment(key));
             walk_leaves(&path, child, visit);
         }
         return;

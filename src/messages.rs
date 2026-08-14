@@ -15,9 +15,10 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::sync::{Arc, RwLock};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, RwLock};
 
-use crate::overrides::rule::{Mode, Rule, RuleId, fold_rules, next_rule_id};
+use crate::overrides::rule::{Request, Rule, RuleId, fold_candidate, fold_installed, next_rule_id};
 
 mod array_motor_torque;
 mod array_motor_voltage;
@@ -161,6 +162,9 @@ impl<T> SimulationMessage for T where
 #[derive(Clone, Debug, Default)]
 struct Overrides {
     rules: Arc<RwLock<Vec<Rule>>>,
+    /// Which rules were skipped by the last fold, so that a skip is reported
+    /// when it starts and when it ends rather than on every read and write.
+    skipped: Arc<Mutex<BTreeSet<RuleId>>>,
 }
 
 impl Overrides {
@@ -179,20 +183,20 @@ impl Overrides {
             .is_empty()
     }
 
-    /// The value `mode` and `value` would produce, without installing anything.
+    /// The value `request` would produce, without installing anything.
     ///
-    /// Takes the same already-sampled `freeze_source` as [`Self::install`], so
-    /// that previewing a rule and installing it read from identical inputs.
+    /// Takes the same already-sampled `live` and `type_default` as
+    /// [`Self::install`], so that previewing a rule and installing it read from
+    /// identical inputs.
     fn preview<T: SimulationMessage>(
         &self,
-        mode: Mode,
-        value: Value,
-        freeze_source: Option<Value>,
+        request: Request,
+        live: &Value,
+        type_default: &Value,
         upstream: T,
     ) -> Result<T, serde_json::Error> {
-        let mut rules = self.snapshot();
-        rules.push(Rule::new(mode, value, freeze_source, RuleId::UNINSTALLED));
-        fold_rules(&rules, upstream)
+        let candidate = Rule::build(request, live, type_default, RuleId::UNINSTALLED)?;
+        fold_candidate(&self.snapshot(), &candidate, upstream)
     }
 
     /// Installs a rule, returning its id and the value the whole stack now
@@ -202,14 +206,14 @@ impl Overrides {
     /// caller cannot install a layer between the value being computed and the
     /// rule being stored.
     ///
-    /// `upstream` and `freeze_source` are sampled by the caller *before* this is
+    /// `upstream` and `live` are sampled by the caller *before* this is
     /// entered: reading them here would take the value locks while holding the
     /// rules lock, which is the opposite of the order `write` uses.
     fn install<T>(
         &self,
-        mode: Mode,
-        value: Value,
-        freeze_source: Option<Value>,
+        request: Request,
+        live: &Value,
+        type_default: &Value,
         upstream: T,
     ) -> Result<(RuleId, T), serde_json::Error>
     where
@@ -220,15 +224,13 @@ impl Overrides {
             .write()
             .expect("failed to lock override rules for write");
 
-        let candidate = Rule::new(mode, value, freeze_source, next_rule_id());
-        let id = candidate.id;
-        // Fold a copy and commit only on success, so a rejected rule leaves the
-        // installed stack exactly as it was.
-        let mut candidates = rules.clone();
-        candidates.push(candidate);
-        let effective = fold_rules(&candidates, upstream)?;
+        let candidate = Rule::build(request, live, type_default, next_rule_id())?;
+        let id = candidate.id();
+        // Fold before storing, so a rejected rule leaves the installed stack
+        // exactly as it was.
+        let effective = fold_candidate(&rules, &candidate, upstream)?;
 
-        *rules = candidates;
+        rules.push(candidate);
         Ok((id, effective))
     }
 
@@ -246,12 +248,55 @@ impl Overrides {
             .write()
             .expect("failed to lock override rules for write");
         let before = rules.len();
-        rules.retain(|rule| rule.id != id);
+        rules.retain(|rule| rule.id() != id);
         rules.len() != before
     }
 
-    fn apply_installed<T: SimulationMessage>(&self, upstream: T) -> Result<T, serde_json::Error> {
-        fold_rules(&self.snapshot(), upstream)
+    /// The value the installed stack produces, with any rule that cannot apply
+    /// to this value left out rather than cancelling the rest.
+    ///
+    /// Infallible by construction — see [`fold_installed`] for why a stale layer
+    /// must not be allowed to discard the ones still working.
+    fn apply_installed<T: SimulationMessage>(&self, upstream: T) -> T {
+        let rules = self.snapshot();
+        let (value, skipped) = fold_installed(&rules, upstream);
+        self.report(&rules, skipped);
+        value
+    }
+
+    /// Reports a skipped rule once when it starts being skipped and once when it
+    /// stops, rather than on every read and write.
+    ///
+    /// This runs at simulation frequency, and a rule stays inapplicable for as
+    /// long as whatever it addresses stays absent, so a line per fold would bury
+    /// the transition that is the actual news in thousands of copies of itself.
+    fn report(&self, rules: &[Rule], skipped: Vec<(RuleId, serde_json::Error)>) {
+        // The overwhelmingly common case is a port with nothing installed, which
+        // has nothing to say and should not pay a lock to say it.
+        if rules.is_empty() && skipped.is_empty() {
+            return;
+        }
+
+        let mut previously = self
+            .skipped
+            .lock()
+            .expect("failed to lock skipped override rules");
+
+        for (id, error) in &skipped {
+            if !previously.contains(id) {
+                log::warn!("override rule {id:?} no longer applies and is being skipped: {error}");
+            }
+        }
+
+        let now: BTreeSet<RuleId> = skipped.into_iter().map(|(id, _)| id).collect();
+        for id in previously.iter() {
+            // A rule that was removed while skipped has not resumed; it is gone.
+            if !now.contains(id) && rules.iter().any(|rule| rule.id() == *id) {
+                log::info!("override rule {id:?} applies again");
+            }
+        }
+
+        *previously = now;
     }
 }
 
@@ -341,10 +386,7 @@ where
             .write()
             .expect("failed to lock raw output message for write") = value.clone();
 
-        let effective = self.overrides.apply_installed(value).unwrap_or_else(|err| {
-            eprintln!("[override] failed to apply override: {err}");
-            self.read_upstream()
-        });
+        let effective = self.overrides.apply_installed(value);
 
         *self
             .slot
@@ -352,15 +394,18 @@ where
             .expect("failed to lock output message for write") = effective;
     }
 
-    /// The value a `freeze` would capture, sampled before any rule lock is
-    /// taken. `None` for every other mode, which ignores it.
+    /// The two values a rule may draw from: the live value a `freeze` captures
+    /// and the type default a `default` resets to.
     ///
-    /// See [`Overrides::install`] for why this cannot be read inside it.
-    fn freeze_source(&self, mode: Mode) -> Result<Option<Value>, serde_json::Error> {
-        match mode {
-            Mode::Freeze => serde_json::to_value(self.read()).map(Some),
-            _ => Ok(None),
-        }
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
+    /// why they cannot be read inside it. Both are sampled whichever mode is
+    /// asked for, since sampling is cheap and the alternative is a mode-shaped
+    /// hole here that has to be kept in step with the modes.
+    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
+        Ok((
+            serde_json::to_value(self.read())?,
+            serde_json::to_value(T::default())?,
+        ))
     }
 
     /// The value this output would take if the override were installed.
@@ -368,9 +413,10 @@ where
     /// Installs nothing. Callers that enforce their own rules validate this
     /// result rather than the incoming fragment, so a `patch` is judged on what
     /// it accumulates to rather than on the keys it happens to mention.
-    pub fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
+    pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
         self.overrides
-            .preview(mode, value, self.freeze_source(mode)?, self.read_upstream())
+            .preview(request, &live, &type_default, self.read_upstream())
     }
 
     /// Installs an override, returning an id that identifies it.
@@ -378,11 +424,11 @@ where
     /// The candidate rule is applied to the current raw value first, so a rule
     /// that cannot produce a well-formed `T` is rejected and the previously
     /// installed rule is left untouched.
-    pub fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
-        let freeze_source = self.freeze_source(mode)?;
+    pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
         let (id, effective) =
             self.overrides
-                .install(mode, value, freeze_source, self.read_upstream())?;
+                .install(request, &live, &type_default, self.read_upstream())?;
 
         *self
             .slot
@@ -417,13 +463,7 @@ where
     /// the one being withdrawn.
     fn reapply(&self) {
         let raw = self.read_upstream();
-        let effective = self
-            .overrides
-            .apply_installed(raw.clone())
-            .unwrap_or_else(|err| {
-                eprintln!("[override] failed to reapply overrides: {err}");
-                raw
-            });
+        let effective = self.overrides.apply_installed(raw);
         *self
             .slot
             .write()
@@ -522,40 +562,41 @@ impl<T: SimulationMessage> Input<T> {
     pub fn read(&self) -> T {
         let upstream = self.read_upstream();
         // Uncontended `RwLock` read of an empty `Vec` when nothing is injected.
-        self.overrides
-            .apply_installed(upstream.clone())
-            .unwrap_or_else(|err| {
-                eprintln!("[override] failed to apply input override: {err}");
-                upstream
-            })
+        self.overrides.apply_installed(upstream)
     }
 
-    /// The value a `freeze` would capture, sampled before any rule lock is
-    /// taken. `None` for every other mode, which ignores it.
-    fn freeze_source(&self, mode: Mode) -> Result<Option<Value>, serde_json::Error> {
-        match mode {
-            Mode::Freeze => serde_json::to_value(self.read()).map(Some),
-            _ => Ok(None),
-        }
+    /// The two values a rule may draw from: the live value a `freeze` captures
+    /// and the type default a `default` resets to.
+    ///
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
+    /// why they cannot be read inside it. Both are sampled whichever mode is
+    /// asked for, since sampling is cheap and the alternative is a mode-shaped
+    /// hole here that has to be kept in step with the modes.
+    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
+        Ok((
+            serde_json::to_value(self.read())?,
+            serde_json::to_value(T::default())?,
+        ))
     }
 
     /// The value this consumer would read if the override were installed.
     ///
     /// Installs nothing. See [`Output::preview_override`].
-    pub fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
+    pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
         self.overrides
-            .preview(mode, value, self.freeze_source(mode)?, self.read_upstream())
+            .preview(request, &live, &type_default, self.read_upstream())
     }
 
     /// Installs an override on this consumer's view alone.
     ///
     /// Unlike overriding the producer's output, this is invisible to every
     /// other consumer of the same message.
-    pub fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
-        let freeze_source = self.freeze_source(mode)?;
-        let (id, _) = self
-            .overrides
-            .install(mode, value, freeze_source, self.read_upstream())?;
+    pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
+        let (id, _) =
+            self.overrides
+                .install(request, &live, &type_default, self.read_upstream())?;
         Ok(id)
     }
 }
@@ -590,13 +631,9 @@ pub trait Port: Clone + Send + Sync {
     /// installed.
     fn read_upstream(&self) -> Self::Message;
 
-    fn preview_override(
-        &self,
-        mode: Mode,
-        value: Value,
-    ) -> Result<Self::Message, serde_json::Error>;
+    fn preview_override(&self, request: Request) -> Result<Self::Message, serde_json::Error>;
 
-    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error>;
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error>;
 
     fn clear_override(&self);
 
@@ -626,12 +663,12 @@ impl<T: SimulationMessage> Port for Output<T> {
         Output::read_upstream(self)
     }
 
-    fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
-        Output::preview_override(self, mode, value)
+    fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        Output::preview_override(self, request)
     }
 
-    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
-        Output::set_override(self, mode, value)
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        Output::set_override(self, request)
     }
 
     fn clear_override(&self) {
@@ -658,12 +695,12 @@ impl<T: SimulationMessage> Port for Input<T> {
         Input::read_upstream(self)
     }
 
-    fn preview_override(&self, mode: Mode, value: Value) -> Result<T, serde_json::Error> {
-        Input::preview_override(self, mode, value)
+    fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        Input::preview_override(self, request)
     }
 
-    fn set_override(&self, mode: Mode, value: Value) -> Result<RuleId, serde_json::Error> {
-        Input::set_override(self, mode, value)
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        Input::set_override(self, request)
     }
 
     fn clear_override(&self) {

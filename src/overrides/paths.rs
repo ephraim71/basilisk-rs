@@ -1,57 +1,41 @@
-//! What a payload may name, whether it names enough of them, and the "did you
-//! mean" when it names something that does not exist.
+//! What a payload may name, and the "did you mean" when it names something that
+//! does not exist.
 //!
 //! Two functions cross out of this module: [`reject_unknown_paths`] and
-//! [`require_complete_replacement`]. Everything else here serves them.
+//! [`children_of_null_fields`]. Everything else here serves them.
+//!
+//! Neither asks what mode is in force. A [`Request`] reports the paths it
+//! addresses, so these read that rather than re-deriving it from a raw payload.
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result, bail};
-use serde_json::Value;
+use anyhow::{Result, bail};
 
-use super::rule::Mode;
-use super::schema::{FieldSpec, TargetSpec, walk_leaves};
-
-/// The leaf paths an override payload actually addresses.
-pub(super) fn payload_paths(value: &Value) -> Vec<String> {
-    let mut paths = Vec::new();
-    walk_leaves("", value, &mut |path, _| paths.push(path.to_string()));
-    paths
-}
+use super::rule::Request;
+use super::schema::{FieldSpec, TargetSpec};
 
 /// Refuses any path the type does not have.
 ///
 /// Serde ignores unknown struct fields, so without this a misspelled field
 /// merges in, deserialises cleanly, and changes nothing while reporting
 /// success.
-///
-/// Where the paths come from depends on the mode. A merge document is walked; a
-/// [`Mode::ReplaceAt`] document carries its paths inside the
-/// operations, in pointer rather than dotted form.
-pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value) -> Result<()> {
+pub(super) fn reject_unknown_paths(spec: &TargetSpec, request: &Request) -> Result<()> {
     let known: BTreeSet<&str> = spec
         .fields
         .iter()
         .map(|field| field.path.as_str())
         .collect();
 
-    let paths = match mode {
-        Mode::ReplaceAt => patch_operation_paths(value)?,
-        _ => {
-            reject_dotted_keys(value, Some(&spec.type_default))?;
-            payload_paths(value)
-        }
-    };
-
-    for path in paths {
+    for path in request.named_paths() {
         if known.contains(path.as_str()) || indexes_a_known_array(spec, &path) {
             continue;
         }
-        // A `replaceAt` names one location, and a location may be a whole
-        // object. The schema lists only leaves, so a container is recognised by
-        // having leaves beneath it rather than by being listed itself. The value
-        // is left to the apply, which deserialises it as that field's type.
-        if mode == Mode::ReplaceAt && known.iter().any(|leaf| descends_from(leaf, &path)) {
+        // A request that addresses locations names one place, and a place may be
+        // a whole object. The schema lists only leaves, so a container is
+        // recognised by having leaves beneath it rather than by being listed
+        // itself. The value is left to the apply, which deserialises it as that
+        // field's type.
+        if request.addresses_locations() && known.iter().any(|leaf| descends_from(leaf, &path)) {
             continue;
         }
         bail!(
@@ -63,65 +47,13 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, mode: Mode, value: &Value)
     Ok(())
 }
 
-/// Refuses a [`Mode::Replace`] that does not name every field.
-///
-/// `replace` advertises "a complete message", and without this it is not one.
-/// A partial document can deserialise happily rather than erroring — an
-/// `Option` field is `None` when absent, and a type carrying `#[serde(default)]`
-/// fills in every omission. Where that holds, a payload naming one field is
-/// accepted, reported as installed, and silently resets what it did not mention:
-///
-/// ```text
-/// baseline               { bias: 0.1, scale: 4.0, sample_hz: 200.0 }
-/// replace {"scale":1.0}  { bias: 0.0, scale: 1.0, sample_hz:   0.0 }   <- was accepted
-/// ```
-///
-/// Zeroing a sample rate while reporting success is a worse failure than any
-/// fault an operator meant to inject, so the shortfall is refused here instead.
-/// Every other mode is unaffected: `patch` and `replaceAt` are partial by
-/// definition, and `freeze` and `default` supply no payload to be short.
-pub(super) fn require_complete_replacement(
-    spec: &TargetSpec,
-    mode: Mode,
-    value: &Value,
-) -> Result<()> {
-    if mode != Mode::Replace {
-        return Ok(());
-    }
-
-    let named: BTreeSet<String> = payload_paths(value).into_iter().collect();
-    let missing: Vec<&str> = spec
-        .fields
-        .iter()
-        .map(|field| field.path.as_str())
-        .filter(|path| !named.contains(*path))
-        .collect();
-
-    if missing.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "a replace must name every field of a {}, and this one omits {} of {}: {}. \
-         Omitted fields would be silently reset to the type default rather than \
-         left alone — use 'patch' to change only the fields you name.",
-        short_type_name(spec.type_name),
-        missing.len(),
-        spec.fields.len(),
-        missing.join(", "),
-    )
-}
-
 /// The payload's paths that reach under a field the value holds as `null`.
 ///
 /// A `None` advertises no children, so a payload naming one names something no
 /// runtime value can confirm *or deny* — see `Target::check_payload`. Treated as
 /// plausible so the apply's own error surfaces instead. Narrowly: a name with no
 /// such parent is still a name error and still gets its suggestion.
-pub(super) fn children_of_null_fields(
-    spec: &TargetSpec,
-    mode: Mode,
-    value: &Value,
-) -> Vec<FieldSpec> {
+pub(super) fn children_of_null_fields(spec: &TargetSpec, request: &Request) -> Vec<FieldSpec> {
     let unpopulated: Vec<&str> = spec
         .fields
         .iter()
@@ -132,58 +64,24 @@ pub(super) fn children_of_null_fields(
         return Vec::new();
     }
 
-    let paths = match mode {
-        // A malformed document is reported by `reject_unknown_paths`, which runs
-        // next and raises the same error rather than an empty path list.
-        Mode::ReplaceAt => patch_operation_paths(value).unwrap_or_default(),
-        _ => payload_paths(value),
-    };
-
-    paths
+    request
+        .named_paths()
         .into_iter()
         .filter(|path| unpopulated.iter().any(|parent| descends_from(path, parent)))
         .map(|path| FieldSpec {
             path,
             kind: "null",
-            default: Value::Null,
+            default: serde_json::Value::Null,
         })
         .collect()
 }
 
-/// Refuses a dotted key that only *looks* like the path it flattens to.
-///
-/// Flattening turns `{"a.b": 1}` into the same path as `{"a": {"b": 1}}`, so
-/// without this a key serde would ignore passed the unknown-field check. A field
-/// renamed to carry a dot is addressed by exactly such a key, so the type's own
-/// shape decides: legitimate where the object at this position really has that
-/// key. Where the shape cannot say — an option the default holds as `null` — the
-/// key is refused.
-fn reject_dotted_keys(value: &Value, shape: Option<&Value>) -> Result<()> {
-    let Value::Object(map) = value else {
-        return Ok(());
-    };
-    let here = shape.and_then(Value::as_object);
-    for (key, child) in map {
-        if key.contains('.') && !here.is_some_and(|fields| fields.contains_key(key)) {
-            let nested = key.replace('.', "\": {\"");
-            let closing = "}".repeat(key.matches('.').count());
-            bail!(
-                "'{key}' is a path, not a field name: a patch nests, so send \
-                 {{\"{nested}\": ...{closing}}} instead, or use replaceAt to \
-                 address a path directly"
-            );
-        }
-        reject_dotted_keys(child, here.and_then(|fields| fields.get(key)))?;
-    }
-    Ok(())
-}
-
 /// Whether `path` names something strictly inside `parent`.
 ///
-/// A prefix test alone would match `orientation_dot` against `orientation`, so
+/// A prefix test alone would match `/orientation_dot` against `/orientation`, so
 /// the separator has to be there.
 fn descends_from(path: &str, parent: &str) -> bool {
-    path.len() > parent.len() && path.starts_with(parent) && path.as_bytes()[parent.len()] == b'.'
+    path.len() > parent.len() && path.starts_with(parent) && path.as_bytes()[parent.len()] == b'/'
 }
 
 /// Whether `path` addresses an element of a field the type holds as an array.
@@ -197,7 +95,7 @@ fn descends_from(path: &str, parent: &str) -> bool {
 /// Whether the index is *in range* is left to the pointer resolving, which
 /// reports the miss with the path in it.
 fn indexes_a_known_array(spec: &TargetSpec, path: &str) -> bool {
-    let Some((parent, index)) = path.rsplit_once('.') else {
+    let Some((parent, index)) = path.rsplit_once('/') else {
         return false;
     };
     index.parse::<usize>().is_ok()
@@ -205,35 +103,6 @@ fn indexes_a_known_array(spec: &TargetSpec, path: &str) -> bool {
             .fields
             .iter()
             .any(|field| field.path == parent && field.kind == "array")
-}
-
-/// The paths an RFC 6902 document addresses, in the dotted form the schema uses.
-fn patch_operation_paths(document: &Value) -> Result<Vec<String>> {
-    document
-        .as_array()
-        .with_context(|| format!("a replaceAt value must be an array of operations: {document}"))?
-        .iter()
-        .map(|operation| {
-            operation
-                .get("path")
-                .and_then(Value::as_str)
-                .map(pointer_to_dotted)
-                .with_context(|| format!("a replaceAt operation needs a 'path': {operation}"))
-        })
-        .collect()
-}
-
-/// An RFC 6901 pointer written as the dotted path the schema uses.
-///
-/// The two escapes belong to the pointer syntax rather than to anything a Rust
-/// field name can contain, so they are undone rather than carried through.
-fn pointer_to_dotted(pointer: &str) -> String {
-    pointer
-        .trim_start_matches('/')
-        .split('/')
-        .map(|token| token.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 /// The last segment of a `std::any::type_name`, which is the name a person

@@ -28,14 +28,31 @@ actually have written against. Nothing has a deprecated alias.
   `FieldSpec`, `TargetKind`.
 - `TargetKind::Custom(&'static str)`, so an application can name a kind this
   crate has no opinion about and have it reach a client verbatim.
-- `Mode::ReplaceAt`, a mode 0.3.0 did not have: the `replace` operation of
-  RFC 6902 and no other, reaching the wire as `replaceAt`. Each path is an
-  RFC 6901 pointer naming any one field or array element, which unlike
-  `Mode::Patch` can address a single element of an array. A merge replaces an
-  array wholesale, so `Patch` cannot change one component of a vector without
-  pinning its siblings to whatever the sender happened to write.
-- `Mode::is_relative`, so a client can describe a mode without re-deriving
-  whether it composes with the rule beneath it or masks it.
+- Three modes, differing only in where the value comes from: `Replace` takes it
+  from the payload, `Default` from the type's own default, `Freeze` from the
+  live value at the moment it is installed.
+- `Mode::Replace` carries either patch format, told apart by the payload's
+  shape: an object is a JSON merge document, an array is an RFC 6902 document.
+  The RFC 6902 form is the `replace` operation and no other, and is what can
+  address a single element of an array — a merge replaces an array wholesale,
+  so it cannot change one component of a vector without pinning its siblings to
+  whatever the sender happened to write.
+- `Freeze` and `Default` take an array of RFC 6901 pointers naming the fields to
+  act on, so one axis of a body rate can be held or reset without touching the
+  others. An empty payload means the whole message.
+- Every rule is relative: a rule touches the paths it names and leaves the rest
+  to the layers beneath, so a stack is always the composition of all of it.
+- RFC 6901 pointers are the single path syntax across the feature. `FieldSpec`
+  publishes them, a `replace` document addresses them, and a `freeze` names
+  them, so nothing translates between two spellings.
+- A payload is parsed once into a type that cannot hold an invalid combination:
+  `Request`, `Document`, `Selection`, `ReplaceOp` and `Pointer`. `Rule` has
+  private fields and one constructor, which requires the values a freeze
+  captures rather than taking them as an option that can be omitted.
+- A rule that cannot apply to a particular value is skipped for that value
+  rather than cancelling the rest of the stack — an `Option` going `None` under
+  a pointer is a rule with nothing to do this tick, not a reason to publish the
+  raw upstream value with every fault discarded.
 - Overriding an `Input` at all. 0.3.0's `Input<T>` held only a slot, so a fault
   could be applied to a message but never to one consumer's view of it:
   `Input::set_override`, `clear_override`, `clear_override_by_id`,
@@ -53,20 +70,43 @@ actually have written against. Nothing has a deprecated alias.
   against the message the payload *produces*, not against `T::default()`, so a
   field inside a populated `Option` is addressable even though the default has
   that option as `None` and cannot advertise its children.
-- A `replace` must name every field of its type. A partial one is refused rather
-  than silently resetting the fields it omits to the type default.
+- A payload naming a field the type does not have is refused before it is
+  installed, and a pointer that does not resolve is refused with it, so no rule
+  is installed that would quietly do nothing.
 
 ### Changed
 
-Four items, and these are the only ones that can affect code written against
+Six items, and these are the only ones that can affect code written against
 0.3.0. The override surface was reworked substantially before release, but the
 rest of that rework renamed items that 0.3.0 either kept private or never had,
 so it is not listed here — a changelog that reports internal churn as breaking
 makes it harder to find the changes that are.
 
-- `messages::MessageOverrideMode` is now `overrides::Mode`: renamed *and* moved
-  to a new module. It appeared in every call to `Output::set_override`, so this
-  is the one a 0.3.0 user is most likely to hit.
+- `Output::set_override` takes one `overrides::Request` where 0.3.0 took a
+  `(MessageOverrideMode, Value)` pair, so every 0.3.0 call site changes:
+
+  ```rust
+  // 0.3.0
+  output.set_override(MessageOverrideMode::Patch, json!({ "rate_dps": 9.0 }))?;
+  // now
+  output.set_override(Request::replace(json!({ "rate_dps": 9.0 }))?)?;
+  ```
+
+  A `Request` is parsed once, at the boundary, and cannot pair a mode with a
+  payload that mode has no meaning for — which is what two loose arguments
+  allowed and what the freeze payload being ignored entirely was a case of. The
+  wire form is unchanged: `Request` is adjacently tagged, so it still reads and
+  writes `{"mode": ..., "value": ...}`.
+- `MessageOverrideMode::Patch` is absorbed into `Request::replace`, which now
+  accepts a fragment. A 0.3.0 `Patch` payload is a `Request::replace` payload
+  verbatim. A 0.3.0 `Replace` payload also keeps working, and is the change
+  worth reading twice: `Replace` used to be refused unless it named every field,
+  and no longer is, so a `Replace` that omits a field now leaves that field to
+  the layers beneath it rather than being rejected. Nothing enforces a complete
+  message any more.
+- `messages::MessageOverrideMode` is now `overrides::Mode`, renamed *and* moved
+  to a new module — and demoted: it is a label reported on an installed `Rule`
+  rather than something a caller passes.
 - `Output::set_override` returns `Result<RuleId, serde_json::Error>` rather than
   `Result<(), _>`. The id is what makes a single rule removable later, which a
   timed fault needs: without it, a timer firing after a second override was
@@ -90,6 +130,8 @@ makes it harder to find the changes that are.
 - `messages::MessageOverrideMode`, as the move above describes. No deprecated
   re-export: `messages` cannot name it without depending on the module that now
   owns it.
+- Its `Patch` variant has no counterpart in `overrides::Mode`, which has three.
+  See the absorption into `Request::replace` above.
 
 ## [0.3.0] - 2026-08-06
 

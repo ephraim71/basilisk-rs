@@ -1,66 +1,376 @@
 //! What a rule is, and what it computes.
 //!
-//! [`Mode`], [`Rule`] and [`RuleId`] are the vocabulary both halves of the
-//! feature speak, and what a rule *does* to a value is here in both its
-//! numbers: [`apply_override`] for one, [`fold_rules`] for a stack. Custody is
-//! not — [`crate::messages`] owns each port's stack and decides when a fold
-//! becomes visible; this file answers what a given stack computes, identically
-//! for a candidate stack and an installed one.
+//! Three modes, and they differ only in where the value comes from: a
+//! [`Mode::Replace`] takes it from the payload, a [`Mode::Default`] from the
+//! type's own default, a [`Mode::Freeze`] from the live value at the moment it
+//! is installed. All three are **relative** — they touch the paths they name and
+//! leave the rest to the layers beneath — so a stack is always the composition
+//! of all of its rules and nothing masks anything.
+//!
+//! The payload is typed rather than raw JSON, and a [`Rule`] can only be built
+//! through [`Rule::build`], which resolves and checks it. So an installed rule
+//! is a rule that was validated: there is no second field to disagree with the
+//! first, and no way to construct one that skipped the checks.
+//!
+//! Custody is not here — [`crate::messages`] owns each port's stack and decides
+//! when a fold becomes visible; this file answers what a given stack computes,
+//! identically for a candidate stack and an installed one.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 use crate::messages::SimulationMessage;
 
-/// How a rule produces its value from the one beneath it.
-///
-/// [`Self::Patch`] and [`Self::ReplaceAt`] are **relative**: they modify
-/// what they are laid over. The rest are absolute — they define the whole
-/// message and mask everything below them while installed. `fold_rules` turns
-/// on that split, so a new mode has to declare which side it is on.
-///
-/// Renamed `camelCase` rather than `lowercase` so `ReplaceAt` reaches the
-/// wire as `replaceAt`. Every other variant is a single word and
-/// unaffected.
+/// Which of the three a rule is. A label for reporting; the payload that goes
+/// with it lives in [`Request`], where it cannot be paired with the wrong one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
     Replace,
-    Patch,
     Freeze,
     Default,
-    /// The `replace` operation of RFC 6902 — **that one and no other** — which
-    /// unlike [`Self::Patch`] can address a single element of an array.
-    ///
-    /// A merge replaces an array wholesale, so `Patch` cannot change one
-    /// component of a vector without also pinning its siblings to whatever the
-    /// sender happened to write. On a live value — a body rate, a magnetic
-    /// field, an ECEF position — that turns a single-axis fault into a
-    /// whole-vector freeze.
-    ///
-    /// Named for the one thing it does — replace the value *at* a path — rather
-    /// than for RFC 6902 as a whole: every other operation of that RFC is
-    /// refused. See `apply_replace_at` below for which, and why.
-    ///
-    /// Do not read the shared prefix with [`Self::Replace`] as kinship. That
-    /// one is absolute and defines the whole message; this one is relative and
-    /// touches only the paths it names. They sit on opposite sides of the split
-    /// `fold` cares about.
-    ReplaceAt,
 }
 
-impl Mode {
-    /// Whether this rule modifies the value beneath it rather than replacing the
-    /// whole message.
+// ---------------------------------------------------------------------------
+// Pointers
+// ---------------------------------------------------------------------------
+
+/// An RFC 6901 JSON pointer, checked when it is built.
+///
+/// One path syntax serves the whole feature: the schema publishes pointers, a
+/// `replace` document addresses them, and a freeze names them. Nothing converts
+/// between two spellings, so nothing can disagree about what a path means.
+///
+/// The empty pointer addresses the whole document, which is what makes
+/// "the whole message" expressible as a path rather than as a special case.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Pointer(String);
+
+impl Pointer {
+    /// The whole document. RFC 6901 spells this as the empty string.
+    pub const ROOT: Self = Self(String::new());
+
+    /// Checks the one rule pointer syntax has: empty, or starting with `/`.
     ///
-    /// Public because a client has to know it to describe the mode honestly, and
-    /// deriving it a second time downstream is how the two answers drift.
-    pub fn is_relative(self) -> bool {
-        matches!(self, Self::Patch | Self::ReplaceAt)
+    /// A dotted path is the likely mistake — it is what the schema published
+    /// before — so it is answered with its own translation rather than with a
+    /// restatement of the rule.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        if !raw.is_empty() && !raw.starts_with('/') {
+            return Err(format!(
+                "'{raw}' is not a JSON pointer: write '/{}' instead",
+                raw.replace('.', "/")
+            ));
+        }
+        // `~` introduces an escape, and RFC 6901 defines exactly two. A stray
+        // one is a typo rather than a literal tilde — the literal is `~0` — and
+        // resolving it would silently address a member nobody named.
+        let mut characters = raw.chars();
+        while let Some(character) = characters.next() {
+            if character == '~' && !matches!(characters.next(), Some('0' | '1')) {
+                return Err(format!(
+                    "'{raw}' is not a JSON pointer: '~' escapes only '~0' (a literal '~') \
+                     and '~1' (a literal '/')"
+                ));
+            }
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
+
+impl Serialize for Pointer {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Pointer {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Payloads
+// ---------------------------------------------------------------------------
+
+/// One `replace` operation: a location, and what to put there.
+///
+/// Carries no operation name, because there is only one it could hold. On the
+/// wire it still reads and writes `"op": "replace"`, so a client that sends a
+/// conforming RFC 6902 document is understood unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReplaceOp {
+    pub path: Pointer,
+    pub value: Value,
+}
+
+impl ReplaceOp {
+    fn from_value(operation: &Value) -> Result<Self, String> {
+        let object = operation
+            .as_object()
+            .ok_or_else(|| format!("an operation must be an object: {operation}"))?;
+
+        match object.get("op").and_then(Value::as_str) {
+            Some("replace") => {}
+            Some(other) => {
+                return Err(format!(
+                    "this implements the 'replace' operation of RFC 6902 and no other, so \
+                     '{other}' is refused rather than approximated: a message has a fixed \
+                     schema and fixed-size arrays, which leaves the other five either \
+                     unrepresentable or indistinguishable from 'replace'"
+                ));
+            }
+            None => return Err(format!("an operation needs 'op': {operation}")),
+        }
+
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("an operation needs 'path': {operation}"))?;
+        let value = object
+            .get("value")
+            .ok_or_else(|| format!("a replace needs 'value': {operation}"))?;
+
+        Ok(Self {
+            path: Pointer::parse(path)?,
+            value: value.clone(),
+        })
+    }
+}
+
+impl Serialize for ReplaceOp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut object = Map::new();
+        object.insert("op".to_string(), Value::from("replace"));
+        object.insert("path".to_string(), Value::from(self.path.as_str()));
+        object.insert("value".to_string(), self.value.clone());
+        Value::Object(object).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReplaceOp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Self::from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// What a [`Mode::Replace`] carries: either shape of patch document.
+///
+/// The two are told apart by their JSON shape, which is unambiguous — a merge
+/// document is an object, an RFC 6902 document is an array — so no extra tag is
+/// needed on the wire.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Document {
+    /// A merge document. Nested JSON mirroring the message, so it names no
+    /// paths and cannot address one element of an array.
+    Merge(Map<String, Value>),
+    /// RFC 6902 operations, which can.
+    Ops(Vec<ReplaceOp>),
+}
+
+impl Document {
+    fn from_value(value: Value) -> Result<Self, String> {
+        match value {
+            Value::Object(map) => Ok(Self::Merge(map)),
+            Value::Array(operations) => operations
+                .iter()
+                .map(ReplaceOp::from_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Ops),
+            other => Err(format!(
+                "a replace takes an object (a merge document) or an array (RFC 6902 \
+                 operations), and this is neither: {other}"
+            )),
+        }
+    }
+}
+
+impl Serialize for Document {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Merge(map) => map.serialize(serializer),
+            Self::Ops(operations) => operations.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Document {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Self::from_value(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Which fields a [`Mode::Freeze`] or [`Mode::Default`] acts on.
+///
+/// An empty payload means the whole message.
+///
+/// Holds its pointers privately, and [`Selection::fields`] folds an empty list
+/// into [`Selection::whole`], so "the whole message" has exactly one
+/// representation and the same JSON cannot mean two things depending on which
+/// side built it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Selection {
+    /// `None` is the whole message. Never `Some` of an empty list.
+    fields: Option<Vec<Pointer>>,
+}
+
+impl Selection {
+    /// The whole message.
+    pub fn whole() -> Self {
+        Self { fields: None }
+    }
+
+    /// Just the fields these pointers name, or the whole message if there are
+    /// none — an empty selection is not a rule that does nothing.
+    pub fn fields(pointers: Vec<Pointer>) -> Self {
+        if pointers.is_empty() {
+            return Self::whole();
+        }
+        Self {
+            fields: Some(pointers),
+        }
+    }
+
+    fn from_value(value: Value) -> Result<Self, String> {
+        match value {
+            Value::Null => Ok(Self::whole()),
+            Value::Object(map) if map.is_empty() => Ok(Self::whole()),
+            Value::Array(paths) => paths
+                .iter()
+                .map(|path| {
+                    path.as_str()
+                        .ok_or_else(|| format!("a field must be named by a pointer: {path}"))
+                        .and_then(Pointer::parse)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::fields),
+            other => Err(format!(
+                "a freeze or default takes an array of JSON pointers naming the fields to \
+                 act on, or an empty value for the whole message, and this is neither: {other}"
+            )),
+        }
+    }
+
+    fn pointers(&self) -> &[Pointer] {
+        self.fields.as_deref().unwrap_or(&[])
+    }
+
+    /// Whether this names the whole message.
+    pub fn is_whole(&self) -> bool {
+        self.fields.is_none()
+    }
+}
+
+impl Serialize for Selection {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.fields {
+            Some(paths) => paths.serialize(serializer),
+            None => Value::Null.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Selection {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Self::from_value(value).map_err(serde::de::Error::custom)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+/// What a client asks for, parsed once at the boundary.
+///
+/// Adjacently tagged, so the wire form is `{"mode": ..., "value": ...}` —
+/// exactly what it was when the mode and its payload were separate fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "value", rename_all = "camelCase")]
+pub enum Request {
+    Replace(Document),
+    Freeze(Selection),
+    Default(Selection),
+}
+
+impl Request {
+    /// A replace carrying either patch format, chosen by the payload's shape.
+    pub fn replace(value: Value) -> anyhow::Result<Self> {
+        Document::from_value(value)
+            .map(Self::Replace)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// A freeze of the fields `value` names, or of the whole message when it is
+    /// empty.
+    pub fn freeze(value: Value) -> anyhow::Result<Self> {
+        Selection::from_value(value)
+            .map(Self::Freeze)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// A reset of the fields `value` names, or of the whole message when it is
+    /// empty.
+    pub fn default(value: Value) -> anyhow::Result<Self> {
+        Selection::from_value(value)
+            .map(Self::Default)
+            .map_err(anyhow::Error::msg)
+    }
+
+    pub fn mode(&self) -> Mode {
+        match self {
+            Self::Replace(_) => Mode::Replace,
+            Self::Freeze(_) => Mode::Freeze,
+            Self::Default(_) => Mode::Default,
+        }
+    }
+
+    /// The paths this request addresses, as pointers.
+    ///
+    /// What the name checks read, so that they ask the request what it names
+    /// rather than re-deriving it from a raw payload. A whole-message selection
+    /// names nothing: there is no path to be wrong.
+    pub(crate) fn named_paths(&self) -> Vec<String> {
+        match self {
+            Self::Replace(Document::Merge(map)) => {
+                let mut paths = Vec::new();
+                super::schema::walk_leaves("", &Value::Object(map.clone()), &mut |path, _| {
+                    paths.push(path.to_string());
+                });
+                paths
+            }
+            Self::Replace(Document::Ops(operations)) => operations
+                .iter()
+                .map(|operation| operation.path.as_str().to_string())
+                .collect(),
+            Self::Freeze(selection) | Self::Default(selection) => selection
+                .pointers()
+                .iter()
+                .map(|path| path.as_str().to_string())
+                .collect(),
+        }
+    }
+
+    /// Whether this request addresses locations rather than nesting into the
+    /// message, which decides whether a named path may be a container.
+    pub(crate) fn addresses_locations(&self) -> bool {
+        !matches!(self, Self::Replace(Document::Merge(_)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rules
+// ---------------------------------------------------------------------------
 
 /// Identifies one installed rule.
 ///
@@ -84,30 +394,97 @@ pub(crate) fn next_rule_id() -> RuleId {
     RuleId(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-/// One rule in force on a port: what to do, with what, and which fault owns it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One rule in force on a port: what it does, and which fault owns it.
+///
+/// The fields are private and `Rule::build` is the only constructor, so
+/// holding a `Rule` is evidence that its payload was parsed, its pointers
+/// resolved and its values captured. Nothing downstream re-checks any of that.
+///
+/// A freeze and a default are already resolved to concrete values by the time
+/// they get here, so all three modes are one document to apply; `mode` survives
+/// only to tell a client which was asked for.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Rule {
-    pub mode: Mode,
-    pub value: Value,
-    pub id: RuleId,
+    mode: Mode,
+    #[serde(rename = "value")]
+    document: Document,
+    id: RuleId,
 }
 
 impl Rule {
-    /// Builds the rule `mode` and `value` ask for.
+    /// Resolves `request` against the values it draws from, and checks it.
     ///
-    /// A `freeze` stores the value it captured rather than the (empty) payload
-    /// that requested it, so the rule stands on its own once installed.
-    /// `freeze_source` carries that capture; every other mode ignores it.
-    pub(crate) fn new(mode: Mode, value: Value, freeze_source: Option<Value>, id: RuleId) -> Self {
-        Self {
-            mode,
-            value: match mode {
-                Mode::Freeze => freeze_source.unwrap_or(value),
-                _ => value,
-            },
-            id,
-        }
+    /// `live` and `type_default` are required rather than optional, so a freeze
+    /// cannot be built without the value it freezes.
+    ///
+    /// A pointer is resolved against the value that mode reads from — the live
+    /// value for a freeze, the type default for a default — and one that misses
+    /// is refused here, rather than installed as a layer that does nothing on
+    /// every write.
+    pub(crate) fn build(
+        request: Request,
+        live: &Value,
+        type_default: &Value,
+        id: RuleId,
+    ) -> Result<Self, serde_json::Error> {
+        let mode = request.mode();
+        let document = match request {
+            Request::Replace(document) => document,
+            Request::Freeze(selection) => capture(&selection, live, "freeze")?,
+            Request::Default(selection) => capture(&selection, type_default, "default")?,
+        };
+        Ok(Self { mode, document, id })
     }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    pub fn id(&self) -> RuleId {
+        self.id
+    }
+
+    /// The document this rule applies, with a freeze or default already
+    /// resolved to the values it captured.
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+}
+
+/// Reads the values `selection` names out of `source`, as replace operations.
+///
+/// The whole message is the root pointer rather than a special case, so a
+/// whole-message freeze and a per-field one produce the same kind of document.
+fn capture(
+    selection: &Selection,
+    source: &Value,
+    what: &str,
+) -> Result<Document, serde_json::Error> {
+    if selection.is_whole() {
+        return Ok(Document::Ops(vec![ReplaceOp {
+            path: Pointer::ROOT,
+            value: source.clone(),
+        }]));
+    }
+    selection
+        .pointers()
+        .iter()
+        .map(|path| {
+            source
+                .pointer(path.as_str())
+                .map(|found| ReplaceOp {
+                    path: path.clone(),
+                    value: found.clone(),
+                })
+                .ok_or_else(|| {
+                    json_error(format!(
+                        "a {what} names '{}', which does not resolve on the value it reads from",
+                        path.as_str()
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Document::Ops)
 }
 
 /// Overlays `patch` onto `base`, descending only where both sides are objects.
@@ -120,8 +497,8 @@ impl Rule {
 /// `Option` field to `None` is asking for.
 ///
 /// Arrays follow RFC 7396: they are replaced whole rather than merged
-/// element-wise, since a merge document has no way to name one element. That is
-/// what [`Mode::ReplaceAt`] exists for.
+/// element-wise, since a merge document has no way to name one element. An
+/// RFC 6902 document is what addresses a single element.
 fn merge_json(base: &mut Value, patch: Value) {
     match (base, patch) {
         (Value::Object(base_map), Value::Object(patch_map)) => {
@@ -137,76 +514,10 @@ fn merge_json(base: &mut Value, patch: Value) {
     }
 }
 
-/// Applies the `replace` operation of an RFC 6902 document, and no other.
-///
-/// **This is a subset, not an implementation of RFC 6902.** A conforming
-/// processor accepts six operations; a document using any of the other five is
-/// refused here rather than approximated, and a caller must not assume a
-/// general patch document will apply.
-///
-/// The subset is what the target model can express, not what is convenient:
-///
-/// - **`add`, `remove`** — on a *member*, a message has a fixed schema, so
-///   adding one produces a field no type declares and removing one produces a
-///   value that will not deserialise. On an *array element*, both change the
-///   length, and every array reachable here is a fixed-size vector. In the one
-///   case where `add` is well defined — an existing member — it is `replace`
-///   under another name.
-/// - **`move`, `copy`** — a `remove` and an `add` composed, so they inherit
-///   the above.
-/// - **`test`** — well defined, and pointless here: it guards a document
-///   against a concurrent writer, and no such document exists. Each rule is a
-///   layer folded fresh over the upstream value on every write, so there is
-///   nothing shared to lose a race with.
-///
-/// Paths are RFC 6901 pointers, which [`Value::pointer_mut`] resolves. A
-/// pointer that does not resolve is an error, so an index past the end of a
-/// fixed-size vector is reported as such rather than silently doing nothing.
-fn apply_replace_at(base: &mut Value, document: &Value) -> Result<(), serde_json::Error> {
-    let operations = document
-        .as_array()
-        .ok_or_else(|| json_error(format!("a replaceAt value must be an array: {document}")))?;
-
-    for operation in operations {
-        let name = operation
-            .get("op")
-            .and_then(Value::as_str)
-            .ok_or_else(|| json_error(format!("a replaceAt operation needs 'op': {operation}")))?;
-        if name != "replace" {
-            return Err(json_error(format!(
-                "this mode implements the 'replace' operation of RFC 6902 and no other, \
-                 so '{name}' is refused rather than approximated: a message has a fixed \
-                 schema and fixed-size arrays, which leaves the other five either \
-                 unrepresentable or indistinguishable from 'replace'"
-            )));
-        }
-
-        let path = operation
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                json_error(format!("a replaceAt operation needs 'path': {operation}"))
-            })?;
-        let value = operation
-            .get("value")
-            .ok_or_else(|| json_error(format!("a replaceAt replace needs 'value': {operation}")))?;
-
-        match base.pointer_mut(path) {
-            Some(slot) => *slot = value.clone(),
-            None => {
-                return Err(json_error(format!(
-                    "replaceAt path '{path}' does not resolve on this value"
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// A `serde_json::Error` carrying a message of our own.
 ///
 /// The override path returns `serde_json::Error` throughout, and the failures
-/// above are not deserialisation failures. Widening the error type would ripple
+/// here are not deserialisation failures. Widening the error type would ripple
 /// through `fold`, `install` and `preview` on both ports; this borrows the one
 /// constructor serde offers for the purpose.
 fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
@@ -214,48 +525,78 @@ fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
 }
 
 /// Produces the value `rule` yields when laid over `upstream`.
+///
+/// Takes no view on the mode: by this point a freeze and a default are documents
+/// like any other, so there is one way to apply all three.
 pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,
 ) -> Result<T, serde_json::Error> {
-    match rule.mode {
-        Mode::Replace | Mode::Freeze => serde_json::from_value(rule.value.clone()),
-        Mode::Patch => {
-            let mut base = serde_json::to_value(upstream)?;
-            merge_json(&mut base, rule.value.clone());
-            serde_json::from_value(base)
+    let mut base = serde_json::to_value(upstream)?;
+    match rule.document() {
+        Document::Merge(map) => merge_json(&mut base, Value::Object(map.clone())),
+        Document::Ops(operations) => {
+            for operation in operations {
+                match base.pointer_mut(operation.path.as_str()) {
+                    Some(slot) => *slot = operation.value.clone(),
+                    None => {
+                        return Err(json_error(format!(
+                            "'{}' does not resolve on this value",
+                            operation.path.as_str()
+                        )));
+                    }
+                }
+            }
         }
-        Mode::ReplaceAt => {
-            let mut base = serde_json::to_value(upstream)?;
-            apply_replace_at(&mut base, &rule.value)?;
-            serde_json::from_value(base)
-        }
-        Mode::Default => Ok(T::default()),
     }
+    serde_json::from_value(base)
 }
 
-/// Produces the value a whole stack yields when laid over `upstream`, innermost
-/// first.
+/// Produces the value an installed stack yields when laid over `upstream`,
+/// innermost first, skipping any rule that cannot apply to this value.
 ///
-/// The plural of [`apply_override`], and not merely a loop over it: it starts at
-/// the outermost absolute rule. `Replace`, `Freeze` and `Default` define the
-/// whole message, so nothing below one can be observed while it is installed —
-/// but the layers stay in the stack, and reappear when it is removed. Discarding
-/// them instead would let a timed `replace` destroy a fault that was already
-/// running.
+/// Every rule is relative, so this is the plain composition of all of them.
 ///
-/// Takes the rules as an argument rather than reading them from a port: a
-/// candidate stack has to be folded *before* it is stored, which is what lets a
-/// rejected rule leave the installed ones untouched.
-pub(crate) fn fold_rules<T: SimulationMessage>(
+/// A rule is checked against the message when it is installed, but the *shape*
+/// of that message can change afterwards — an `Option` a module was populating
+/// goes `None`, and a pointer addressing something beneath it stops resolving.
+/// That is a rule with nothing to do this tick rather than a bad rule, and
+/// failing the fold over it would discard every fault installed alongside it.
+/// For a mechanism whose purpose is injecting faults, quietly injecting none is
+/// the worst answer available.
+///
+/// Returns the rules that were skipped so the caller can say so, rather than
+/// dropping them silently.
+pub(crate) fn fold_installed<T: SimulationMessage>(
     rules: &[Rule],
     upstream: T,
+) -> (T, Vec<(RuleId, serde_json::Error)>) {
+    let mut skipped = Vec::new();
+    let value = rules.iter().fold(upstream, |value, rule| {
+        match apply_override(rule, value.clone()) {
+            Ok(applied) => applied,
+            Err(error) => {
+                skipped.push((rule.id(), error));
+                value
+            }
+        }
+    });
+    (value, skipped)
+}
+
+/// Produces the value `installed` plus one candidate yields, refusing the
+/// candidate if it cannot apply.
+///
+/// Used where a rule is being *admitted* — an install or a preview. Only the
+/// candidate is judged: a candidate that cannot apply is the caller's mistake
+/// and refusing it is what leaves the installed stack alone, while the rules
+/// already in force are read exactly as they are on any other write. Judging
+/// both strictly let one stale layer refuse every later change to the stack.
+pub(crate) fn fold_candidate<T: SimulationMessage>(
+    installed: &[Rule],
+    candidate: &Rule,
+    upstream: T,
 ) -> Result<T, serde_json::Error> {
-    let visible = rules
-        .iter()
-        .rposition(|rule| !rule.mode.is_relative())
-        .unwrap_or(0);
-    rules[visible..]
-        .iter()
-        .try_fold(upstream, |value, rule| apply_override(rule, value))
+    let (value, _) = fold_installed(installed, upstream);
+    apply_override(candidate, value)
 }

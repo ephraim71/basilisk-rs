@@ -7,9 +7,8 @@ use serde_json::json;
 
 use crate::messages::{Input, Output};
 
-use super::paths::payload_paths;
 use super::schema::leaf_fields;
-use crate::overrides::{Mode, Registry, TargetKind};
+use crate::overrides::{Mode, Registry, Request, TargetKind};
 
 /// A kind this crate does not define, declared the way an application declares
 /// one for itself. Several fixtures register a config-shaped type, and routing
@@ -108,15 +107,15 @@ fn the_schema_and_the_payload_check_agree_on_what_a_leaf_is() {
     assert_eq!(
         described,
         [
-            "empty",
-            "flat",
-            "list",
-            "nested.deeper.leaf",
-            "nested.inner"
+            "/empty",
+            "/flat",
+            "/list",
+            "/nested/deeper/leaf",
+            "/nested/inner"
         ]
     );
     assert_eq!(
-        payload_paths(&value),
+        Request::replace(value.clone()).unwrap().named_paths(),
         described,
         "a payload addresses different paths than the schema advertises"
     );
@@ -132,11 +131,11 @@ fn spec_lists_the_leaf_fields_of_the_type_default() {
     assert_eq!(
         paths(&registry, "sensor_0.output_msg"),
         [
-            "angle_deg",
-            "quality_percent",
-            "rate_dps",
-            "status",
-            "value"
+            "/angle_deg",
+            "/quality_percent",
+            "/rate_dps",
+            "/status",
+            "/value"
         ]
     );
 }
@@ -159,14 +158,13 @@ fn a_misspelled_field_is_rejected_rather_than_silently_ignored() {
     let error = registry
         .install(
             "sensor_0.output_msg",
-            Mode::Patch,
-            json!({ "angle_dge": 10.0 }),
+            Request::replace(json!({ "angle_dge": 10.0 })).unwrap(),
         )
         .unwrap_err()
         .to_string();
 
     assert!(error.contains("angle_dge"), "unhelpful error: {error}");
-    assert!(error.contains("did you mean 'angle_deg'"), "{error}");
+    assert!(error.contains("did you mean '/angle_deg'"), "{error}");
     assert!(!output.is_overridden());
 }
 
@@ -176,15 +174,13 @@ fn accumulated_patches_survive_a_rejected_one() {
     registry
         .install(
             "sensor_0.output_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 10.0 }),
+            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
     let _ = registry.install(
         "sensor_0.output_msg",
-        Mode::Patch,
-        json!({ "rate_dps": "sideways" }),
+        Request::replace(json!({ "rate_dps": "sideways" })).unwrap(),
     );
     output.write(reading(3.25));
 
@@ -199,8 +195,7 @@ fn upstream_and_effective_diverge_under_an_override() {
     registry
         .install(
             "sensor_0.output_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 10.0 }),
+            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
     output.write(reading(3.25));
@@ -241,8 +236,7 @@ fn an_input_target_overrides_only_that_consumer() {
     registry
         .install(
             "consumer_0.input_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 10.0 }),
+            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
@@ -272,29 +266,33 @@ fn registering_an_unconnected_input_is_refused() {
 // `replace` means all of it
 // ---------------------------------------------------------------------------
 
-/// The failure this closes: `#[serde(default)]` lets a one-field document
-/// deserialise, so the omitted fields come back as `T::default()`. Before this
-/// check the command below was accepted, reported as installed, and silently
-/// reset `sample_hz` from 200 to 0 — a worse outcome than any fault the operator
-/// was trying to inject.
+/// A replace is relative, so a partial document changes what it names and
+/// leaves the rest of the message alone.
+///
+/// This is the behaviour the old completeness guard existed to prevent, and it
+/// is now the point. That guard protected a promise `replace` no longer makes:
+/// with `patch` folded into it, a document naming one field is a legitimate way
+/// to ask for one field to change. What the guard was really defending against —
+/// `#[serde(default)]` silently resetting the fields a document omits — cannot
+/// happen when the document is merged onto the upstream value rather than
+/// deserialised on its own.
 #[test]
-fn a_partial_replace_is_refused_rather_than_defaulting_the_fields_it_omits() {
+fn a_partial_replace_changes_only_what_it_names() {
     let (registry, config) = registry_with_config();
 
-    let error = registry
-        .install("sensor_0.config", Mode::Replace, json!({ "scale": 1.0 }))
-        .expect_err("a partial replace was accepted")
-        .to_string();
+    registry
+        .install(
+            "sensor_0.config",
+            Request::replace(json!({ "scale": 1.0 })).unwrap(),
+        )
+        .expect("a partial replace was refused");
 
-    assert!(error.contains("bias"), "{error}");
-    assert!(error.contains("sample_hz"), "{error}");
-    assert!(error.contains("rng_seed"), "{error}");
-    assert!(error.contains("patch"), "no way out offered: {error}");
-
-    // The configured baseline is untouched — nothing was installed.
-    assert_eq!(config.read().sample_hz, 200.0);
-    assert_eq!(config.read().scale, 4.0);
-    assert!(!config.is_overridden());
+    assert_eq!(config.read().scale, 1.0, "the named field did not change");
+    assert_eq!(
+        config.read().sample_hz,
+        200.0,
+        "an omitted field was reset to the type default"
+    );
 }
 
 #[test]
@@ -304,8 +302,10 @@ fn a_replace_naming_every_field_is_accepted() {
     registry
         .install(
             "sensor_0.config",
-            Mode::Replace,
-            json!({ "bias": 1.0, "scale": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+            Request::replace(
+                json!({ "bias": 1.0, "scale": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+            )
+            .unwrap(),
         )
         .expect("a complete replace was refused");
 
@@ -313,14 +313,17 @@ fn a_replace_naming_every_field_is_accepted() {
     assert_eq!(config.read().scale, 2.0);
 }
 
-/// The other modes are partial by definition or carry no payload at all, so the
-/// completeness rule must not reach them.
+/// A freeze and a default take a selection rather than a message, so an empty
+/// payload is a whole-message request and not a shortfall.
 #[test]
-fn only_replace_has_to_be_complete() {
+fn a_freeze_and_a_default_accept_an_empty_payload() {
     let (registry, config) = registry_with_config();
 
     registry
-        .install("sensor_0.config", Mode::Patch, json!({ "scale": 1.0 }))
+        .install(
+            "sensor_0.config",
+            Request::replace(json!({ "scale": 1.0 })).unwrap(),
+        )
         .expect("a one-field patch was refused");
     assert_eq!(config.read().scale, 1.0);
     assert_eq!(
@@ -329,9 +332,13 @@ fn only_replace_has_to_be_complete() {
         "patch touched a field it did not name"
     );
 
-    for mode in [Mode::Freeze, Mode::Default] {
+    for request in [
+        Request::freeze(json!(null)).unwrap(),
+        Request::default(json!(null)).unwrap(),
+    ] {
+        let mode = request.mode();
         registry
-            .install("sensor_0.config", mode, json!(null))
+            .install("sensor_0.config", request)
             .unwrap_or_else(|err| panic!("{mode:?} was refused as incomplete: {err}"));
     }
 }
@@ -346,14 +353,16 @@ fn a_typo_in_a_complete_replace_reports_the_typo_not_the_shortfall() {
     let error = registry
         .install(
             "sensor_0.config",
-            Mode::Replace,
-            json!({ "bias": 1.0, "scael": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+            Request::replace(
+                json!({ "bias": 1.0, "scael": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+            )
+            .unwrap(),
         )
         .expect_err("a misspelled field was accepted")
         .to_string();
 
-    assert!(error.contains("unknown field 'scael'"), "{error}");
-    assert!(error.contains("did you mean 'scale'"), "{error}");
+    assert!(error.contains("unknown field '/scael'"), "{error}");
+    assert!(error.contains("did you mean '/scale'"), "{error}");
     assert!(
         !error.contains("omits"),
         "the shortfall masked the typo: {error}"
@@ -368,15 +377,13 @@ fn a_replace_hides_a_patch_rather_than_destroying_it() {
     let patch = registry
         .install(
             "sensor_0.output_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 10.0 }),
+            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
     let replace = registry
         .install(
             "sensor_0.output_msg",
-            Mode::Replace,
-            serde_json::to_value(reading(20.0)).unwrap(),
+            Request::replace(serde_json::to_value(reading(20.0)).unwrap()).unwrap(),
         )
         .unwrap();
 
@@ -405,8 +412,7 @@ fn clearing_by_id_on_an_unknown_target_is_an_error_not_a_false() {
     let id = registry
         .install(
             "sensor_0.output_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 10.0 }),
+            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
@@ -423,7 +429,7 @@ fn an_unknown_target_is_an_error() {
     let (registry, _output) = registry_with_reading();
 
     let error = registry
-        .install("nope.output_msg", Mode::Patch, json!({}))
+        .install("nope.output_msg", Request::replace(json!({})).unwrap())
         .unwrap_err()
         .to_string();
 
@@ -441,7 +447,7 @@ fn an_empty_registry_says_so_rather_than_blaming_the_name() {
     let registry = Registry::new();
 
     let error = registry
-        .install("sensor_0.config", Mode::Patch, json!({}))
+        .install("sensor_0.config", Request::replace(json!({})).unwrap())
         .unwrap_err()
         .to_string();
 
@@ -470,8 +476,7 @@ fn one_module_type_can_be_registered_under_two_names() {
     registry
         .install(
             "sensor_p.output_msg",
-            Mode::Patch,
-            json!({ "angle_deg": 9.0 }),
+            Request::replace(json!({ "angle_deg": 9.0 })).unwrap(),
         )
         .unwrap();
 
@@ -542,8 +547,8 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
     registry
         .install(
             "device_0.config",
-            Mode::ReplaceAt,
-            json!([{ "op": "replace", "path": "/bias_xyz/2", "value": 0.5 }]),
+            Request::replace(json!([{ "op": "replace", "path": "/bias_xyz/2", "value": 0.5 }]))
+                .unwrap(),
         )
         .expect("an element of a registered array was refused");
 
@@ -551,20 +556,20 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
 }
 
 #[test]
-fn a_replace_at_naming_a_field_the_type_does_not_have_is_refused_with_a_suggestion() {
+fn an_operation_naming_a_field_the_type_does_not_have_is_refused_with_a_suggestion() {
     let (registry, _output) = registry_with_vector();
 
     let error = registry
         .install(
             "device_0.config",
-            Mode::ReplaceAt,
-            json!([{ "op": "replace", "path": "/sample_hs", "value": 1.0 }]),
+            Request::replace(json!([{ "op": "replace", "path": "/sample_hs", "value": 1.0 }]))
+                .unwrap(),
         )
         .expect_err("a misspelled field was accepted");
 
     let error = format!("{error:#}");
-    assert!(error.contains("unknown field 'sample_hs'"), "{error}");
-    assert!(error.contains("did you mean 'sample_hz'"), "{error}");
+    assert!(error.contains("unknown field '/sample_hs'"), "{error}");
+    assert!(error.contains("did you mean '/sample_hz'"), "{error}");
 }
 
 /// An index is only meaningful under an array. Allowing it anywhere would let
@@ -576,27 +581,36 @@ fn an_index_under_a_field_that_is_not_an_array_is_refused() {
     let error = registry
         .install(
             "device_0.config",
-            Mode::ReplaceAt,
-            json!([{ "op": "replace", "path": "/sample_hz/0", "value": 1.0 }]),
+            Request::replace(json!([{ "op": "replace", "path": "/sample_hz/0", "value": 1.0 }]))
+                .unwrap(),
         )
         .expect_err("an index into a scalar was accepted");
 
-    assert!(format!("{error:#}").contains("unknown field 'sample_hz.0'"));
+    assert!(format!("{error:#}").contains("unknown field '/sample_hz/0'"));
 }
 
+/// Both patch formats reach the same target through the same mode, told apart
+/// by their shape alone.
 #[test]
-fn a_replace_at_document_that_is_not_a_list_of_operations_is_refused() {
-    let (registry, _output) = registry_with_vector();
+fn a_replace_accepts_a_merge_document_and_an_operation_document_alike() {
+    let (registry, output) = registry_with_vector();
 
-    let error = registry
+    registry
         .install(
             "device_0.config",
-            Mode::ReplaceAt,
-            json!({ "bias_xyz": [1.0, 2.0, 3.0] }),
+            Request::replace(json!({ "bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
         )
-        .expect_err("a merge document was accepted as a patch document");
+        .expect("a merge document was refused");
+    assert_eq!(output.read().bias_xyz, [1.0, 2.0, 3.0]);
 
-    assert!(format!("{error:#}").contains("must be an array of operations"));
+    registry
+        .install(
+            "device_0.config",
+            Request::replace(json!([{ "op": "replace", "path": "/bias_xyz/1", "value": 9.0 }]))
+                .unwrap(),
+        )
+        .expect("an operation document was refused");
+    assert_eq!(output.read().bias_xyz, [1.0, 9.0, 3.0]);
 }
 
 /// The schema and the payload check have to agree about arrays too: `payload_paths`
@@ -608,8 +622,7 @@ fn a_whole_array_patch_still_validates_against_the_array_itself() {
     registry
         .install(
             "device_0.config",
-            Mode::Patch,
-            json!({ "bias_xyz": [1.0, 2.0, 3.0] }),
+            Request::replace(json!({ "bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
         )
         .expect("a whole-array patch was refused");
 
@@ -648,7 +661,7 @@ fn a_replace_may_name_fields_the_type_default_leaves_unpopulated() {
     .unwrap();
 
     registry
-        .install("earth.output_msg", Mode::Replace, complete)
+        .install("earth.output_msg", Request::replace(complete).unwrap())
         .expect("a complete, typed replacement was refused");
 
     assert!(
@@ -678,8 +691,7 @@ fn a_patch_may_name_a_field_inside_an_option_the_module_populated() {
     registry
         .install(
             "earth.output_msg",
-            Mode::Patch,
-            json!({ "orientation": { "inertial_to_fixed_dot": spun } }),
+            Request::replace(json!({ "orientation": { "inertial_to_fixed_dot": spun } })).unwrap(),
         )
         .expect("patching a populated option was refused");
 
@@ -712,8 +724,7 @@ fn a_typo_inside_an_option_is_still_refused() {
     let error = registry
         .install(
             "earth.output_msg",
-            Mode::Patch,
-            json!({ "orientation": { "inertial_to_fixed_dto": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] } }),
+            Request::replace(json!({ "orientation": { "inertial_to_fixed_dto": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] } })).unwrap(),
         )
         .unwrap_err()
         .to_string();
@@ -746,8 +757,8 @@ fn a_valid_field_with_an_unusable_value_reports_the_value_not_the_name() {
     let error = registry
         .install(
             "earth.output_msg",
-            Mode::Patch,
-            json!({ "orientation": { "inertial_to_fixed": "not a matrix" } }),
+            Request::replace(json!({ "orientation": { "inertial_to_fixed": "not a matrix" } }))
+                .unwrap(),
         )
         .unwrap_err()
         .to_string();
@@ -787,7 +798,7 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
     payload["orientation"]["inertial_to_fixed"] = json!("not a matrix");
 
     let error = registry
-        .install("earth.output_msg", Mode::Replace, payload)
+        .install("earth.output_msg", Request::replace(payload).unwrap())
         .unwrap_err()
         .to_string();
 
@@ -811,10 +822,8 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
 fn every_mode_serialises_to_the_name_a_client_sends() {
     for (mode, name) in [
         (Mode::Replace, "replace"),
-        (Mode::Patch, "patch"),
         (Mode::Freeze, "freeze"),
         (Mode::Default, "default"),
-        (Mode::ReplaceAt, "replaceAt"),
     ] {
         assert_eq!(serde_json::to_value(mode).unwrap(), json!(name));
         assert_eq!(
@@ -831,7 +840,14 @@ fn every_mode_serialises_to_the_name_a_client_sends() {
 /// its own parser, where the saved scenarios needing it actually live.
 #[test]
 fn a_mode_name_this_crate_does_not_define_is_refused() {
-    for undefined in ["pointerReplace", "jsonPatch", "replaceat", "replace_at"] {
+    for undefined in [
+        "patch",
+        "replaceAt",
+        "pointerReplace",
+        "jsonPatch",
+        "replaceat",
+        "replace_at",
+    ] {
         assert!(
             serde_json::from_value::<Mode>(json!(undefined)).is_err(),
             "'{undefined}' deserialised into a mode this crate never named"
@@ -858,14 +874,23 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     let error = registry
         .install(
             "earth.output_msg",
-            Mode::Patch,
-            json!({ "orientation.inertial_to_fixed": 1.0 }),
+            Request::replace(json!({ "orientation.inertial_to_fixed": 1.0 })).unwrap(),
         )
         .expect_err("a dotted key was accepted as the path it resembles");
 
+    // No bespoke guard is needed for this any more. Pointer paths spell the two
+    // readings differently — `/orientation.inertial_to_fixed` for a member whose
+    // name contains a dot, `/orientation/inertial_to_fixed` for the nested
+    // field — so the ordinary unknown-field check separates them, and its "did
+    // you mean" happens to be exactly the correction the sender needs.
+    let error = error.to_string();
     assert!(
-        error.to_string().contains("is a path, not a field name"),
-        "the error did not explain the mistake: {error}"
+        error.contains("unknown field '/orientation.inertial_to_fixed'"),
+        "the error did not name the key as written: {error}"
+    );
+    assert!(
+        error.contains("did you mean '/orientation/inertial_to_fixed'"),
+        "the error did not offer the path the sender meant: {error}"
     );
     assert!(
         output.installed_overrides().is_empty(),
@@ -876,7 +901,7 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
 /// A location may be a whole object, but the schema lists only leaves, so a
 /// container path was reported as an unknown field though its pointer resolved.
 #[test]
-fn a_replace_at_may_address_a_whole_object_valued_field() {
+fn an_operation_may_address_a_whole_object_valued_field() {
     use crate::messages::{PlanetOrientation, PlanetStateMsg};
     use nalgebra::Matrix3;
 
@@ -896,8 +921,10 @@ fn a_replace_at_may_address_a_whole_object_valued_field() {
     registry
         .install(
             "earth.output_msg",
-            Mode::ReplaceAt,
-            json!([{ "op": "replace", "path": "/orientation", "value": replacement }]),
+            Request::replace(
+                json!([{ "op": "replace", "path": "/orientation", "value": replacement }]),
+            )
+            .unwrap(),
         )
         .expect("replacing a whole object-valued field was refused");
 
@@ -912,12 +939,12 @@ fn a_replace_at_may_address_a_whole_object_valued_field() {
     let error = registry
         .install(
             "earth.output_msg",
-            Mode::ReplaceAt,
-            json!([{ "op": "replace", "path": "/orientatio", "value": {} }]),
+            Request::replace(json!([{ "op": "replace", "path": "/orientatio", "value": {} }]))
+                .unwrap(),
         )
         .expect_err("a misspelled container path was accepted");
     assert!(
-        error.to_string().contains("unknown field 'orientatio'"),
+        error.to_string().contains("unknown field '/orientatio'"),
         "{error}"
     );
 }
@@ -958,7 +985,7 @@ fn a_registered_input_follows_a_later_reconnect() {
     // A freeze captures what the target reads now. Against a stale connection it
     // pinned the consumer to a value no current producer ever published.
     registry
-        .install("reading.input_msg", Mode::Freeze, json!({}))
+        .install("reading.input_msg", Request::freeze(json!({})).unwrap())
         .unwrap();
     assert_eq!(
         input.read().value,
@@ -1001,7 +1028,10 @@ fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
         .register("reading.0", &inputs[0], TargetKind::Input)
         .unwrap();
     registry
-        .install("reading.0", Mode::Patch, json!({ "value": 99.0 }))
+        .install(
+            "reading.0",
+            Request::replace(json!({ "value": 99.0 })).unwrap(),
+        )
         .unwrap();
 
     assert_eq!(inputs[0].read().value, 99.0, "the fault did not apply");
@@ -1009,8 +1039,8 @@ fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
     assert_eq!(inputs[2].read().value, 2.0, "the fault leaked to a sibling");
 }
 
-/// A field renamed to carry a dot is addressed by exactly the flat key the check
-/// above refuses, so the type's own shape has to decide which is which.
+/// A field renamed to carry a dot is addressable, and is not confused with the
+/// nested path that used to flatten to the same string.
 #[test]
 fn a_field_whose_name_contains_the_separator_is_still_addressable() {
     #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -1028,23 +1058,31 @@ fn a_field_whose_name_contains_the_separator_is_still_addressable() {
     // The schema advertises it in the only form serde accepts.
     let spec = registry.spec("device.config").unwrap();
     assert!(
-        spec.fields.iter().any(|field| field.path == "gain.value"),
+        spec.fields.iter().any(|field| field.path == "/gain.value"),
         "the renamed field was not advertised: {:?}",
         spec.fields
     );
 
     registry
-        .install("device.config", Mode::Patch, json!({ "gain.value": 5.0 }))
+        .install(
+            "device.config",
+            Request::replace(json!({ "gain.value": 5.0 })).unwrap(),
+        )
         .expect("the renamed field was refused as a path");
     assert_eq!(output.read().gain_value, 5.0);
     assert_eq!(output.read().plain, 0.0, "the sibling was disturbed");
 
-    // A dot the type cannot account for is still refused.
+    // A dot the type cannot account for is still refused — now by the ordinary
+    // name check, because `/plain.value` is a path the schema does not list and
+    // is spelled differently from the nested `/plain/value` it resembles.
     let error = registry
-        .install("device.config", Mode::Patch, json!({ "plain.value": 1.0 }))
+        .install(
+            "device.config",
+            Request::replace(json!({ "plain.value": 1.0 })).unwrap(),
+        )
         .expect_err("an unaccounted dotted key was accepted");
     assert!(
-        error.to_string().contains("is a path, not a field name"),
+        error.to_string().contains("unknown field '/plain.value'"),
         "{error}"
     );
 }

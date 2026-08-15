@@ -585,6 +585,12 @@ fn registry_with_stages() -> (Registry, Output<StageConfig>) {
     (registry, output)
 }
 
+/// A message that is not a struct with fields. `SimulationMessage` is a blanket
+/// impl over `Clone + Default + Serialize + DeserializeOwned`, so this is one,
+/// and the root is the only path it has.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+struct Level(f64);
+
 fn registry_with_vector() -> (Registry, Output<VectorConfig>) {
     let registry = Registry::new();
     let output = Output::new(VectorConfig {
@@ -1044,6 +1050,41 @@ fn a_typo_inside_a_root_assignment_is_refused() {
         1.5,
         "the value was changed anyway"
     );
+}
+
+/// The root is the one pointer with no name in it to misspell, but the name
+/// check judged it like a field and found the type did not have it. A scalar
+/// message could be frozen and defaulted whole and not replaced, so the three
+/// modes disagreed about whether such a target held anything at all.
+#[test]
+fn a_message_that_is_a_scalar_is_replaceable_at_its_root() {
+    let registry = Registry::new();
+    let output = Output::new(Level(1.0));
+    registry
+        .register("device_0.level", &output, CONFIG)
+        .unwrap();
+
+    registry
+        .install(
+            "device_0.level",
+            Request::replace(json!({ "": 9.0 })).unwrap(),
+        )
+        .expect("the only path a scalar message has was refused");
+
+    assert_eq!(output.read(), Level(9.0));
+
+    // Exempt from the name check, not from the apply. The root reported "unknown
+    // field ''" for a value of the wrong type too, naming the pointer when the
+    // value was what was wrong.
+    let error = registry
+        .install(
+            "device_0.level",
+            Request::replace(json!({ "": "nope" })).unwrap(),
+        )
+        .expect_err("a string was installed into an f64")
+        .to_string();
+    assert!(error.contains("invalid type"), "{error}");
+    assert!(!error.contains("unknown field"), "{error}");
 }
 
 /// An element is a container too, and every way of reaching one hid the same

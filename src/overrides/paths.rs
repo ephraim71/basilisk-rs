@@ -27,6 +27,15 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, request: &Request) -> Resu
         .collect();
 
     for path in request.named_paths() {
+        // The root is the one pointer with no name in it to misspell, so it is
+        // always a path the type has. A payload assigning an object there had
+        // its fields walked and named one by one, and reaches here only when it
+        // assigned something with no fields — a scalar, which a newtype message
+        // is. Refusing it told the operator such a message had no such field,
+        // when what they had was the only field it has.
+        if path.is_empty() {
+            continue;
+        }
         if known.contains(path.as_str()) || indexes_past_a_known_array(spec, &path) {
             continue;
         }

@@ -110,23 +110,24 @@ fn escape_segment(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-/// Visits every addressable leaf of `value` with its RFC 6901 pointer.
+/// Visits every leaf the schema advertises, with its RFC 6901 pointer.
 ///
-/// Objects recurse; arrays do not. A JSON merge replaces an array wholesale, so
-/// an element path would advertise a per-index patch the merge cannot honour.
-/// An empty object is a leaf for the same reason: there is nothing under it to
-/// name. The root itself is not a field, so it is never visited.
+/// Objects recurse; arrays stop. An element's path is derivable from the array's
+/// own default, so publishing both would have a client render one control per
+/// component *and* another for the whole vector. An empty object stops for the
+/// opposite reason: there is nothing under it to name. The root itself is not a
+/// field, so it is never visited.
 ///
-/// One walk serves both the schema and the payload check, so a target cannot
-/// advertise a path shape that the check then reads differently. That is why
-/// this is shared with [`super::paths`] rather than duplicated there.
+/// What a payload may *address* is wider than what the schema advertises — an
+/// element is addressable whether or not it is listed. That is
+/// [`walk_addressable`], and the two differ only below an array.
 ///
 /// Pointers rather than dotted paths, and that choice is load-bearing: dotted
 /// joining flattens `{"a.b": 1}` and `{"a": {"b": 1}}` to the same string, so a
 /// mistyped path could not be told from a field whose name contains a dot.
 /// Those are `/a.b` and `/a/b` here, and the name check separates them without
 /// help.
-pub(super) fn walk_leaves<F: FnMut(&str, &Value)>(prefix: &str, value: &Value, visit: &mut F) {
+fn walk_leaves<F: FnMut(&str, &Value)>(prefix: &str, value: &Value, visit: &mut F) {
     if let Value::Object(map) = value
         && !map.is_empty()
     {
@@ -141,15 +142,63 @@ pub(super) fn walk_leaves<F: FnMut(&str, &Value)>(prefix: &str, value: &Value, v
     }
 }
 
+/// Visits every place a payload may address: [`walk_leaves`]'s leaves, plus each
+/// array element and everything inside it.
+///
+/// An array is visited *and* descended, because both are addressable — a payload
+/// may assign the whole vector or one component. Descending is what lets a field
+/// inside an array element be checked at all: an object nested in an array is
+/// otherwise a leaf, and a payload supplying `[{"gaim": 9}]` for it would name
+/// only the array, leaving serde to drop the misspelling in silence.
+///
+/// Not what the schema publishes, and deliberately — see [`walk_leaves`].
+pub(super) fn walk_addressable<F: FnMut(&str, &Value)>(prefix: &str, value: &Value, visit: &mut F) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            for (key, child) in map {
+                let path = format!("{prefix}/{}", escape_segment(key));
+                walk_addressable(&path, child, visit);
+            }
+        }
+        Value::Array(items) if !items.is_empty() => {
+            if !prefix.is_empty() {
+                visit(prefix, value);
+            }
+            for (index, item) in items.iter().enumerate() {
+                walk_addressable(&format!("{prefix}/{index}"), item, visit);
+            }
+        }
+        _ => {
+            if !prefix.is_empty() {
+                visit(prefix, value);
+            }
+        }
+    }
+}
+
 /// One entry per overridable leaf of a type default.
 pub(super) fn leaf_fields(type_default: &Value) -> Vec<FieldSpec> {
     let mut fields = Vec::new();
     walk_leaves("", type_default, &mut |path, value| {
-        fields.push(FieldSpec {
-            path: path.to_string(),
-            kind: value_kind(value),
-            default: value.clone(),
-        });
+        fields.push(field_spec(path, value));
     });
     fields
+}
+
+/// One entry per place a payload may address on `value`. What the name checks
+/// judge a payload against; wider than what [`leaf_fields`] publishes.
+pub(super) fn addressable_fields(value: &Value) -> Vec<FieldSpec> {
+    let mut fields = Vec::new();
+    walk_addressable("", value, &mut |path, value| {
+        fields.push(field_spec(path, value));
+    });
+    fields
+}
+
+fn field_spec(path: &str, value: &Value) -> FieldSpec {
+    FieldSpec {
+        path: path.to_string(),
+        kind: value_kind(value),
+        default: value.clone(),
+    }
 }

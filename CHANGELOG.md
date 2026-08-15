@@ -69,7 +69,10 @@ actually have written against. Nothing has a deprecated alias.
   misspelled name reported success and changed nothing. The names are checked
   against the message the payload *produces*, not against `T::default()`, so a
   field inside a populated `Option` is addressable even though the default has
-  that option as `None` and cannot advertise its children.
+  that option as `None` and cannot advertise its children. Every field a payload
+  supplies is checked, not just the pointer it assigns to: a whole object, or an
+  array of them, is checked through to its leaves, so `{"/stages": [{"gaim": 9}]}`
+  is reported at `/stages/0/gaim` rather than defaulting the field it misspells.
 - A payload naming a field the type does not have is refused before it is
   installed, and a pointer that does not resolve is refused with it, so no rule
   is installed that would quietly do nothing.

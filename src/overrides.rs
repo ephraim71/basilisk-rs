@@ -33,7 +33,7 @@ use serde_json::Value;
 use crate::messages::Port;
 
 use paths::{children_of_null_fields, reject_unknown_paths};
-use schema::leaf_fields;
+use schema::{addressable_fields, leaf_fields};
 
 pub use rule::{Assignment, Document, Mode, Pointer, Request, Rule, RuleId, Selection};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
@@ -198,7 +198,7 @@ impl Target {
         match self.backend.preview(request.clone()) {
             // The message produced is the authority on which fields exist.
             Ok(candidate) => {
-                spec.fields = leaf_fields(&candidate);
+                spec.fields = addressable_fields(&candidate);
                 reject_unknown_paths(&spec, request)
             }
             // Two very different reasons the payload might not apply. Its
@@ -212,8 +212,9 @@ impl Target {
             // may have options the default leaves `None`. Unknown to both is a
             // name error. Otherwise the apply's error stands.
             Err(apply_error) => {
+                spec.fields = addressable_fields(&spec.type_default);
                 if let Ok(effective) = self.backend.effective() {
-                    spec.fields.extend(leaf_fields(&effective));
+                    spec.fields.extend(addressable_fields(&effective));
                 }
                 // Neither value can see inside an option that is `None` in both,
                 // so a path under one is not evidence of a misspelling.

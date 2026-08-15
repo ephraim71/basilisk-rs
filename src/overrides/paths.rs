@@ -27,7 +27,7 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, request: &Request) -> Resu
         .collect();
 
     for path in request.named_paths() {
-        if known.contains(path.as_str()) || indexes_a_known_array(spec, &path) {
+        if known.contains(path.as_str()) || indexes_past_a_known_array(spec, &path) {
             continue;
         }
         // A pointer names one place, and a place may be a whole object. The
@@ -83,31 +83,30 @@ fn descends_from(path: &str, parent: &str) -> bool {
     path.len() > parent.len() && path.starts_with(parent) && path.as_bytes()[parent.len()] == b'/'
 }
 
-/// Whether `path` reaches into a field the type holds as an array.
+/// Whether `path` reaches past the end of an array the reference value holds.
 ///
-/// The schema names arrays rather than their elements, and deliberately: an
-/// element path is derivable from the array's own default, so listing both
-/// would have a client render one control per component *and* another for the
-/// whole vector. Checking an index against its parent instead also keeps a
-/// growable array addressable past the length its default happens to have.
+/// Elements that exist are enumerated, so an index within range is checked like
+/// any other path — that is what catches `/wheels/0/torqeu`. Past the end there
+/// is nothing to check against, and an array the payload grows is legitimately
+/// addressable there, so the pointer resolving reports what misses instead. An
+/// array that is empty here is entirely unchecked for the same reason.
 ///
 /// Every ancestor is tried, not just the immediate parent: an element need not
 /// end the path. `RwArrayConfigMsg::spin_axes_body` is one 3-vector per wheel,
 /// so wheel 0's y-axis is `/spin_axes_body/0/1`, two segments below the array.
-///
-/// Below the array nothing is checked, since a leaf advertises no element
-/// structure to check against. The pointer resolving reports what misses, with
-/// the path in it.
-fn indexes_a_known_array(spec: &TargetSpec, path: &str) -> bool {
+fn indexes_past_a_known_array(spec: &TargetSpec, path: &str) -> bool {
     let mut boundary = path.len();
     while let Some(slash) = path[..boundary].rfind('/') {
         let ancestor = &path[..slash];
         let beneath = path[slash + 1..].split('/').next().unwrap_or_default();
-        if beneath.parse::<usize>().is_ok()
-            && spec
-                .fields
-                .iter()
-                .any(|field| field.path == ancestor && field.kind == "array")
+        if let Ok(index) = beneath.parse::<usize>()
+            && spec.fields.iter().any(|field| {
+                field.path == ancestor
+                    && field
+                        .default
+                        .as_array()
+                        .is_some_and(|items| index >= items.len())
+            })
         {
             return true;
         }
@@ -129,15 +128,48 @@ fn short_type_name(type_name: &str) -> &str {
 fn nearest_path(known: &BTreeSet<&str>, path: &str) -> String {
     known
         .iter()
-        .find(|candidate| {
-            candidate.len().abs_diff(path.len()) <= 1
-                && candidate
-                    .chars()
-                    .filter(|character| !path.contains(*character))
-                    .count()
-                    <= 1
-        })
+        .find(|candidate| differs_by_one_edit(candidate, path))
         .map_or_else(String::new, |candidate| {
             format!(" (did you mean '{candidate}'?)")
         })
+}
+
+/// Whether one edit turns `left` into `right`: a character changed, inserted,
+/// deleted, or swapped with its neighbour.
+///
+/// Measured rather than approximated, and that matters more than it looks: array
+/// elements put every index in the known set, so a loose measure has hundreds of
+/// near-identical paths to choose wrongly among. Counting characters the two
+/// strings do not share suggested `/spin_axes_body/10/0` for
+/// `/spin_axes_body/0/why`, which shares all of them.
+fn differs_by_one_edit(left: &str, right: &str) -> bool {
+    let (left, right): (Vec<char>, Vec<char>) = (left.chars().collect(), right.chars().collect());
+    let (short, long) = if left.len() <= right.len() {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+
+    // What matches from each end. An insertion or deletion is covered when the
+    // two ends meet; a substitution when they leave one character between them.
+    let head = short.iter().zip(long).take_while(|(a, b)| a == b).count();
+    let tail = short
+        .iter()
+        .rev()
+        .zip(long.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let same_length = short.len() == long.len();
+    if head + tail + usize::from(same_length) >= short.len() {
+        return true;
+    }
+
+    // A swap leaves two characters between the ends, each the other's opposite.
+    same_length
+        && head + tail + 2 == short.len()
+        && short[head] == long[head + 1]
+        && short[head + 1] == long[head]
 }

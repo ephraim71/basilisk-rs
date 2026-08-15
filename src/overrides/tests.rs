@@ -560,6 +560,31 @@ fn registry_with_nested() -> (Registry, Output<NestedConfig>) {
     (registry, output)
 }
 
+/// An array of objects, which is where a container assignment reaches furthest:
+/// one payload supplies every field of every element.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct Stage {
+    gain: f64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct StageConfig {
+    stages: Vec<Stage>,
+}
+
+fn registry_with_stages() -> (Registry, Output<StageConfig>) {
+    let registry = Registry::new();
+    let output = Output::new(StageConfig {
+        stages: vec![Stage { gain: 1.5 }],
+    });
+    registry
+        .register("device_0.config", &output, CONFIG)
+        .unwrap();
+    (registry, output)
+}
+
 fn registry_with_vector() -> (Registry, Output<VectorConfig>) {
     let registry = Registry::new();
     let output = Output::new(VectorConfig {
@@ -608,8 +633,9 @@ fn an_index_inside_an_array_element_is_addressable_too() {
 
     assert_eq!(output.read().spin_axes_body[0][1], 7.0);
 
-    // Below the array the schema describes nothing, so nonsense there is the
-    // apply's to refuse rather than the name check's to guess at.
+    // A name below an array is checked like any other, and no component of a
+    // 3-vector is one edit from `why`, so nothing is suggested. 108 element
+    // paths are in reach here — a looser measure offered `/spin_axes_body/10/0`.
     let error = registry
         .install(
             "rw.config",
@@ -617,7 +643,11 @@ fn an_index_inside_an_array_element_is_addressable_too() {
         )
         .expect_err("a path into nothing was installed")
         .to_string();
-    assert!(error.contains("/spin_axes_body/0/why"), "{error}");
+    assert!(
+        error.contains("unknown field '/spin_axes_body/0/why'"),
+        "{error}"
+    );
+    assert!(!error.contains("did you mean"), "{error}");
 }
 
 #[test]
@@ -1007,11 +1037,110 @@ fn a_typo_inside_a_root_assignment_is_refused() {
         .to_string();
 
     assert!(error.contains("'/nestde/gain'"), "{error}");
+    // Two letters swapped, which is a typo like any other and still one edit.
+    assert!(error.contains("did you mean '/nested/gain'"), "{error}");
     assert_eq!(
         output.read().nested.gain,
         1.5,
         "the value was changed anyway"
     );
+}
+
+/// An element is a container too, and every way of reaching one hid the same
+/// typo: the walk that finds supplied fields stopped at arrays, and what did get
+/// named below an array was waved through unchecked. All three spellings supply
+/// `/stages/0/gaim`, and each left `gain` at its default while reporting success.
+#[test]
+fn a_typo_inside_an_array_element_is_refused_however_it_is_reached() {
+    for payload in [
+        json!({ "/stages": [{ "gaim": 9.0 }] }),
+        json!({ "/stages/0": { "gaim": 9.0 } }),
+        json!({ "": { "stages": [{ "gaim": 9.0 }] } }),
+    ] {
+        let (registry, output) = registry_with_stages();
+
+        let error = registry
+            .install(
+                "device_0.config",
+                Request::replace(payload.clone()).unwrap(),
+            )
+            .expect_err("a typo inside an array element was installed")
+            .to_string();
+
+        assert!(error.contains("'/stages/0/gaim'"), "{payload}: {error}");
+        assert!(
+            error.contains("did you mean '/stages/0/gain'"),
+            "{payload}: {error}"
+        );
+        assert_eq!(
+            output.read().stages[0].gain,
+            1.5,
+            "the value was changed anyway: {payload}"
+        );
+    }
+}
+
+/// Checking elements must not cost the array its own paths: one that grows,
+/// empties, or is written whole is still the operator's to command.
+#[test]
+fn an_array_may_still_be_grown_emptied_and_written_whole() {
+    for (payload, expected) in [
+        (
+            json!({ "/stages": [{ "gain": 1.0 }, { "gain": 2.0 }] }),
+            vec![1.0, 2.0],
+        ),
+        (json!({ "/stages": [] }), vec![]),
+        (json!({ "/stages/0/gain": 4.0 }), vec![4.0]),
+    ] {
+        let (registry, output) = registry_with_stages();
+
+        registry
+            .install(
+                "device_0.config",
+                Request::replace(payload.clone()).unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{payload} was refused: {error:#}"));
+
+        let gains: Vec<f64> = output.read().stages.iter().map(|s| s.gain).collect();
+        assert_eq!(gains, expected, "{payload}");
+    }
+}
+
+/// Past the end of an array there is no element to check a name against, and an
+/// index there may be one the payload means to grow into. The apply answers,
+/// naming the pointer, rather than the name check guessing "unknown field".
+#[test]
+fn an_index_past_the_end_of_an_array_is_left_to_the_apply() {
+    let (registry, _output) = registry_with_stages();
+
+    let error = registry
+        .install(
+            "device_0.config",
+            Request::replace(json!({ "/stages/7/gain": 1.0 })).unwrap(),
+        )
+        .expect_err("an index past the end was installed")
+        .to_string();
+
+    assert!(error.contains("/stages/7/gain"), "{error}");
+    assert!(!error.contains("unknown field"), "{error}");
+}
+
+/// The wider walk is the name check's, not the schema's. A client renders one
+/// control per advertised field, so listing `/stages` *and* every element inside
+/// it would draw the same value twice.
+#[test]
+fn checking_elements_does_not_add_them_to_the_published_schema() {
+    let (registry, _output) = registry_with_stages();
+
+    let paths: Vec<String> = registry
+        .spec("device_0.config")
+        .unwrap()
+        .fields
+        .into_iter()
+        .map(|field| field.path)
+        .collect();
+
+    assert_eq!(paths, ["/stages"]);
 }
 
 /// A location may be a whole object, but the schema lists only leaves, so a

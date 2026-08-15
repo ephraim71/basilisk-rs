@@ -8,7 +8,7 @@ use crate::messages::SpacecraftStateMsg;
 use crate::messages::{ArrayMotorTorqueMsg, MAX_EFF_COUNT};
 
 #[test]
-fn replace_override_substitutes_the_complete_message() {
+fn a_replace_naming_every_field_substitutes_the_whole_message() {
     let output = Output::new(PowerStorageStatusMsg::default());
 
     output
@@ -461,7 +461,7 @@ fn freeze_override_holds_effective_value() {
 }
 
 // -----------------------------------------------------------------------
-// replaceAt: addressing one element of a vector
+// operation documents: addressing one element of a vector
 // -----------------------------------------------------------------------
 
 fn spinning(rate: [f64; 3]) -> SpacecraftStateMsg {

@@ -314,7 +314,7 @@ fn a_replace_naming_every_field_is_accepted() {
 }
 
 /// A freeze and a default take a selection rather than a message, so an empty
-/// payload is a whole-message request and not a shortfall.
+/// payload names the whole message rather than naming nothing.
 #[test]
 fn a_freeze_and_a_default_accept_an_empty_payload() {
     let (registry, config) = registry_with_config();
@@ -343,11 +343,11 @@ fn a_freeze_and_a_default_accept_an_empty_payload() {
     }
 }
 
-/// Both checks run against one spec, and the unknown-path check runs first. A
-/// misspelling in an otherwise complete replace should read as the typo it is,
-/// not as a missing field plus a mystery one.
+/// Serde ignores a field it does not recognise, so a misspelling merges
+/// cleanly, reports success and changes nothing. The check names it and offers
+/// the field it was probably meant to be.
 #[test]
-fn a_typo_in_a_complete_replace_reports_the_typo_not_the_shortfall() {
+fn a_typo_in_a_replace_is_reported_with_the_field_it_resembles() {
     let (registry, _config) = registry_with_config();
 
     let error = registry
@@ -363,16 +363,13 @@ fn a_typo_in_a_complete_replace_reports_the_typo_not_the_shortfall() {
 
     assert!(error.contains("unknown field '/scael'"), "{error}");
     assert!(error.contains("did you mean '/scale'"), "{error}");
-    assert!(
-        !error.contains("omits"),
-        "the shortfall masked the typo: {error}"
-    );
 }
 
-/// A `replace` hides the patch beneath it while installed; removing the replace
-/// uncovers it again, and the patch's own id still names its own layer.
+/// A rule naming the same field as the one beneath it wins while installed,
+/// because it composes last — not because it displaced anything. Removing it
+/// uncovers the earlier value, and each id still names its own layer.
 #[test]
-fn a_replace_hides_a_patch_rather_than_destroying_it() {
+fn removing_a_rule_uncovers_the_value_the_one_beneath_it_set() {
     let (registry, output) = registry_with_reading();
     let patch = registry
         .install(
@@ -514,7 +511,7 @@ fn targets_enumerates_every_registration_in_name_order() {
 }
 
 // ---------------------------------------------------------------------------
-// replaceAt paths
+// operation paths
 // ---------------------------------------------------------------------------
 
 /// A config with an array, so element paths have something to resolve against.
@@ -613,8 +610,9 @@ fn a_replace_accepts_a_merge_document_and_an_operation_document_alike() {
     assert_eq!(output.read().bias_xyz, [1.0, 9.0, 3.0]);
 }
 
-/// The schema and the payload check have to agree about arrays too: `payload_paths`
-/// stops at an array, so a whole-array patch still validates as one field.
+/// The schema and the payload check have to agree about arrays too:
+/// `walk_leaves` stops at an array, so a whole-array patch names one field
+/// rather than one path per element.
 #[test]
 fn a_whole_array_patch_still_validates_against_the_array_itself() {
     let (registry, output) = registry_with_vector();
@@ -855,9 +853,10 @@ fn a_mode_name_this_crate_does_not_define_is_refused() {
     }
 }
 
-/// Flattening made a dotted key indistinguishable from the nesting it resembles,
-/// so a key serde ignores passed the check and installed a rule that never
-/// applied.
+/// A dotted key in a merge document is a key serde ignores, so without the
+/// check it would install a rule that never applied. Pointer joining is what
+/// catches it: `{"a.b": 1}` reaches `/a.b` and `{"a": {"b": 1}}` reaches `/a/b`,
+/// so the first is unknown rather than indistinguishable from the second.
 #[test]
 fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     use crate::messages::{PlanetOrientation, PlanetStateMsg};

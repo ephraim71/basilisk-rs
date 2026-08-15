@@ -50,7 +50,7 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, request: &Request) -> Resu
 /// The payload's paths that reach under a field the value holds as `null`.
 ///
 /// A `None` advertises no children, so a payload naming one names something no
-/// runtime value can confirm *or deny* — see `Target::check_payload`. Treated as
+/// runtime value can confirm *or deny* — see `Target::validate`. Treated as
 /// plausible so the apply's own error surfaces instead. Narrowly: a name with no
 /// such parent is still a name error and still gets its suggestion.
 pub(super) fn children_of_null_fields(spec: &TargetSpec, request: &Request) -> Vec<FieldSpec> {

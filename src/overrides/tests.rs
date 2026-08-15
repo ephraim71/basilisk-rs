@@ -8,7 +8,9 @@ use serde_json::json;
 use crate::messages::{Input, Output};
 
 use super::schema::leaf_fields;
-use crate::overrides::{Mode, Registry, Request, TargetKind};
+use crate::overrides::{
+    Case, Fault, FaultEventKind, FaultSchedule, Mode, Registry, Request, TargetKind,
+};
 
 /// A kind this crate does not define, declared the way an application declares
 /// one for itself. Several fixtures register a config-shaped type, and routing
@@ -1367,4 +1369,206 @@ fn a_field_whose_name_contains_the_separator_is_still_addressable() {
         error.to_string().contains("unknown field '/plain.value'"),
         "{error}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling: when a rule goes in, and when it comes back out
+// ---------------------------------------------------------------------------
+
+const SECOND: u64 = 1_000_000_000;
+
+/// The rate this fixture's device publishes, so a test can say what a withdrawn
+/// fault uncovers without repeating the number.
+const PUBLISHED_RATE_DPS: f64 = -1.5;
+
+fn rate_fault(rate_dps: f64) -> Request {
+    Request::replace(json!({ "/rate_dps": rate_dps })).unwrap()
+}
+
+/// Due is "at or past", not "exactly at". A schedule advanced in steps a fault
+/// falls between must still install it: the alternative is a campaign that
+/// quietly injects nothing because the run loop's step did not divide its dates.
+#[test]
+fn a_fault_waits_for_the_clock_and_lands_on_the_first_advance_past_its_time() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("late").with(
+        Fault::new("sensor_0.output_msg", rate_fault(9.0))
+            .at(5 * SECOND)
+            .labelled("rate runs away"),
+    );
+    let mut faults = FaultSchedule::new(&registry, case);
+
+    assert!(faults.advance(4 * SECOND).is_empty());
+    assert_eq!(output.read().rate_dps, PUBLISHED_RATE_DPS);
+    assert_eq!(faults.pending(), 1);
+
+    let events = faults.advance(7 * SECOND);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0].kind, FaultEventKind::Installed(_)));
+    assert_eq!(output.read().rate_dps, 9.0);
+    assert_eq!(faults.pending(), 0);
+    assert_eq!(faults.in_force(), 1);
+}
+
+/// Two faults on one port, one of which expires. The expiry names the rule its
+/// own install returned, so the fault installed beside it is still in force
+/// afterwards — which is the whole reason a schedule tracks ids rather than
+/// clearing the target.
+#[test]
+fn a_lifetime_withdraws_its_own_rule_and_leaves_the_one_installed_beside_it() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("dropout")
+        .with(
+            Fault::new("sensor_0.output_msg", rate_fault(0.0))
+                .at(SECOND)
+                .lasting(2 * SECOND)
+                .labelled("rate dropout"),
+        )
+        .with(
+            Fault::new(
+                "sensor_0.output_msg",
+                Request::replace(json!({ "/status": 3 })).unwrap(),
+            )
+            .at(SECOND)
+            .labelled("stuck status"),
+        );
+    let mut faults = FaultSchedule::new(&registry, case);
+
+    let installs = faults.advance(SECOND);
+    // Two faults dated the same moment go in the order the case wrote them.
+    assert_eq!(installs[0].label, "rate dropout");
+    assert_eq!(installs[1].label, "stuck status");
+    assert_eq!(output.read().rate_dps, 0.0);
+    assert_eq!(output.read().status, 3);
+    assert_eq!(faults.in_force(), 2);
+
+    let withdrawals = faults.advance(3 * SECOND);
+    assert_eq!(withdrawals.len(), 1);
+    assert!(matches!(withdrawals[0].kind, FaultEventKind::Withdrawn(_)));
+    assert_eq!(
+        output.read().rate_dps,
+        PUBLISHED_RATE_DPS,
+        "the dropout did not lift when its lifetime ran out"
+    );
+    assert_eq!(
+        output.read().status,
+        3,
+        "the fault installed beside the dropout was withdrawn with it"
+    );
+    assert_eq!(faults.in_force(), 1);
+}
+
+/// A fault nobody dated in advance. Whoever notices the condition posts it, and
+/// need not be the thread advancing the schedule — which is what makes a
+/// condition-triggered fault as ordinary as a clocked one.
+#[test]
+fn a_fault_posted_while_the_run_is_going_is_installed_on_the_next_advance() {
+    let (registry, output) = registry_with_reading();
+    let mut faults = FaultSchedule::new(&registry, Case::new("live"));
+    let sender = faults.sender();
+
+    std::thread::spawn(move || {
+        sender
+            .send(Fault::new("sensor_0.output_msg", rate_fault(4.0)).labelled("operator"))
+            .expect("the schedule is still running");
+    })
+    .join()
+    .expect("the posting thread finished");
+
+    let events = faults.advance(SECOND);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].label, "operator");
+    assert_eq!(
+        events[0].at_nanos, SECOND,
+        "an event carries when it landed"
+    );
+    assert_eq!(output.read().rate_dps, 4.0);
+}
+
+/// A refused fault is recorded and the campaign carries on. One unusable entry
+/// in a list written by hand must not cancel the faults after it, and it must
+/// not pass unremarked either: `is_refusal` is how a run says which of the two
+/// happened.
+#[test]
+fn a_refused_fault_is_recorded_rather_than_taking_the_ones_after_it_down() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("typo")
+        .with(
+            Fault::new(
+                "sensor_0.output_msg",
+                Request::replace(json!({ "/rate_dsp": 9.0 })).unwrap(),
+            )
+            .labelled("misspelled"),
+        )
+        .with(Fault::new("sensor_0.output_msg", rate_fault(2.0)).labelled("sound"));
+    let mut faults = FaultSchedule::new(&registry, case);
+
+    let events = faults.advance(0);
+    assert_eq!(events.len(), 2);
+    assert!(events[0].is_refusal());
+    let FaultEventKind::Refused(reason) = &events[0].kind else {
+        panic!("a misspelled field was installed: {:?}", events[0].kind);
+    };
+    assert!(reason.contains("did you mean '/rate_dps'"), "{reason}");
+
+    assert!(!events[1].is_refusal());
+    assert_eq!(output.read().rate_dps, 2.0);
+    assert_eq!(faults.in_force(), 1, "a refusal was counted as installed");
+}
+
+/// The same check, moved to before the run. A mistyped target otherwise surfaces
+/// as a refusal minutes in, on a run that then reports no effect — which reads
+/// exactly like a fault that had none.
+#[test]
+fn preflight_reports_a_fault_that_cannot_be_installed_before_the_run_starts() {
+    let (registry, _output) = registry_with_reading();
+    let case = Case::new("mistyped_target")
+        .with(Fault::new("sensor_1.output_msg", rate_fault(1.0)).labelled("the wrong device"));
+    let faults = FaultSchedule::new(&registry, case);
+
+    let error = faults
+        .preflight()
+        .expect_err("a fault naming no registered target passed preflight");
+    let reported = format!("{error:#}");
+    assert!(reported.contains("the wrong device"), "{reported}");
+    assert!(
+        reported.contains("unknown override target 'sensor_1.output_msg'"),
+        "{reported}"
+    );
+    // Checking is not installing.
+    assert_eq!(faults.pending(), 1);
+}
+
+/// Ending a campaign ends the campaign's faults. A simulation can carry rules
+/// this schedule never installed — an operator's, another campaign's — and
+/// clearing the target would take those too.
+#[test]
+fn withdrawing_a_campaign_leaves_a_rule_installed_by_someone_else_alone() {
+    let (registry, output) = registry_with_reading();
+    registry
+        .install(
+            "sensor_0.output_msg",
+            Request::replace(json!({ "/status": 7 })).unwrap(),
+        )
+        .expect("an installed rule from outside the campaign");
+
+    let mut faults = FaultSchedule::new(
+        &registry,
+        Case::new("campaign").with(Fault::new("sensor_0.output_msg", rate_fault(0.0))),
+    );
+    faults.advance(0);
+    assert_eq!(output.read().rate_dps, 0.0);
+
+    faults.withdraw_all();
+    assert_eq!(
+        output.read().rate_dps,
+        PUBLISHED_RATE_DPS,
+        "the campaign's own rule survived its withdrawal"
+    );
+    assert_eq!(
+        output.read().status,
+        7,
+        "a rule this campaign never installed was withdrawn with it"
+    );
+    assert_eq!(faults.in_force(), 0);
 }

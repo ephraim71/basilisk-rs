@@ -37,6 +37,18 @@ pub enum Mode {
     Default,
 }
 
+impl Mode {
+    /// The name a client sends, which is also the name it is reported under.
+    /// One spelling, so a mode named in a log is the mode named on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::Freeze => "freeze",
+            Self::Default => "default",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pointers
 // ---------------------------------------------------------------------------

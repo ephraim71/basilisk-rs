@@ -18,11 +18,18 @@ pub fn rpm_to_radps(rpm: f64) -> f64 {
 }
 
 pub fn scenario_output_path(file_name: &str) -> PathBuf {
+    output_path("scenarios", file_name)
+}
+
+/// A fresh path under `examples/output/<subdirectory>`, with any previous file
+/// of that name removed so a run cannot be read as the one before it.
+pub fn output_path(subdirectory: &str, file_name: &str) -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/output/scenarios")
+        .join("examples/output")
+        .join(subdirectory)
         .join(file_name);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("failed to create scenario output directory");
+        std::fs::create_dir_all(parent).expect("failed to create example output directory");
     }
     match std::fs::remove_file(&path) {
         Ok(()) => {}

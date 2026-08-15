@@ -9,16 +9,22 @@
 //! silently ignores a field it does not recognise — without the check a typo
 //! reports success and changes nothing.
 //!
+//! What is injectable and what a payload may say is here; *when* a rule goes in
+//! and when it comes out is `schedule`, which drives this registry from a clock
+//! rather than adding anything to it.
+//!
 //! | file | holds |
 //! |---|---|
 //! | this one | [`Target`] and the registry |
 //! | `rule` | [`Request`], [`Rule`], [`RuleId`], and what they compute |
 //! | `schema` | [`TargetKind`], [`FieldSpec`], [`TargetSpec`], derived from `T::default()` |
 //! | `paths` | whether a payload may name what it names, and the "did you mean" when it may not |
+//! | `schedule` | [`Fault`], [`Case`], [`FaultSchedule`] — when a rule is installed and when it lifts |
 
 pub(crate) mod rule;
 
 mod paths;
+mod schedule;
 mod schema;
 
 #[cfg(test)]
@@ -36,6 +42,7 @@ use paths::{children_of_null_fields, reject_unknown_paths};
 use schema::{addressable_fields, leaf_fields};
 
 pub use rule::{Assignment, Document, Mode, Pointer, Request, Rule, RuleId, Selection};
+pub use schedule::{Case, Fault, FaultEvent, FaultEventKind, FaultSchedule, FaultSender};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
 /// A module that can list its own overridable ports.

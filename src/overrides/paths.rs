@@ -83,7 +83,7 @@ fn descends_from(path: &str, parent: &str) -> bool {
     path.len() > parent.len() && path.starts_with(parent) && path.as_bytes()[parent.len()] == b'/'
 }
 
-/// Whether `path` addresses an element of a field the type holds as an array.
+/// Whether `path` reaches into a field the type holds as an array.
 ///
 /// The schema names arrays rather than their elements, and deliberately: an
 /// element path is derivable from the array's own default, so listing both
@@ -91,17 +91,29 @@ fn descends_from(path: &str, parent: &str) -> bool {
 /// whole vector. Checking an index against its parent instead also keeps a
 /// growable array addressable past the length its default happens to have.
 ///
-/// Whether the index is *in range* is left to the pointer resolving, which
-/// reports the miss with the path in it.
+/// Every ancestor is tried, not just the immediate parent: an element need not
+/// end the path. `RwArrayConfigMsg::spin_axes_body` is one 3-vector per wheel,
+/// so wheel 0's y-axis is `/spin_axes_body/0/1`, two segments below the array.
+///
+/// Below the array nothing is checked, since a leaf advertises no element
+/// structure to check against. The pointer resolving reports what misses, with
+/// the path in it.
 fn indexes_a_known_array(spec: &TargetSpec, path: &str) -> bool {
-    let Some((parent, index)) = path.rsplit_once('/') else {
-        return false;
-    };
-    index.parse::<usize>().is_ok()
-        && spec
-            .fields
-            .iter()
-            .any(|field| field.path == parent && field.kind == "array")
+    let mut boundary = path.len();
+    while let Some(slash) = path[..boundary].rfind('/') {
+        let ancestor = &path[..slash];
+        let beneath = path[slash + 1..].split('/').next().unwrap_or_default();
+        if beneath.parse::<usize>().is_ok()
+            && spec
+                .fields
+                .iter()
+                .any(|field| field.path == ancestor && field.kind == "array")
+        {
+            return true;
+        }
+        boundary = slash;
+    }
+    false
 }
 
 /// The last segment of a `std::any::type_name`, which is the name a person

@@ -120,15 +120,9 @@ pub struct Assignment {
 ///
 /// The same syntax a [`Selection`] names and the schema publishes, so a path
 /// read off a target's spec is pasted into any of the three modes unchanged.
-/// This is the only payload shape: nested JSON mirroring the message is not
-/// accepted, because it cannot address one element of an array — the case a
-/// fault most often wants, since replacing the array wholesale would pin the
-/// components nobody meant to touch.
 ///
-/// Assignments are applied in pointer order, which `serde_json` gives sorted.
-/// Where one pointer contains another — `/orientation` and
-/// `/orientation/inertial_to_fixed` — the deeper one therefore lands last, so
-/// the more specific assignment is the one that survives.
+/// Applied in pointer order. A container is a prefix of what it contains, so
+/// sorting lands the deeper assignment last and the more specific one survives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Document(Vec<Assignment>);
 
@@ -140,15 +134,20 @@ impl Document {
                  {{\"/omega_radps/1\": 0.5}}, and this is not one: {value}"
             ));
         };
-        map.into_iter()
+        let mut assignments = map
+            .into_iter()
             .map(|(path, value)| {
                 Ok(Assignment {
                     path: Pointer::parse(&path)?,
                     value,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()
-            .map(Self)
+            .collect::<Result<Vec<_>, String>>()?;
+        // Not taken from the map: `serde_json`'s `preserve_order` feature makes
+        // it insertion-ordered, and features unify, so any crate in the graph
+        // enabling it would invert which of two overlapping assignments wins.
+        assignments.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(Self(assignments))
     }
 
     /// What this document assigns, in the order it is applied.

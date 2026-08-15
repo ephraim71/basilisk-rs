@@ -541,6 +541,31 @@ fn a_later_rule_covers_an_earlier_one_and_gives_it_back_when_removed() {
     );
 }
 
+/// Which of two overlapping assignments wins must not depend on the order the
+/// payload was written in, nor on a feature some other crate turned on.
+#[test]
+fn a_deeper_assignment_wins_whatever_order_the_payload_arrived_in() {
+    for payload in [
+        json!({ "/inner/value": 9.0, "/inner": { "value": 4.0 } }),
+        json!({ "/inner": { "value": 4.0 }, "/inner/value": 9.0 }),
+    ] {
+        let output = Output::new(Optional::default());
+        output.write(Optional {
+            keep: 0.0,
+            inner: Some(Inner { value: 0.0 }),
+        });
+        output
+            .set_override(Request::replace(payload.clone()).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            output.read().inner.unwrap().value,
+            9.0,
+            "the container overwrote the field inside it: {payload}"
+        );
+    }
+}
+
 /// A key that is not a pointer is answered with the pointer it should have
 /// been. This is the mistake a client makes when it carries a field name where
 /// a path belongs, and it is refused when the request is *parsed*, so it never

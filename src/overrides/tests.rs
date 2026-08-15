@@ -561,6 +561,37 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
     assert_eq!(output.read().bias_xyz, [0.0, 0.0, 0.5]);
 }
 
+/// `spin_axes_body` is one 3-vector per wheel, so wheel 0's y-axis sits two
+/// segments below the array the schema advertises.
+#[test]
+fn an_index_inside_an_array_element_is_addressable_too() {
+    use crate::messages::RwArrayConfigMsg;
+
+    let registry = Registry::new();
+    let output = Output::new(RwArrayConfigMsg::default());
+    registry.register("rw.config", &output, CONFIG).unwrap();
+
+    registry
+        .install(
+            "rw.config",
+            Request::replace(json!({ "/spin_axes_body/0/1": 7.0 })).unwrap(),
+        )
+        .expect("a component of an array element was refused");
+
+    assert_eq!(output.read().spin_axes_body[0][1], 7.0);
+
+    // Below the array the schema describes nothing, so nonsense there is the
+    // apply's to refuse rather than the name check's to guess at.
+    let error = registry
+        .install(
+            "rw.config",
+            Request::replace(json!({ "/spin_axes_body/0/why": 7.0 })).unwrap(),
+        )
+        .expect_err("a path into nothing was installed")
+        .to_string();
+    assert!(error.contains("/spin_axes_body/0/why"), "{error}");
+}
+
 #[test]
 fn an_operation_naming_a_field_the_type_does_not_have_is_refused_with_a_suggestion() {
     let (registry, _output) = registry_with_vector();

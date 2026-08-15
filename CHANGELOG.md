@@ -31,22 +31,22 @@ actually have written against. Nothing has a deprecated alias.
 - Three modes, differing only in where the value comes from: `Replace` takes it
   from the payload, `Default` from the type's own default, `Freeze` from the
   live value at the moment it is installed.
-- `Mode::Replace` carries either patch format, told apart by the payload's
-  shape: an object is a JSON merge document, an array is an RFC 6902 document.
-  The RFC 6902 form is the `replace` operation and no other, and is what can
-  address a single element of an array — a merge replaces an array wholesale,
-  so it cannot change one component of a vector without pinning its siblings to
-  whatever the sender happened to write.
-- `Freeze` and `Default` take an array of RFC 6901 pointers naming the fields to
-  act on, so one axis of a body rate can be held or reset without touching the
-  others. An empty payload means the whole message.
+- `Mode::Replace` takes an object mapping RFC 6901 pointers to the values to put
+  there — `{"/omega_radps/1": 0.5}` — so one element of a vector is addressable
+  without pinning its siblings to whatever the sender happened to write. Nested
+  JSON mirroring the message is not a payload shape; there is only this one.
+- `Freeze` and `Default` take an array of the same pointers, so one axis of a
+  body rate can be held or reset without touching the others. An empty payload
+  means the whole message.
 - Every rule is relative: a rule touches the paths it names and leaves the rest
   to the layers beneath, so a stack is always the composition of all of it.
 - RFC 6901 pointers are the single path syntax across the feature. `FieldSpec`
-  publishes them, a `replace` document addresses them, and a `freeze` names
-  them, so nothing translates between two spellings.
+  publishes them, a `replace` assigns to them, and a `freeze` names them, so a
+  path read off a target's schema is pasted into any of the three modes
+  unchanged and nothing translates between two spellings. The whole message is
+  the root pointer, `""`, rather than a special case.
 - A payload is parsed once into a type that cannot hold an invalid combination:
-  `Request`, `Document`, `Selection`, `ReplaceOp` and `Pointer`. `Rule` has
+  `Request`, `Document`, `Selection`, `Assignment` and `Pointer`. `Rule` has
   private fields and one constructor, which requires the values a freeze
   captures rather than taking them as an option that can be omitted.
 - A rule that cannot apply to a particular value is skipped for that value
@@ -89,7 +89,7 @@ makes it harder to find the changes that are.
   // 0.3.0
   output.set_override(MessageOverrideMode::Patch, json!({ "rate_dps": 9.0 }))?;
   // now
-  output.set_override(Request::replace(json!({ "rate_dps": 9.0 }))?)?;
+  output.set_override(Request::replace(json!({ "/rate_dps": 9.0 }))?)?;
   ```
 
   A `Request` is parsed once, at the boundary, and cannot pair a mode with a
@@ -97,13 +97,14 @@ makes it harder to find the changes that are.
   allowed and what the freeze payload being ignored entirely was a case of. The
   wire form is unchanged: `Request` is adjacently tagged, so it still reads and
   writes `{"mode": ..., "value": ...}`.
-- `MessageOverrideMode::Patch` is absorbed into `Request::replace`, which now
-  accepts a fragment. A 0.3.0 `Patch` payload is a `Request::replace` payload
-  verbatim. A 0.3.0 `Replace` payload also keeps working, and is the change
-  worth reading twice: `Replace` used to be refused unless it named every field,
-  and no longer is, so a `Replace` that omits a field now leaves that field to
-  the layers beneath it rather than being rejected. Nothing enforces a complete
-  message any more.
+- `MessageOverrideMode::Patch` is absorbed into `Request::replace`, and both
+  0.3.0 payload shapes have to be rewritten: keys are RFC 6901 pointers now, not
+  nested JSON mirroring the message. `{"gain": {"value": 1.0}}` becomes
+  `{"/gain/value": 1.0}`, and a whole-message `Replace` becomes `{"": {...}}`.
+  The behaviour change worth reading twice is that `Replace` used to be refused
+  unless it named every field and no longer is, so a `Replace` that omits a
+  field now leaves that field to the layers beneath it rather than being
+  rejected. Nothing enforces a complete message any more.
 - `messages::MessageOverrideMode` is now `overrides::Mode`, renamed *and* moved
   to a new module — and demoted: it is a label reported on an installed `Rule`
   rather than something a caller passes.

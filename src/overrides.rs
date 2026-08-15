@@ -35,7 +35,7 @@ use crate::messages::Port;
 use paths::{children_of_null_fields, reject_unknown_paths};
 use schema::leaf_fields;
 
-pub use rule::{Document, Mode, Pointer, ReplaceOp, Request, Rule, RuleId, Selection};
+pub use rule::{Assignment, Document, Mode, Pointer, Request, Rule, RuleId, Selection};
 pub use schema::{FieldSpec, TargetKind, TargetSpec};
 
 /// A module that can list its own overridable ports.
@@ -77,7 +77,7 @@ pub use schema::{FieldSpec, TargetKind, TargetSpec};
 /// registry.register_module("gyro_0", &gyro)?;
 ///
 /// // The name is what an operator addresses: `<prefix>.<port>`.
-/// registry.install("gyro_0.output_msg", Request::replace(json!({ "rate_dps": 9.0 }))?)?;
+/// registry.install("gyro_0.output_msg", Request::replace(json!({ "/rate_dps": 9.0 }))?)?;
 ///
 /// // The module reads its own port and sees the fault, without knowing one was
 /// // installed. What it published is still available separately.

@@ -7,6 +7,10 @@
 //! leave the rest to the layers beneath — so a stack is always the composition
 //! of all of its rules and nothing masks anything.
 //!
+//! One path syntax throughout: every mode names RFC 6901 pointers, and so does
+//! the schema. A path read off a target's spec is pasted into any of the three
+//! unchanged, and nothing translates between two spellings.
+//!
 //! The payload is typed rather than raw JSON, and a [`Rule`] can only be built
 //! through [`Rule::build`], which resolves and checks it. So an installed rule
 //! is a rule that was validated: there is no second field to disagree with the
@@ -101,105 +105,68 @@ impl<'de> Deserialize<'de> for Pointer {
 // Payloads
 // ---------------------------------------------------------------------------
 
-/// One `replace` operation: a location, and what to put there.
-///
-/// Carries no operation name, because there is only one it could hold. On the
-/// wire it still reads and writes `"op": "replace"`, so a client that sends a
-/// conforming RFC 6902 document is understood unchanged.
+/// One assignment: a location, and what to put there.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ReplaceOp {
+pub struct Assignment {
     pub path: Pointer,
     pub value: Value,
 }
 
-impl ReplaceOp {
-    fn from_value(operation: &Value) -> Result<Self, String> {
-        let object = operation
-            .as_object()
-            .ok_or_else(|| format!("an operation must be an object: {operation}"))?;
-
-        match object.get("op").and_then(Value::as_str) {
-            Some("replace") => {}
-            Some(other) => {
-                return Err(format!(
-                    "this implements the 'replace' operation of RFC 6902 and no other, so \
-                     '{other}' is refused rather than approximated: a message has a fixed \
-                     schema and fixed-size arrays, which leaves the other five either \
-                     unrepresentable or indistinguishable from 'replace'"
-                ));
-            }
-            None => return Err(format!("an operation needs 'op': {operation}")),
-        }
-
-        let path = object
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("an operation needs 'path': {operation}"))?;
-        let value = object
-            .get("value")
-            .ok_or_else(|| format!("a replace needs 'value': {operation}"))?;
-
-        Ok(Self {
-            path: Pointer::parse(path)?,
-            value: value.clone(),
-        })
-    }
-}
-
-impl Serialize for ReplaceOp {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut object = Map::new();
-        object.insert("op".to_string(), Value::from("replace"));
-        object.insert("path".to_string(), Value::from(self.path.as_str()));
-        object.insert("value".to_string(), self.value.clone());
-        Value::Object(object).serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for ReplaceOp {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        Self::from_value(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// What a [`Mode::Replace`] carries: either shape of patch document.
+/// What a [`Mode::Replace`] carries: a value for each pointer it names.
 ///
-/// The two are told apart by their JSON shape, which is unambiguous — a merge
-/// document is an object, an RFC 6902 document is an array — so no extra tag is
-/// needed on the wire.
+/// ```json
+/// { "/omega_radps/1": 0.5, "/num_rw": 3 }
+/// ```
+///
+/// The same syntax a [`Selection`] names and the schema publishes, so a path
+/// read off a target's spec is pasted into any of the three modes unchanged.
+/// This is the only payload shape: nested JSON mirroring the message is not
+/// accepted, because it cannot address one element of an array — the case a
+/// fault most often wants, since replacing the array wholesale would pin the
+/// components nobody meant to touch.
+///
+/// Assignments are applied in pointer order, which `serde_json` gives sorted.
+/// Where one pointer contains another — `/orientation` and
+/// `/orientation/inertial_to_fixed` — the deeper one therefore lands last, so
+/// the more specific assignment is the one that survives.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Document {
-    /// A merge document. Nested JSON mirroring the message, so it names no
-    /// paths and cannot address one element of an array.
-    Merge(Map<String, Value>),
-    /// RFC 6902 operations, which can.
-    Ops(Vec<ReplaceOp>),
-}
+pub struct Document(Vec<Assignment>);
 
 impl Document {
     fn from_value(value: Value) -> Result<Self, String> {
-        match value {
-            Value::Object(map) => Ok(Self::Merge(map)),
-            Value::Array(operations) => operations
-                .iter()
-                .map(ReplaceOp::from_value)
-                .collect::<Result<Vec<_>, _>>()
-                .map(Self::Ops),
-            other => Err(format!(
-                "a replace takes an object (a merge document) or an array (RFC 6902 \
-                 operations), and this is neither: {other}"
-            )),
-        }
+        let Value::Object(map) = value else {
+            return Err(format!(
+                "a replace takes an object mapping JSON pointers to values, e.g. \
+                 {{\"/omega_radps/1\": 0.5}}, and this is not one: {value}"
+            ));
+        };
+        map.into_iter()
+            .map(|(path, value)| {
+                Ok(Assignment {
+                    path: Pointer::parse(&path)?,
+                    value,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(Self)
+    }
+
+    /// What this document assigns, in the order it is applied.
+    pub fn assignments(&self) -> &[Assignment] {
+        &self.0
     }
 }
 
 impl Serialize for Document {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Merge(map) => map.serialize(serializer),
-            Self::Ops(operations) => operations.serialize(serializer),
+        let mut object = Map::new();
+        for assignment in &self.0 {
+            object.insert(
+                assignment.path.as_str().to_string(),
+                assignment.value.clone(),
+            );
         }
+        Value::Object(object).serialize(serializer)
     }
 }
 
@@ -304,7 +271,7 @@ pub enum Request {
 }
 
 impl Request {
-    /// A replace carrying either patch format, chosen by the payload's shape.
+    /// A replace assigning a value at each pointer the payload names.
     pub fn replace(value: Value) -> anyhow::Result<Self> {
         Document::from_value(value)
             .map(Self::Replace)
@@ -342,16 +309,10 @@ impl Request {
     /// names nothing: there is no path to be wrong.
     pub(crate) fn named_paths(&self) -> Vec<String> {
         match self {
-            Self::Replace(Document::Merge(map)) => {
-                let mut paths = Vec::new();
-                super::schema::walk_leaves("", &Value::Object(map.clone()), &mut |path, _| {
-                    paths.push(path.to_string());
-                });
-                paths
-            }
-            Self::Replace(Document::Ops(operations)) => operations
+            Self::Replace(document) => document
+                .assignments()
                 .iter()
-                .map(|operation| operation.path.as_str().to_string())
+                .map(|assignment| assignment.path.as_str().to_string())
                 .collect(),
             Self::Freeze(selection) | Self::Default(selection) => selection
                 .pointers()
@@ -359,12 +320,6 @@ impl Request {
                 .map(|path| path.as_str().to_string())
                 .collect(),
         }
-    }
-
-    /// Whether this request addresses locations rather than nesting into the
-    /// message, which decides whether a named path may be a container.
-    pub(crate) fn addresses_locations(&self) -> bool {
-        !matches!(self, Self::Replace(Document::Merge(_)))
     }
 }
 
@@ -461,7 +416,7 @@ fn capture(
     what: &str,
 ) -> Result<Document, serde_json::Error> {
     if selection.is_whole() {
-        return Ok(Document::Ops(vec![ReplaceOp {
+        return Ok(Document(vec![Assignment {
             path: Pointer::ROOT,
             value: source.clone(),
         }]));
@@ -472,7 +427,7 @@ fn capture(
         .map(|path| {
             source
                 .pointer(path.as_str())
-                .map(|found| ReplaceOp {
+                .map(|found| Assignment {
                     path: path.clone(),
                     value: found.clone(),
                 })
@@ -484,34 +439,7 @@ fn capture(
                 })
         })
         .collect::<Result<Vec<_>, _>>()
-        .map(Document::Ops)
-}
-
-/// Overlays `patch` onto `base`, descending only where both sides are objects.
-///
-/// This is RFC 7396's merge **except for `null`**, and the exception is
-/// deliberate. RFC 7396 defines `null` as a request to remove a member; here it
-/// is assigned like any other value. Removal is not something this can offer —
-/// a message has a fixed schema, so dropping a member yields a value that will
-/// not deserialise — while assignment is exactly what an operator setting an
-/// `Option` field to `None` is asking for.
-///
-/// Arrays follow RFC 7396: they are replaced whole rather than merged
-/// element-wise, since a merge document has no way to name one element. An
-/// RFC 6902 document is what addresses a single element.
-fn merge_json(base: &mut Value, patch: Value) {
-    match (base, patch) {
-        (Value::Object(base_map), Value::Object(patch_map)) => {
-            for (key, patch_value) in patch_map {
-                if let Some(base_value) = base_map.get_mut(&key) {
-                    merge_json(base_value, patch_value);
-                } else {
-                    base_map.insert(key, patch_value);
-                }
-            }
-        }
-        (base_value, patch_value) => *base_value = patch_value,
-    }
+        .map(Document)
 }
 
 /// A `serde_json::Error` carrying a message of our own.
@@ -533,19 +461,14 @@ pub(crate) fn apply_override<T: SimulationMessage>(
     upstream: T,
 ) -> Result<T, serde_json::Error> {
     let mut base = serde_json::to_value(upstream)?;
-    match rule.document() {
-        Document::Merge(map) => merge_json(&mut base, Value::Object(map.clone())),
-        Document::Ops(operations) => {
-            for operation in operations {
-                match base.pointer_mut(operation.path.as_str()) {
-                    Some(slot) => *slot = operation.value.clone(),
-                    None => {
-                        return Err(json_error(format!(
-                            "'{}' does not resolve on this value",
-                            operation.path.as_str()
-                        )));
-                    }
-                }
+    for assignment in rule.document().assignments() {
+        match base.pointer_mut(assignment.path.as_str()) {
+            Some(slot) => *slot = assignment.value.clone(),
+            None => {
+                return Err(json_error(format!(
+                    "'{}' does not resolve on this value",
+                    assignment.path.as_str()
+                )));
             }
         }
     }

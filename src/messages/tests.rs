@@ -13,11 +13,7 @@ fn a_replace_naming_every_field_substitutes_the_whole_message() {
 
     output
         .set_override(
-            Request::replace(json!({
-                "storage_level_j": 4.0,
-                "storage_capacity_j": 5.0,
-                "current_net_power_w": 6.0,
-            }))
+            Request::replace(json!({ "/storage_level_j": 4.0, "/storage_capacity_j": 5.0, "/current_net_power_w": 6.0 }))
             .unwrap(),
         )
         .unwrap();
@@ -98,7 +94,7 @@ fn input_override_is_invisible_to_the_other_consumers() {
     producer.write(status(5.0));
 
     faulted
-        .set_override(Request::replace(json!({ "storage_level_j": 99.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 99.0 })).unwrap())
         .unwrap();
 
     assert_eq!(faulted.read().storage_level_j, 99.0);
@@ -113,10 +109,10 @@ fn input_upstream_is_the_producers_effective_value_not_its_raw_one() {
     producer.write(status(5.0));
 
     producer
-        .set_override(Request::replace(json!({ "storage_level_j": 7.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 7.0 })).unwrap())
         .unwrap();
     input
-        .set_override(Request::replace(json!({ "storage_capacity_j": 3.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 3.0 })).unwrap())
         .unwrap();
 
     assert_eq!(producer.read_upstream().storage_level_j, 5.0);
@@ -131,7 +127,7 @@ fn input_reads_upstream_again_once_its_override_is_cleared() {
     let input = connected_input(&producer);
     producer.write(status(5.0));
     input
-        .set_override(Request::replace(json!({ "storage_level_j": 99.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 99.0 })).unwrap())
         .unwrap();
 
     input.clear_override();
@@ -144,8 +140,8 @@ fn input_rejects_a_value_of_the_wrong_shape() {
     let producer = Output::new(PowerStorageStatusMsg::default());
     let input = connected_input(&producer);
 
-    let result =
-        input.set_override(Request::replace(json!({ "storage_level_j": "not a number" })).unwrap());
+    let result = input
+        .set_override(Request::replace(json!({ "/storage_level_j": "not a number" })).unwrap());
 
     assert!(result.is_err(), "expected a type error, got {result:?}");
     assert!(!input.is_overridden());
@@ -157,7 +153,7 @@ fn preview_override_reports_the_result_without_installing_it() {
     output.write(status(5.0));
 
     let previewed = output
-        .preview_override(Request::replace(json!({ "storage_level_j": 99.0 })).unwrap())
+        .preview_override(Request::replace(json!({ "/storage_level_j": 99.0 })).unwrap())
         .unwrap();
 
     assert_eq!(previewed.storage_level_j, 99.0);
@@ -170,11 +166,11 @@ fn preview_override_accounts_for_the_patch_already_installed() {
     let output = Output::new(PowerStorageStatusMsg::default());
     output.write(status(5.0));
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
 
     let previewed = output
-        .preview_override(Request::replace(json!({ "storage_capacity_j": 2.0 })).unwrap())
+        .preview_override(Request::replace(json!({ "/storage_capacity_j": 2.0 })).unwrap())
         .unwrap();
 
     assert_eq!(previewed.storage_level_j, 1.0, "accumulated patch was lost");
@@ -188,7 +184,7 @@ fn input_preview_override_does_not_install() {
     producer.write(status(5.0));
 
     let previewed = input
-        .preview_override(Request::replace(json!({ "storage_level_j": 99.0 })).unwrap())
+        .preview_override(Request::replace(json!({ "/storage_level_j": 99.0 })).unwrap())
         .unwrap();
 
     assert_eq!(previewed.storage_level_j, 99.0);
@@ -223,7 +219,7 @@ fn patch_override_updates_only_requested_fields() {
     let output = Output::new(PowerStorageStatusMsg::default());
 
     output
-        .set_override(Request::replace(json!({ "current_net_power_w": 9.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/current_net_power_w": 9.0 })).unwrap())
         .unwrap();
     output.write(PowerStorageStatusMsg {
         storage_level_j: 1.0,
@@ -241,10 +237,10 @@ fn patch_override_merges_successive_patches() {
     let output = Output::new(PowerStorageStatusMsg::default());
 
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
     output
-        .set_override(Request::replace(json!({ "current_net_power_w": 3.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/current_net_power_w": 3.0 })).unwrap())
         .unwrap();
     output.write(PowerStorageStatusMsg {
         storage_level_j: 10.0,
@@ -262,7 +258,7 @@ fn clear_override_restores_latest_raw_value() {
     let output = Output::new(PowerStorageStatusMsg::default());
 
     output
-        .set_override(Request::replace(json!({ "current_net_power_w": 9.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/current_net_power_w": 9.0 })).unwrap())
         .unwrap();
     output.write(PowerStorageStatusMsg {
         storage_level_j: 1.0,
@@ -279,7 +275,7 @@ fn set_override_rejects_a_value_of_the_wrong_shape() {
     let output = Output::new(PowerStorageStatusMsg::default());
 
     let result = output
-        .set_override(Request::replace(json!({ "storage_level_j": "not a number" })).unwrap());
+        .set_override(Request::replace(json!({ "/storage_level_j": "not a number" })).unwrap());
 
     assert!(result.is_err(), "expected a type error, got {result:?}");
 }
@@ -288,11 +284,11 @@ fn set_override_rejects_a_value_of_the_wrong_shape() {
 fn a_rejected_override_leaves_the_previous_one_working() {
     let output = Output::new(PowerStorageStatusMsg::default());
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
 
     let _ = output
-        .set_override(Request::replace(json!({ "storage_capacity_j": "not a number" })).unwrap());
+        .set_override(Request::replace(json!({ "/storage_capacity_j": "not a number" })).unwrap());
     output.write(PowerStorageStatusMsg {
         storage_level_j: 10.0,
         storage_capacity_j: 20.0,
@@ -307,7 +303,7 @@ fn a_rejected_override_leaves_the_previous_one_working() {
 fn read_upstream_sees_through_an_active_override() {
     let output = Output::new(PowerStorageStatusMsg::default());
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
 
     output.write(PowerStorageStatusMsg {
@@ -324,10 +320,10 @@ fn read_upstream_sees_through_an_active_override() {
 fn clearing_by_id_removes_that_layer_and_no_other() {
     let output = Output::new(PowerStorageStatusMsg::default());
     let first = output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
     let second = output
-        .set_override(Request::replace(json!({ "storage_capacity_j": 2.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 2.0 })).unwrap())
         .unwrap();
 
     // An id identifies one layer. Clearing the inner one leaves the outer
@@ -354,7 +350,7 @@ fn installed_overrides_reports_the_installed_rules() {
     assert!(output.installed_overrides().is_empty());
 
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
 
     let state = output.installed_overrides();
@@ -362,7 +358,7 @@ fn installed_overrides_reports_the_installed_rules() {
     assert_eq!(state[0].mode(), Mode::Replace);
     assert_eq!(
         serde_json::to_value(state[0].document()).unwrap(),
-        json!({ "storage_level_j": 1.0 })
+        json!({ "/storage_level_j": 1.0 })
     );
 }
 
@@ -371,10 +367,10 @@ fn installed_overrides_reports_the_installed_rules() {
 fn a_patch_layers_over_the_one_before_it_rather_than_merging() {
     let output = Output::new(PowerStorageStatusMsg::default());
     let first = output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
     output
-        .set_override(Request::replace(json!({ "storage_capacity_j": 2.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 2.0 })).unwrap())
         .unwrap();
 
     assert_eq!(output.installed_overrides().len(), 2);
@@ -393,15 +389,11 @@ fn a_patch_layers_over_the_one_before_it_rather_than_merging() {
 fn removing_a_rule_leaves_the_one_beneath_it_in_force() {
     let output = Output::new(PowerStorageStatusMsg::default());
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
     let replace = output
         .set_override(
-            Request::replace(json!({
-                "storage_level_j": 5.0,
-                "storage_capacity_j": 0.0,
-                "current_net_power_w": 0.0,
-            }))
+            Request::replace(json!({ "/storage_level_j": 5.0, "/storage_capacity_j": 0.0, "/current_net_power_w": 0.0 }))
             .unwrap(),
         )
         .unwrap();
@@ -423,11 +415,11 @@ fn removing_a_rule_leaves_the_one_beneath_it_in_force() {
 fn a_rejected_rule_leaves_the_installed_stack_untouched() {
     let output = Output::new(PowerStorageStatusMsg::default());
     output
-        .set_override(Request::replace(json!({ "storage_level_j": 1.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/storage_level_j": 1.0 })).unwrap())
         .unwrap();
 
     let refused = output
-        .set_override(Request::replace(json!({ "storage_level_j": "not a number" })).unwrap());
+        .set_override(Request::replace(json!({ "/storage_level_j": "not a number" })).unwrap());
 
     assert!(refused.is_err());
     assert_eq!(output.installed_overrides().len(), 1);
@@ -461,7 +453,7 @@ fn freeze_override_holds_effective_value() {
 }
 
 // -----------------------------------------------------------------------
-// operation documents: addressing one element of a vector
+// addressing one element of a vector
 // -----------------------------------------------------------------------
 
 fn spinning(rate: [f64; 3]) -> SpacecraftStateMsg {
@@ -471,8 +463,8 @@ fn spinning(rate: [f64; 3]) -> SpacecraftStateMsg {
     }
 }
 
-fn replace_op(path: &str, value: f64) -> serde_json::Value {
-    json!([{ "op": "replace", "path": path, "value": value }])
+fn assign(path: &str, value: f64) -> serde_json::Value {
+    json!({ path: value })
 }
 
 #[test]
@@ -481,7 +473,7 @@ fn an_operation_document_changes_one_element_and_leaves_its_siblings_upstream() 
     output.write(spinning([1.0, 2.0, 3.0]));
 
     output
-        .set_override(Request::replace(replace_op("/omega_radps/1", 9.0)).unwrap())
+        .set_override(Request::replace(assign("/omega_radps/1", 9.0)).unwrap())
         .unwrap();
 
     assert_eq!(
@@ -506,10 +498,10 @@ fn an_operation_document_composes_with_the_merge_beneath_it() {
     output.write(spinning([1.0, 2.0, 3.0]));
 
     output
-        .set_override(Request::replace(json!({ "sigma_bn": [7.0, 0.0, 0.0] })).unwrap())
+        .set_override(Request::replace(json!({ "/sigma_bn": [7.0, 0.0, 0.0] })).unwrap())
         .unwrap();
     output
-        .set_override(Request::replace(replace_op("/omega_radps/0", 9.0)).unwrap())
+        .set_override(Request::replace(assign("/omega_radps/0", 9.0)).unwrap())
         .unwrap();
 
     let effective = output.read();
@@ -519,7 +511,7 @@ fn an_operation_document_composes_with_the_merge_beneath_it() {
     );
     assert_eq!(
         effective.sigma_bn.x, 7.0,
-        "the operation document masked the merge below it instead of composing"
+        "the element assignment masked the rule below it instead of composing"
     );
 }
 
@@ -529,11 +521,14 @@ fn a_later_rule_covers_an_earlier_one_and_gives_it_back_when_removed() {
     output.write(spinning([1.0, 2.0, 3.0]));
 
     output
-        .set_override(Request::replace(replace_op("/omega_radps/1", 9.0)).unwrap())
+        .set_override(Request::replace(assign("/omega_radps/1", 9.0)).unwrap())
         .unwrap();
     let covering = output
         .set_override(
-            Request::replace(serde_json::to_value(spinning([0.0, 0.0, 0.0])).unwrap()).unwrap(),
+            Request::replace(
+                json!({ "": serde_json::to_value(spinning([0.0, 0.0, 0.0])).unwrap() }),
+            )
+            .unwrap(),
         )
         .unwrap();
     assert_eq!(output.read().omega_radps.y, 0.0, "the replace did not take");
@@ -546,21 +541,17 @@ fn a_later_rule_covers_an_earlier_one_and_gives_it_back_when_removed() {
     );
 }
 
-/// Refused when the request is *parsed*, not when it is installed: an operation
-/// this crate does not implement is not a rule that fails to apply, it is not a
-/// rule at all, so it never reaches a port.
+/// A key that is not a pointer is answered with the pointer it should have
+/// been. This is the mistake a client makes when it carries a field name where
+/// a path belongs, and it is refused when the request is *parsed*, so it never
+/// reaches a port.
 #[test]
-fn a_document_using_any_operation_but_replace_is_refused() {
-    for operation in ["add", "remove", "move", "copy", "test"] {
-        let error =
-            Request::replace(json!([{ "op": operation, "path": "/omega_radps/0", "value": 1.0 }]))
-                .expect_err("{operation} was accepted")
-                .to_string();
-        assert!(
-            error.contains(&format!("'{operation}'")) && error.contains("RFC 6902"),
-            "{operation} was refused without saying which operation, or against what: {error}"
-        );
-    }
+fn a_replace_key_that_is_not_a_pointer_is_answered_with_one() {
+    let error = Request::replace(json!({ "omega_radps": [1.0, 2.0, 3.0] }))
+        .expect_err("a bare field name was accepted as a path")
+        .to_string();
+
+    assert!(error.contains("write '/omega_radps' instead"), "{error}");
 }
 
 #[test]
@@ -569,7 +560,7 @@ fn a_pointer_that_does_not_resolve_is_refused_not_ignored() {
     output.write(spinning([1.0, 2.0, 3.0]));
 
     let error = output
-        .set_override(Request::replace(replace_op("/omega_radps/7", 9.0)).unwrap())
+        .set_override(Request::replace(assign("/omega_radps/7", 9.0)).unwrap())
         .expect_err("an index past the end of a fixed vector was accepted");
     assert!(error.to_string().contains("does not resolve"), "{error}");
 
@@ -578,27 +569,34 @@ fn a_pointer_that_does_not_resolve_is_refused_not_ignored() {
     assert_eq!(output.read().omega_radps.x, 1.0);
 }
 
-/// A replace takes either patch format, so both shapes are accepted and only a
-/// payload that is neither is refused.
+/// One payload shape, so a whole array and one of its elements are the same
+/// kind of request and anything else is refused by naming the shape it wanted.
+/// An RFC 6902 operation document is the likely wrong guess, being what an array
+/// of `replace` operations looks like elsewhere.
 #[test]
-fn a_replace_takes_either_patch_format_and_nothing_else() {
+fn a_replace_takes_a_pointer_map_and_nothing_else() {
     let output = Output::new(SpacecraftStateMsg::default());
 
     output
-        .set_override(Request::replace(json!({ "omega_radps": [1.0, 2.0, 3.0] })).unwrap())
-        .expect("a merge document was refused");
+        .set_override(Request::replace(json!({ "/omega_radps": [1.0, 2.0, 3.0] })).unwrap())
+        .expect("a whole-array assignment was refused");
     assert_eq!(output.read().omega_radps.z, 3.0);
 
     output
-        .set_override(Request::replace(replace_op("/omega_radps/0", 9.0)).unwrap())
-        .expect("an operation document was refused");
+        .set_override(Request::replace(assign("/omega_radps/0", 9.0)).unwrap())
+        .expect("an element assignment was refused");
     assert_eq!(output.read().omega_radps.x, 9.0);
 
-    for neither in [json!(42), json!("a string"), json!(null)] {
-        let error = Request::replace(neither.clone())
-            .expect_err("a payload that is neither shape was accepted")
+    for wrong in [
+        json!([{ "op": "replace", "path": "/omega_radps/0", "value": 1.0 }]),
+        json!(42),
+        json!("a string"),
+        json!(null),
+    ] {
+        let error = Request::replace(wrong.clone())
+            .expect_err("a payload of the wrong shape was accepted")
             .to_string();
-        assert!(error.contains("neither"), "{neither}: {error}");
+        assert!(error.contains("JSON pointers"), "{wrong}: {error}");
     }
 }
 
@@ -702,7 +700,7 @@ fn every_mode_composes_because_none_of_them_mask() {
         .set_override(Request::freeze(json!(["/storage_level_j"])).unwrap())
         .unwrap();
     output
-        .set_override(Request::replace(json!({ "current_net_power_w": 3.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/current_net_power_w": 3.0 })).unwrap())
         .unwrap();
     output
         .set_override(Request::default(json!(["/storage_capacity_j"])).unwrap())
@@ -810,10 +808,7 @@ fn a_rule_that_stops_resolving_is_skipped_without_cancelling_the_others() {
     });
 
     output
-        .set_override(
-            Request::replace(json!([{ "op": "replace", "path": "/inner/value", "value": 9.0 }]))
-                .unwrap(),
-        )
+        .set_override(Request::replace(json!({ "/inner/value": 9.0 })).unwrap())
         .expect("the pointer resolves while the option is populated");
     output
         .set_override(Request::freeze(json!(null)).unwrap())
@@ -859,10 +854,7 @@ fn a_candidate_that_cannot_apply_is_still_refused_at_install() {
     });
 
     output
-        .set_override(
-            Request::replace(json!([{ "op": "replace", "path": "/inner/value", "value": 9.0 }]))
-                .unwrap(),
-        )
+        .set_override(Request::replace(json!({ "/inner/value": 9.0 })).unwrap())
         .expect_err("a rule that cannot apply right now was installed");
     assert!(!output.is_overridden());
 }
@@ -879,10 +871,7 @@ fn a_stale_layer_does_not_block_a_later_install() {
         inner: Some(Inner { value: 5.0 }),
     });
     output
-        .set_override(
-            Request::replace(json!([{ "op": "replace", "path": "/inner/value", "value": 9.0 }]))
-                .unwrap(),
-        )
+        .set_override(Request::replace(json!({ "/inner/value": 9.0 })).unwrap())
         .unwrap();
 
     output.write(Optional {
@@ -891,10 +880,10 @@ fn a_stale_layer_does_not_block_a_later_install() {
     });
 
     output
-        .preview_override(Request::replace(json!({ "keep": 8.0 })).unwrap())
+        .preview_override(Request::replace(json!({ "/keep": 8.0 })).unwrap())
         .expect("a preview was refused over a rule it has nothing to do with");
     output
-        .set_override(Request::replace(json!({ "keep": 8.0 })).unwrap())
+        .set_override(Request::replace(json!({ "/keep": 8.0 })).unwrap())
         .expect("an install was refused over a rule it has nothing to do with");
     assert_eq!(output.read().keep, 8.0);
 }

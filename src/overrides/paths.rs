@@ -30,12 +30,11 @@ pub(super) fn reject_unknown_paths(spec: &TargetSpec, request: &Request) -> Resu
         if known.contains(path.as_str()) || indexes_a_known_array(spec, &path) {
             continue;
         }
-        // A request that addresses locations names one place, and a place may be
-        // a whole object. The schema lists only leaves, so a container is
-        // recognised by having leaves beneath it rather than by being listed
-        // itself. The value is left to the apply, which deserialises it as that
-        // field's type.
-        if request.addresses_locations() && known.iter().any(|leaf| descends_from(leaf, &path)) {
+        // A pointer names one place, and a place may be a whole object. The
+        // schema lists only leaves, so a container is recognised by having
+        // leaves beneath it rather than by being listed itself. The value is
+        // left to the apply, which deserialises it as that field's type.
+        if known.iter().any(|leaf| descends_from(leaf, &path)) {
             continue;
         }
         bail!(

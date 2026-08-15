@@ -86,12 +86,13 @@ fn paths(registry: &Registry, target: &str) -> Vec<String> {
         .collect()
 }
 
-/// The schema and the payload check share one walk, so what counts as a leaf is
-/// one decision rather than two that can drift apart. Arrays are leaves because
-/// a JSON merge replaces them wholesale; an empty object is a leaf because there
-/// is nothing under it to name; the root is not a field.
+/// What the schema calls a leaf, and that a payload can name every one of them.
+/// An array is a leaf because listing an entry per element would have a client
+/// render one control per component *and* another for the whole vector; an empty
+/// object is a leaf because there is nothing under it to name; the root is not a
+/// field.
 #[test]
-fn the_schema_and_the_payload_check_agree_on_what_a_leaf_is() {
+fn a_payload_can_name_every_leaf_the_schema_publishes() {
     let value = json!({
         "flat": 1.0,
         "nested": { "inner": 2.0, "deeper": { "leaf": 3.0 } },
@@ -114,10 +115,19 @@ fn the_schema_and_the_payload_check_agree_on_what_a_leaf_is() {
             "/nested/inner"
         ]
     );
+    // Every path the schema publishes is a payload key verbatim. That is the
+    // property one path syntax exists for, and the only thing tying the two
+    // sides together now that a payload names its pointers outright.
+    let payload: serde_json::Map<String, serde_json::Value> = described
+        .iter()
+        .map(|path| (path.clone(), json!(0)))
+        .collect();
     assert_eq!(
-        Request::replace(value.clone()).unwrap().named_paths(),
+        Request::replace(serde_json::Value::Object(payload))
+            .unwrap()
+            .named_paths(),
         described,
-        "a payload addresses different paths than the schema advertises"
+        "a path the schema publishes is not usable as a payload key"
     );
 
     let kinds: Vec<&str> = leaf_fields(&value).iter().map(|field| field.kind).collect();
@@ -158,7 +168,7 @@ fn a_misspelled_field_is_rejected_rather_than_silently_ignored() {
     let error = registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(json!({ "angle_dge": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_dge": 10.0 })).unwrap(),
         )
         .unwrap_err()
         .to_string();
@@ -174,13 +184,13 @@ fn accumulated_patches_survive_a_rejected_one() {
     registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
     let _ = registry.install(
         "sensor_0.output_msg",
-        Request::replace(json!({ "rate_dps": "sideways" })).unwrap(),
+        Request::replace(json!({ "/rate_dps": "sideways" })).unwrap(),
     );
     output.write(reading(3.25));
 
@@ -195,7 +205,7 @@ fn upstream_and_effective_diverge_under_an_override() {
     registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
     output.write(reading(3.25));
@@ -236,7 +246,7 @@ fn an_input_target_overrides_only_that_consumer() {
     registry
         .install(
             "consumer_0.input_msg",
-            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
@@ -283,7 +293,7 @@ fn a_partial_replace_changes_only_what_it_names() {
     registry
         .install(
             "sensor_0.config",
-            Request::replace(json!({ "scale": 1.0 })).unwrap(),
+            Request::replace(json!({ "/scale": 1.0 })).unwrap(),
         )
         .expect("a partial replace was refused");
 
@@ -303,7 +313,7 @@ fn a_replace_naming_every_field_is_accepted() {
         .install(
             "sensor_0.config",
             Request::replace(
-                json!({ "bias": 1.0, "scale": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+                json!({ "/bias": 1.0, "/scale": 2.0, "/sample_hz": 50.0, "/rng_seed": 3 }),
             )
             .unwrap(),
         )
@@ -322,7 +332,7 @@ fn a_freeze_and_a_default_accept_an_empty_payload() {
     registry
         .install(
             "sensor_0.config",
-            Request::replace(json!({ "scale": 1.0 })).unwrap(),
+            Request::replace(json!({ "/scale": 1.0 })).unwrap(),
         )
         .expect("a one-field patch was refused");
     assert_eq!(config.read().scale, 1.0);
@@ -354,7 +364,7 @@ fn a_typo_in_a_replace_is_reported_with_the_field_it_resembles() {
         .install(
             "sensor_0.config",
             Request::replace(
-                json!({ "bias": 1.0, "scael": 2.0, "sample_hz": 50.0, "rng_seed": 3 }),
+                json!({ "/bias": 1.0, "/scael": 2.0, "/sample_hz": 50.0, "/rng_seed": 3 }),
             )
             .unwrap(),
         )
@@ -374,13 +384,13 @@ fn removing_a_rule_uncovers_the_value_the_one_beneath_it_set() {
     let patch = registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
     let replace = registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(serde_json::to_value(reading(20.0)).unwrap()).unwrap(),
+            Request::replace(json!({ "": serde_json::to_value(reading(20.0)).unwrap() })).unwrap(),
         )
         .unwrap();
 
@@ -409,7 +419,7 @@ fn clearing_by_id_on_an_unknown_target_is_an_error_not_a_false() {
     let id = registry
         .install(
             "sensor_0.output_msg",
-            Request::replace(json!({ "angle_deg": 10.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 10.0 })).unwrap(),
         )
         .unwrap();
 
@@ -473,7 +483,7 @@ fn one_module_type_can_be_registered_under_two_names() {
     registry
         .install(
             "sensor_p.output_msg",
-            Request::replace(json!({ "angle_deg": 9.0 })).unwrap(),
+            Request::replace(json!({ "/angle_deg": 9.0 })).unwrap(),
         )
         .unwrap();
 
@@ -544,8 +554,7 @@ fn an_index_into_a_known_array_is_addressable_though_the_schema_lists_the_array(
     registry
         .install(
             "device_0.config",
-            Request::replace(json!([{ "op": "replace", "path": "/bias_xyz/2", "value": 0.5 }]))
-                .unwrap(),
+            Request::replace(json!({ "/bias_xyz/2": 0.5 })).unwrap(),
         )
         .expect("an element of a registered array was refused");
 
@@ -559,8 +568,7 @@ fn an_operation_naming_a_field_the_type_does_not_have_is_refused_with_a_suggesti
     let error = registry
         .install(
             "device_0.config",
-            Request::replace(json!([{ "op": "replace", "path": "/sample_hs", "value": 1.0 }]))
-                .unwrap(),
+            Request::replace(json!({ "/sample_hs": 1.0 })).unwrap(),
         )
         .expect_err("a misspelled field was accepted");
 
@@ -578,41 +586,39 @@ fn an_index_under_a_field_that_is_not_an_array_is_refused() {
     let error = registry
         .install(
             "device_0.config",
-            Request::replace(json!([{ "op": "replace", "path": "/sample_hz/0", "value": 1.0 }]))
-                .unwrap(),
+            Request::replace(json!({ "/sample_hz/0": 1.0 })).unwrap(),
         )
         .expect_err("an index into a scalar was accepted");
 
     assert!(format!("{error:#}").contains("unknown field '/sample_hz/0'"));
 }
 
-/// Both patch formats reach the same target through the same mode, told apart
-/// by their shape alone.
+/// A whole array and one of its elements are the same kind of request, which
+/// is what one payload shape buys: no choosing a format before writing a path.
 #[test]
-fn a_replace_accepts_a_merge_document_and_an_operation_document_alike() {
+fn a_replace_addresses_a_whole_array_or_one_element_alike() {
     let (registry, output) = registry_with_vector();
 
     registry
         .install(
             "device_0.config",
-            Request::replace(json!({ "bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
+            Request::replace(json!({ "/bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
         )
-        .expect("a merge document was refused");
+        .expect("a whole-array assignment was refused");
     assert_eq!(output.read().bias_xyz, [1.0, 2.0, 3.0]);
 
     registry
         .install(
             "device_0.config",
-            Request::replace(json!([{ "op": "replace", "path": "/bias_xyz/1", "value": 9.0 }]))
-                .unwrap(),
+            Request::replace(json!({ "/bias_xyz/1": 9.0 })).unwrap(),
         )
-        .expect("an operation document was refused");
+        .expect("an element assignment was refused");
     assert_eq!(output.read().bias_xyz, [1.0, 9.0, 3.0]);
 }
 
-/// The schema and the payload check have to agree about arrays too:
-/// `walk_leaves` stops at an array, so a whole-array patch names one field
-/// rather than one path per element.
+/// The schema stops at an array rather than listing an entry per element, so a
+/// whole-array assignment names one field. An element is still addressable —
+/// `indexes_a_known_array` checks the index against its parent.
 #[test]
 fn a_whole_array_patch_still_validates_against_the_array_itself() {
     let (registry, output) = registry_with_vector();
@@ -620,7 +626,7 @@ fn a_whole_array_patch_still_validates_against_the_array_itself() {
     registry
         .install(
             "device_0.config",
-            Request::replace(json!({ "bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
+            Request::replace(json!({ "/bias_xyz": [1.0, 2.0, 3.0] })).unwrap(),
         )
         .expect("a whole-array patch was refused");
 
@@ -659,7 +665,10 @@ fn a_replace_may_name_fields_the_type_default_leaves_unpopulated() {
     .unwrap();
 
     registry
-        .install("earth.output_msg", Request::replace(complete).unwrap())
+        .install(
+            "earth.output_msg",
+            Request::replace(json!({ "": complete })).unwrap(),
+        )
         .expect("a complete, typed replacement was refused");
 
     assert!(
@@ -689,7 +698,7 @@ fn a_patch_may_name_a_field_inside_an_option_the_module_populated() {
     registry
         .install(
             "earth.output_msg",
-            Request::replace(json!({ "orientation": { "inertial_to_fixed_dot": spun } })).unwrap(),
+            Request::replace(json!({ "/orientation/inertial_to_fixed_dot": spun })).unwrap(),
         )
         .expect("patching a populated option was refused");
 
@@ -722,7 +731,7 @@ fn a_typo_inside_an_option_is_still_refused() {
     let error = registry
         .install(
             "earth.output_msg",
-            Request::replace(json!({ "orientation": { "inertial_to_fixed_dto": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] } })).unwrap(),
+            Request::replace(json!({ "/orientation/inertial_to_fixed_dto": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] })).unwrap(),
         )
         .unwrap_err()
         .to_string();
@@ -755,8 +764,7 @@ fn a_valid_field_with_an_unusable_value_reports_the_value_not_the_name() {
     let error = registry
         .install(
             "earth.output_msg",
-            Request::replace(json!({ "orientation": { "inertial_to_fixed": "not a matrix" } }))
-                .unwrap(),
+            Request::replace(json!({ "/orientation/inertial_to_fixed": "not a matrix" })).unwrap(),
         )
         .unwrap_err()
         .to_string();
@@ -796,7 +804,10 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
     payload["orientation"]["inertial_to_fixed"] = json!("not a matrix");
 
     let error = registry
-        .install("earth.output_msg", Request::replace(payload).unwrap())
+        .install(
+            "earth.output_msg",
+            Request::replace(json!({ "": payload })).unwrap(),
+        )
         .unwrap_err()
         .to_string();
 
@@ -853,10 +864,9 @@ fn a_mode_name_this_crate_does_not_define_is_refused() {
     }
 }
 
-/// A dotted key in a merge document is a key serde ignores, so without the
-/// check it would install a rule that never applied. Pointer joining is what
-/// catches it: `{"a.b": 1}` reaches `/a.b` and `{"a": {"b": 1}}` reaches `/a/b`,
-/// so the first is unknown rather than indistinguishable from the second.
+/// A field whose name contains a dot is addressed by the pointer `/a.b`, and a
+/// dot is not a separator, so `/a.b` and `/a/b` are different places. The name
+/// check tells them apart on its own.
 #[test]
 fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     use crate::messages::{PlanetOrientation, PlanetStateMsg};
@@ -873,7 +883,7 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     let error = registry
         .install(
             "earth.output_msg",
-            Request::replace(json!({ "orientation.inertial_to_fixed": 1.0 })).unwrap(),
+            Request::replace(json!({ "/orientation.inertial_to_fixed": 1.0 })).unwrap(),
         )
         .expect_err("a dotted key was accepted as the path it resembles");
 
@@ -920,10 +930,7 @@ fn an_operation_may_address_a_whole_object_valued_field() {
     registry
         .install(
             "earth.output_msg",
-            Request::replace(
-                json!([{ "op": "replace", "path": "/orientation", "value": replacement }]),
-            )
-            .unwrap(),
+            Request::replace(json!({ "/orientation": replacement })).unwrap(),
         )
         .expect("replacing a whole object-valued field was refused");
 
@@ -938,8 +945,7 @@ fn an_operation_may_address_a_whole_object_valued_field() {
     let error = registry
         .install(
             "earth.output_msg",
-            Request::replace(json!([{ "op": "replace", "path": "/orientatio", "value": {} }]))
-                .unwrap(),
+            Request::replace(json!({ "/orientatio": {} })).unwrap(),
         )
         .expect_err("a misspelled container path was accepted");
     assert!(
@@ -1029,7 +1035,7 @@ fn independently_built_inputs_do_not_share_a_connection_or_a_rule_stack() {
     registry
         .install(
             "reading.0",
-            Request::replace(json!({ "value": 99.0 })).unwrap(),
+            Request::replace(json!({ "/value": 99.0 })).unwrap(),
         )
         .unwrap();
 
@@ -1065,7 +1071,7 @@ fn a_field_whose_name_contains_the_separator_is_still_addressable() {
     registry
         .install(
             "device.config",
-            Request::replace(json!({ "gain.value": 5.0 })).unwrap(),
+            Request::replace(json!({ "/gain.value": 5.0 })).unwrap(),
         )
         .expect("the renamed field was refused as a path");
     assert_eq!(output.read().gain_value, 5.0);
@@ -1077,7 +1083,7 @@ fn a_field_whose_name_contains_the_separator_is_still_addressable() {
     let error = registry
         .install(
             "device.config",
-            Request::replace(json!({ "plain.value": 1.0 })).unwrap(),
+            Request::replace(json!({ "/plain.value": 1.0 })).unwrap(),
         )
         .expect_err("an unaccounted dotted key was accepted");
     assert!(

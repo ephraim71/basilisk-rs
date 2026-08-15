@@ -532,6 +532,34 @@ struct VectorConfig {
     sample_hz: f64,
 }
 
+/// A nested object whose fields all have defaults, so a dropped one
+/// deserialises cleanly instead of failing — which is what makes a typo inside
+/// a container silent rather than self-reporting.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct NestedGain {
+    gain: f64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+struct NestedConfig {
+    sample_hz: f64,
+    nested: NestedGain,
+}
+
+fn registry_with_nested() -> (Registry, Output<NestedConfig>) {
+    let registry = Registry::new();
+    let output = Output::new(NestedConfig {
+        sample_hz: 200.0,
+        nested: NestedGain { gain: 1.5 },
+    });
+    registry
+        .register("device_0.config", &output, CONFIG)
+        .unwrap();
+    (registry, output)
+}
+
 fn registry_with_vector() -> (Registry, Output<VectorConfig>) {
     let registry = Registry::new();
     let output = Output::new(VectorConfig {
@@ -935,6 +963,54 @@ fn a_dotted_key_is_refused_rather_than_matching_the_path_it_resembles() {
     assert!(
         output.installed_overrides().is_empty(),
         "a rule that can never apply was installed anyway"
+    );
+}
+
+/// A whole-object assignment supplies each field inside it, and serde drops one
+/// it does not recognise. Checking only the assignment's own pointer let
+/// `{"/nested": {"gaim": 9}}` install, report success, and leave `gain` at its
+/// default — the exact failure the name check exists to prevent, one level in.
+#[test]
+fn a_typo_inside_a_container_assignment_is_refused() {
+    let (registry, output) = registry_with_nested();
+
+    let error = registry
+        .install(
+            "device_0.config",
+            Request::replace(json!({ "/nested": { "gaim": 9.0 } })).unwrap(),
+        )
+        .expect_err("a typo inside a container was installed")
+        .to_string();
+
+    assert!(error.contains("'/nested/gaim'"), "{error}");
+    assert!(error.contains("did you mean '/nested/gain'"), "{error}");
+    assert_eq!(
+        output.read().nested.gain,
+        1.5,
+        "the value was changed anyway"
+    );
+    assert!(!output.is_overridden());
+}
+
+/// The root is a container like any other, and the widest one — a typo there
+/// defaults every field the message has.
+#[test]
+fn a_typo_inside_a_root_assignment_is_refused() {
+    let (registry, output) = registry_with_nested();
+
+    let error = registry
+        .install(
+            "device_0.config",
+            Request::replace(json!({ "": { "nestde": { "gain": 9.0 } } })).unwrap(),
+        )
+        .expect_err("a typo in a whole-message replacement was installed")
+        .to_string();
+
+    assert!(error.contains("'/nestde/gain'"), "{error}");
+    assert_eq!(
+        output.read().nested.gain,
+        1.5,
+        "the value was changed anyway"
     );
 }
 

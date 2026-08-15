@@ -301,18 +301,36 @@ impl Request {
         }
     }
 
-    /// The paths this request addresses, as pointers.
+    /// Every path this request supplies a value for, as pointers.
     ///
     /// What the name checks read, so that they ask the request what it names
     /// rather than re-deriving it from a raw payload. A whole-message selection
     /// names nothing: there is no path to be wrong.
+    ///
+    /// An assignment names more than its own pointer. Assigning a whole object
+    /// supplies each field inside it, and serde drops one it does not
+    /// recognise — so `{"/inner": {"gaim": 9}}` would install, report success,
+    /// and leave `gain` at its default. Walking into the value catches that at
+    /// `/inner/gaim`, the same place a client would have written it directly.
     pub(crate) fn named_paths(&self) -> Vec<String> {
         match self {
-            Self::Replace(document) => document
-                .assignments()
-                .iter()
-                .map(|assignment| assignment.path.as_str().to_string())
-                .collect(),
+            Self::Replace(document) => {
+                let mut paths = Vec::new();
+                for assignment in document.assignments() {
+                    let supplied = paths.len();
+                    super::schema::walk_leaves(
+                        assignment.path.as_str(),
+                        &assignment.value,
+                        &mut |path, _| paths.push(path.to_string()),
+                    );
+                    // The root assigned an array or an empty object reaches no
+                    // leaf, and every assignment has to name something.
+                    if paths.len() == supplied {
+                        paths.push(assignment.path.as_str().to_string());
+                    }
+                }
+                paths
+            }
             Self::Freeze(selection) | Self::Default(selection) => selection
                 .pointers()
                 .iter()

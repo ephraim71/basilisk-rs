@@ -527,6 +527,15 @@ fn run_case(scenario: Scenario, describe: bool) -> Outcome {
     let stopped_at_nanos = simulation.current_sim_nanos();
     let final_altitude_m = true_altitude_m();
 
+    // A run ends when the vehicle deorbits or the cap is reached, which can be
+    // before every fault the case listed has come due. Cancelling what is left
+    // records those, so the report below says a fault never happened rather than
+    // leaving it out — the one way a case can inject less than it lists and look
+    // as though it did. The other half of ending a campaign is deliberately not
+    // called: withdrawing the rules in force would lift the very faults the
+    // outcome is about to be read from.
+    faults.cancel_pending();
+
     for event in faults.events() {
         println!("  {event}");
     }

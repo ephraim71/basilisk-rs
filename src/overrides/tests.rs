@@ -1458,6 +1458,36 @@ fn a_lifetime_withdraws_its_own_rule_and_leaves_the_one_installed_beside_it() {
     assert_eq!(faults.in_force(), 1);
 }
 
+/// A lifetime that runs past the end of the clock. Added to the install time it
+/// overflows, and both ways that lands are wrong in the same direction: a debug
+/// build panics, and a release build wraps to an expiry in the past and
+/// withdraws the fault on the advance that installed it — silently, and the
+/// opposite of what the longest lifetime expressible could have asked for.
+#[test]
+fn a_lifetime_longer_than_the_clock_holds_for_the_rest_of_the_run() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("held").with(
+        Fault::new("sensor_0.output_msg", rate_fault(0.0))
+            .at(SECOND)
+            .lasting(u64::MAX)
+            .labelled("held for the rest of the run"),
+    );
+    let mut faults = FaultSchedule::new(&registry, case);
+
+    let installs = faults.advance(SECOND);
+    assert_eq!(installs.len(), 1, "the fault was installed and withdrawn");
+    assert_eq!(output.read().rate_dps, 0.0);
+    assert_eq!(faults.in_force(), 1);
+
+    assert!(faults.advance(u64::MAX / 2).is_empty());
+    assert_eq!(
+        output.read().rate_dps,
+        0.0,
+        "a lifetime past the end of the clock expired inside it"
+    );
+    assert_eq!(faults.in_force(), 1);
+}
+
 /// A fault nobody dated in advance. Whoever notices the condition posts it, and
 /// need not be the thread advancing the schedule — which is what makes a
 /// condition-triggered fault as ordinary as a clocked one.
@@ -1571,4 +1601,116 @@ fn withdrawing_a_campaign_leaves_a_rule_installed_by_someone_else_alone() {
         "a rule this campaign never installed was withdrawn with it"
     );
     assert_eq!(faults.in_force(), 0);
+}
+
+/// Lifting a campaign's faults is not the same as calling the campaign off. What
+/// is in force comes out; what has not landed yet still lands, because a
+/// schedule that forgot its remaining faults could not be told to lift one
+/// without being abandoned.
+#[test]
+fn withdrawing_what_is_in_force_leaves_the_faults_still_to_come() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("two_stage")
+        .with(
+            Fault::new("sensor_0.output_msg", rate_fault(0.0))
+                .at(SECOND)
+                .labelled("first"),
+        )
+        .with(
+            Fault::new("sensor_0.output_msg", rate_fault(9.0))
+                .at(3 * SECOND)
+                .labelled("second"),
+        );
+    let mut faults = FaultSchedule::new(&registry, case);
+
+    faults.advance(SECOND);
+    assert_eq!(output.read().rate_dps, 0.0);
+
+    faults.withdraw_in_force();
+    assert_eq!(output.read().rate_dps, PUBLISHED_RATE_DPS);
+    assert_eq!(faults.in_force(), 0);
+    assert_eq!(faults.pending(), 1, "the fault still to come was dropped");
+
+    faults.advance(3 * SECOND);
+    assert_eq!(
+        output.read().rate_dps,
+        9.0,
+        "the campaign stopped at the withdrawal instead of carrying on"
+    );
+}
+
+/// Calling it off. Nothing waiting ever lands, and every fault dropped is in the
+/// report — a run they were cancelled out of reads exactly like a run whose
+/// faults had no effect.
+#[test]
+fn cancelling_stops_a_fault_from_ever_landing_and_records_that_it_did() {
+    let (registry, output) = registry_with_reading();
+    let case = Case::new("called_off")
+        .with(
+            Fault::new("sensor_0.output_msg", rate_fault(0.0))
+                .at(SECOND)
+                .labelled("in force"),
+        )
+        .with(
+            Fault::new("sensor_0.output_msg", rate_fault(9.0))
+                .at(3 * SECOND)
+                .labelled("called off"),
+        );
+    let mut faults = FaultSchedule::new(&registry, case);
+    faults.advance(SECOND);
+
+    faults.withdraw_all();
+    assert_eq!(faults.in_force(), 0);
+    assert_eq!(faults.pending(), 0);
+
+    faults.advance(10 * SECOND);
+    assert_eq!(
+        output.read().rate_dps,
+        PUBLISHED_RATE_DPS,
+        "a cancelled fault landed anyway"
+    );
+
+    let cancelled: Vec<(&str, u64)> = faults
+        .events()
+        .iter()
+        .filter_map(|event| match event.kind {
+            FaultEventKind::Cancelled { due_at_nanos } => {
+                Some((event.label.as_str(), due_at_nanos))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancelled,
+        [("called off", 3 * SECOND)],
+        "a fault that never landed went unreported"
+    );
+}
+
+/// A cancellation reaches what was posted before it, including what is still in
+/// the channel. It cannot reach what is posted after: a sender that has been
+/// handed out cannot be recalled, and this is the one part of ending a campaign
+/// that dropping the senders does rather than the schedule.
+#[test]
+fn cancelling_drops_what_was_posted_before_it_and_not_what_follows() {
+    let (registry, output) = registry_with_reading();
+    let mut faults = FaultSchedule::new(&registry, Case::new("live"));
+    let sender = faults.sender();
+
+    sender
+        .send(Fault::new("sensor_0.output_msg", rate_fault(0.0)).labelled("posted first"))
+        .unwrap();
+    faults.cancel_pending();
+    faults.advance(SECOND);
+    assert_eq!(
+        output.read().rate_dps,
+        PUBLISHED_RATE_DPS,
+        "a fault posted before the cancellation was installed after it"
+    );
+
+    sender
+        .send(Fault::new("sensor_0.output_msg", rate_fault(4.0)).labelled("posted after"))
+        .unwrap();
+    faults.advance(2 * SECOND);
+    assert_eq!(output.read().rate_dps, 4.0);
 }

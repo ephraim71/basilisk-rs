@@ -89,6 +89,10 @@ impl Fault {
     /// Measured from the install rather than from the date, so a fault posted
     /// mid-run gets the lifetime it was given rather than one counted from a
     /// moment it was never dated with.
+    ///
+    /// A lifetime that would run past the end of the clock stops there, so the
+    /// fault holds for the rest of the run rather than expiring the instant it
+    /// lands.
     pub fn lasting(mut self, lifetime_nanos: u64) -> Self {
         self.lifetime_nanos = Some(lifetime_nanos);
         self
@@ -216,6 +220,13 @@ impl fmt::Display for FaultEvent {
                 "withdrew '{}' from '{}', {id:?}",
                 self.label, self.target
             ),
+            FaultEventKind::Cancelled { due_at_nanos } => write!(
+                formatter,
+                "cancelled '{}' on '{}', which was due at {:.3} s",
+                self.label,
+                self.target,
+                *due_at_nanos as f64 * 1.0e-9
+            ),
             FaultEventKind::Refused(reason) => write!(
                 formatter,
                 "refused '{}' on '{}': {reason}",
@@ -229,6 +240,15 @@ impl fmt::Display for FaultEvent {
 pub enum FaultEventKind {
     Installed(RuleId),
     Withdrawn(RuleId),
+    /// Dropped before it ever installed, by [`FaultSchedule::cancel_pending`],
+    /// with the time it would have landed at.
+    ///
+    /// Recorded rather than passed over: a run something was cancelled out of
+    /// looks exactly like a run whose fault had no effect, and only the report
+    /// can tell the two apart.
+    Cancelled {
+        due_at_nanos: u64,
+    },
     /// The registry did not carry the change out, and why: an unknown target, a
     /// field the message type does not have, a payload that cannot produce a
     /// well-formed message, or a rule that something else had already removed.
@@ -400,14 +420,52 @@ impl FaultSchedule {
         self.advance(self.now_nanos)
     }
 
-    /// Withdraws every rule this schedule installed and still holds, leaving
-    /// anything installed through the registry by anyone else alone.
+    /// Withdraws every rule this schedule installed and still holds, and leaves
+    /// the faults that have not come due to come due as planned.
     ///
-    /// What ends a campaign on a simulation that outlives it.
-    pub fn withdraw_all(&mut self) {
+    /// Lifts a campaign's faults without ending the campaign. Anything installed
+    /// through the registry by anyone else — an operator's rule, another
+    /// schedule's — is left alone, because this names the ids it installed
+    /// rather than clearing the targets they sit on.
+    pub fn withdraw_in_force(&mut self) {
         for installed in std::mem::take(&mut self.installed) {
             self.withdraw(installed);
         }
+    }
+
+    /// Drops every fault that has not come due, so none of them ever installs,
+    /// and leaves the rules already in force exactly as they are.
+    ///
+    /// Stops a campaign without undoing it: nothing new is injected, and what is
+    /// already broken stays broken. Each dropped fault is recorded, because a
+    /// run these were cancelled out of reads exactly like a run whose faults had
+    /// no effect.
+    ///
+    /// Everything posted by now goes with them, the channel included. A fault
+    /// posted *after* this returns is still queued — a [`FaultSender`] that has
+    /// been handed out cannot be recalled, and dropping it is what stops it.
+    pub fn cancel_pending(&mut self) {
+        self.drain_incoming();
+        for fault in std::mem::take(&mut self.pending) {
+            let due_at_nanos = fault.at_nanos;
+            self.raise(
+                fault.label,
+                fault.target,
+                FaultEventKind::Cancelled { due_at_nanos },
+            );
+        }
+    }
+
+    /// Ends the campaign: [`Self::withdraw_in_force`] and then
+    /// [`Self::cancel_pending`], so nothing of this schedule's is left installed
+    /// and nothing of its is still to come.
+    ///
+    /// The two halves are separate because ending a campaign and undoing one are
+    /// different things, and a schedule that offered only this would have to be
+    /// abandoned rather than told to stop.
+    pub fn withdraw_all(&mut self) {
+        self.withdraw_in_force();
+        self.cancel_pending();
     }
 
     /// Whether every fault still waiting would be accepted, asked now rather
@@ -485,7 +543,14 @@ impl FaultSchedule {
                     id,
                     target: target.clone(),
                     label: label.clone(),
-                    clear_at_nanos: lifetime_nanos.map(|lifetime| self.now_nanos + lifetime),
+                    // Saturating, so a lifetime that runs past the end of the
+                    // clock lands at the end of it rather than wrapping to an
+                    // expiry in the past — which would withdraw the fault on the
+                    // advance that installed it, and do it silently in a release
+                    // build. The longest lifetime expressible means "for the rest
+                    // of the run", and this is that.
+                    clear_at_nanos: lifetime_nanos
+                        .map(|lifetime| self.now_nanos.saturating_add(lifetime)),
                 });
                 self.raise(label, target, FaultEventKind::Installed(id));
             }

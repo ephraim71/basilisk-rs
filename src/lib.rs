@@ -16,6 +16,7 @@ pub mod fsw_algorithms;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
+pub mod overrides;
 pub mod power;
 pub mod sensors;
 pub mod simulation;

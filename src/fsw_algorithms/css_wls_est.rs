@@ -21,7 +21,11 @@ pub struct CssWlsEst {
 impl CssWlsEst {
     pub fn new(config: CssWlsEstConfig) -> Self {
         Self {
-            css_data_in_msgs: vec![Input::default(); config.sensor_normals_body.len()],
+            // Not `vec![_; n]`: cloning a port aliases it, so every sensor would
+            // share one connection and one override stack.
+            css_data_in_msgs: (0..config.sensor_normals_body.len())
+                .map(|_| Input::default())
+                .collect(),
             config,
             nav_state_out_msg: Output::default(),
         }

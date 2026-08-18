@@ -1,6 +1,24 @@
+//! Messages, the ports that carry them, and the override rules that can be laid
+//! over one in flight.
+//!
+//! | region | holds |
+//! |---|---|
+//! | Re-exports | every concrete message type, one per file in `messages/` |
+//! | Message contract | [`SimulationMessage`] — what a type must satisfy to travel |
+//! | Override rules | the layer stack behind a port; what each mode *does* is `overrides/rule.rs` |
+//! | Ports | [`Output`] and [`Input`] — the handles modules actually hold, and [`Port`], the override surface they share |
+//!
+//! This module owns **custody**: which stack belongs to which port, who may
+//! change it, and when a fold becomes the value readers see. It neither computes
+//! nor validates — [`crate::overrides`] does both, and knows what a *target* is,
+//! which this module does not.
+
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::sync::{Arc, RwLock};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, RwLock};
+
+use crate::overrides::rule::{Request, Rule, RuleId, fold_candidate, fold_installed, next_rule_id};
 
 mod array_motor_torque;
 mod array_motor_voltage;
@@ -106,20 +124,13 @@ pub(crate) mod big_array {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MessageOverrideMode {
-    Replace,
-    Patch,
-    Freeze,
-    Default,
-}
+// ---------------------------------------------------------------------------
+// Message contract
+// ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-struct MessageOverride {
-    mode: MessageOverrideMode,
-    value: Value,
-}
-
+/// What a type must satisfy to travel between modules: cloneable for the read
+/// path, defaultable for an unconnected input, and serde-round-trippable so an
+/// override can be expressed as JSON.
 pub trait SimulationMessage:
     Clone + Default + Serialize + DeserializeOwned + Send + Sync + 'static
 {
@@ -130,11 +141,213 @@ impl<T> SimulationMessage for T where
 {
 }
 
+/// The override rules behind an `Output` or an `Input`, innermost first.
+///
+/// Custody, not arithmetic. What a stack *computes* is
+/// [`crate::overrides::rule`]'s answer, and the same one whether the stack is
+/// stored or merely proposed; what is here is which stack belongs to this port,
+/// who may change it, and when a fold is allowed to become the value readers
+/// see — see [`Self::install`], which folds a copy and commits only if that
+/// succeeded.
+///
+/// A stack rather than a single rule because a fault has an owner. Merging
+/// successive patches into one rule loses that: the merged rule carries one
+/// id, so removing the fault that owns it either takes the others with it or
+/// cannot reach it at all. Layers keep each fault removable on its own.
+///
+/// Mutated through `&self` rather than `&mut self`, which is what lets the
+/// registry hold a second handle on a port while the module keeps using its own.
+/// Both directions of a connection need identical semantics, so this lives here
+/// once rather than being reimplemented on each side.
+#[derive(Clone, Debug, Default)]
+struct Overrides {
+    rules: Arc<RwLock<Vec<Rule>>>,
+    /// Which rules were skipped by the last fold, so that a skip is reported
+    /// when it starts and when it ends rather than on every read and write.
+    skipped: Arc<Mutex<BTreeSet<RuleId>>>,
+}
+
+impl Overrides {
+    fn snapshot(&self) -> Vec<Rule> {
+        self.rules
+            .read()
+            .expect("failed to lock override rules for read")
+            .clone()
+    }
+
+    /// Whether anything is installed, without copying the stack to find out.
+    fn is_empty(&self) -> bool {
+        self.rules
+            .read()
+            .expect("failed to lock override rules for read")
+            .is_empty()
+    }
+
+    /// The value `request` would produce, without installing anything.
+    ///
+    /// Takes the same already-sampled `live` and `type_default` as
+    /// [`Self::install`], so that previewing a rule and installing it read from
+    /// identical inputs.
+    fn preview<T: SimulationMessage>(
+        &self,
+        request: Request,
+        live: &Value,
+        type_default: &Value,
+        upstream: T,
+    ) -> Result<T, serde_json::Error> {
+        let candidate = Rule::build(request, live, type_default, RuleId::UNINSTALLED)?;
+        fold_candidate(&self.snapshot(), &candidate, upstream)
+    }
+
+    /// Installs a rule, returning its id and the value the whole stack now
+    /// produces.
+    ///
+    /// The lock spans building, applying and storing so that a concurrent
+    /// caller cannot install a layer between the value being computed and the
+    /// rule being stored.
+    ///
+    /// `upstream` and `live` are sampled by the caller *before* this is
+    /// entered: reading them here would take the value locks while holding the
+    /// rules lock, which is the opposite of the order `write` uses.
+    fn install<T>(
+        &self,
+        request: Request,
+        live: &Value,
+        type_default: &Value,
+        upstream: T,
+    ) -> Result<(RuleId, T), serde_json::Error>
+    where
+        T: SimulationMessage,
+    {
+        let mut rules = self
+            .rules
+            .write()
+            .expect("failed to lock override rules for write");
+
+        let candidate = Rule::build(request, live, type_default, next_rule_id())?;
+        let id = candidate.id();
+        // Fold before storing, so a rejected rule leaves the installed stack
+        // exactly as it was.
+        let effective = fold_candidate(&rules, &candidate, upstream)?;
+
+        rules.push(candidate);
+        Ok((id, effective))
+    }
+
+    fn clear(&self) {
+        self.rules
+            .write()
+            .expect("failed to lock override rules for write")
+            .clear();
+    }
+
+    /// Removes the layer `id` identifies, leaving the rest in place.
+    fn clear_rule(&self, id: RuleId) -> bool {
+        let mut rules = self
+            .rules
+            .write()
+            .expect("failed to lock override rules for write");
+        let before = rules.len();
+        rules.retain(|rule| rule.id() != id);
+        rules.len() != before
+    }
+
+    /// The value the installed stack produces, with any rule that cannot apply
+    /// to this value left out rather than cancelling the rest.
+    ///
+    /// Infallible by construction — see [`fold_installed`] for why a stale layer
+    /// must not be allowed to discard the ones still working.
+    fn apply_installed<T: SimulationMessage>(&self, upstream: T) -> T {
+        let rules = self.snapshot();
+        let (value, skipped) = fold_installed(&rules, upstream);
+        self.report(&rules, skipped);
+        value
+    }
+
+    /// Reports a skipped rule once when it starts being skipped and once when it
+    /// stops, rather than on every read and write.
+    ///
+    /// This runs at simulation frequency, and a rule stays inapplicable for as
+    /// long as whatever it addresses stays absent, so a line per fold would bury
+    /// the transition that is the actual news in thousands of copies of itself.
+    fn report(&self, rules: &[Rule], skipped: Vec<(RuleId, serde_json::Error)>) {
+        // The overwhelmingly common case is a port with nothing installed, which
+        // has nothing to say and should not pay a lock to say it.
+        if rules.is_empty() && skipped.is_empty() {
+            return;
+        }
+
+        let mut previously = self
+            .skipped
+            .lock()
+            .expect("failed to lock skipped override rules");
+
+        for (id, error) in &skipped {
+            if !previously.contains(id) {
+                log::warn!("override rule {id:?} no longer applies and is being skipped: {error}");
+            }
+        }
+
+        let now: BTreeSet<RuleId> = skipped.into_iter().map(|(id, _)| id).collect();
+        for id in previously.iter() {
+            // A rule that was removed while skipped has not resumed; it is gone.
+            if !now.contains(id) && rules.iter().any(|rule| rule.id() == *id) {
+                log::info!("override rule {id:?} applies again");
+            }
+        }
+
+        *previously = now;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ports
+// ---------------------------------------------------------------------------
+
+/// A message a module publishes.
+///
+/// Cloning gives another handle to the same message, not a copy of it.
+///
+/// # Consistency under concurrent access
+///
+/// The raw value, the rule stack and the effective value are three pieces of
+/// state behind separate locks. Each is individually consistent, and each read
+/// method returns a coherent value, but a `write` racing a `set_override` or a
+/// `clear_override` is **eventually** consistent rather than atomic across all
+/// three: the two orderings differ in which effective value is stored, and the
+/// next `write` settles it either way.
+///
+/// The scheduler steps modules one at a time, so this is only reachable from a
+/// control path running on another thread. What it costs there is one tick of a
+/// stale effective value; the rules themselves are never lost or duplicated.
 #[derive(Clone, Debug)]
 pub struct Output<T> {
     slot: Arc<RwLock<T>>,
     raw_slot: Arc<RwLock<T>>,
-    override_rule: Arc<RwLock<Option<MessageOverride>>>,
+    overrides: Overrides,
+}
+
+impl<T> Output<T> {
+    pub(crate) fn slot(&self) -> Arc<RwLock<T>> {
+        Arc::clone(&self.slot)
+    }
+
+    /// Points `input` at this output.
+    ///
+    /// [`crate::simulation::Simulation::connect`] delegates here; this form is
+    /// for wiring done outside a simulation, such as tests.
+    pub fn connect_to(&self, input: &mut Input<T>) {
+        input.connect(self.slot());
+    }
+
+    /// The rules in force, innermost first. Empty when nothing is overridden.
+    pub fn installed_overrides(&self) -> Vec<Rule> {
+        self.overrides.snapshot()
+    }
+
+    pub fn is_overridden(&self) -> bool {
+        !self.overrides.is_empty()
+    }
 }
 
 impl<T: Clone> Output<T> {
@@ -142,20 +355,23 @@ impl<T: Clone> Output<T> {
         Self {
             slot: Arc::new(RwLock::new(initial.clone())),
             raw_slot: Arc::new(RwLock::new(initial)),
-            override_rule: Arc::new(RwLock::new(None)),
+            overrides: Overrides::default(),
         }
     }
 
-    pub(crate) fn slot(&self) -> Arc<RwLock<T>> {
-        Arc::clone(&self.slot)
-    }
-}
-
-impl<T: Clone> Output<T> {
+    /// The value every consumer sees: raw, with any override applied.
     pub fn read(&self) -> T {
         self.slot
             .read()
             .expect("failed to lock output message for read")
+            .clone()
+    }
+
+    /// The value the simulation actually produced, ignoring any override.
+    pub fn read_upstream(&self) -> T {
+        self.raw_slot
+            .read()
+            .expect("failed to lock raw output message for read")
             .clone()
     }
 }
@@ -170,13 +386,7 @@ where
             .write()
             .expect("failed to lock raw output message for write") = value.clone();
 
-        let effective = self.apply_override(value).unwrap_or_else(|err| {
-            eprintln!("[message-override] failed to apply override: {err}");
-            self.raw_slot
-                .read()
-                .expect("failed to lock raw output message for read")
-                .clone()
-        });
+        let effective = self.overrides.apply_installed(value);
 
         *self
             .slot
@@ -184,95 +394,80 @@ where
             .expect("failed to lock output message for write") = effective;
     }
 
-    pub fn set_override(
-        &self,
-        mode: MessageOverrideMode,
-        value: Value,
-    ) -> Result<(), serde_json::Error> {
-        let mut stored_value = match mode {
-            MessageOverrideMode::Freeze => serde_json::to_value(self.read())?,
-            _ => value,
-        };
-        let raw = self
-            .raw_slot
-            .read()
-            .expect("failed to lock raw output message for read")
-            .clone();
-        let existing = self
-            .override_rule
-            .read()
-            .expect("failed to lock output override for read")
-            .clone();
-        if mode == MessageOverrideMode::Patch
-            && let Some(existing) = existing
-            && existing.mode == MessageOverrideMode::Patch
-        {
-            let mut merged = existing.value;
-            merge_json(&mut merged, stored_value);
-            stored_value = merged;
-        }
+    /// The two values a rule may draw from: the live value a `freeze` captures
+    /// and the type default a `default` resets to.
+    ///
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
+    /// why they cannot be read inside it. Both are sampled whichever mode is
+    /// asked for, since sampling is cheap and the alternative is a mode-shaped
+    /// hole here that has to be kept in step with the modes.
+    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
+        Ok((
+            serde_json::to_value(self.read())?,
+            serde_json::to_value(T::default())?,
+        ))
+    }
 
-        let rule = MessageOverride {
-            mode,
-            value: stored_value,
-        };
-        let effective = apply_override_rule(raw, &rule)?;
+    /// The value this output would take if the override were installed.
+    ///
+    /// Installs nothing. Callers that enforce their own rules validate this
+    /// result rather than the incoming fragment, so a `patch` is judged on what
+    /// it accumulates to rather than on the keys it happens to mention.
+    pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
+        self.overrides
+            .preview(request, &live, &type_default, self.read_upstream())
+    }
 
-        *self
-            .override_rule
-            .write()
-            .expect("failed to lock output override for write") = Some(rule);
+    /// Installs an override, returning an id that identifies it.
+    ///
+    /// The candidate rule is applied to the current raw value first, so a rule
+    /// that cannot produce a well-formed `T` is rejected and the previously
+    /// installed rule is left untouched.
+    pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
+        let (id, effective) =
+            self.overrides
+                .install(request, &live, &type_default, self.read_upstream())?;
+
         *self
             .slot
             .write()
             .expect("failed to lock output message for write") = effective;
-        Ok(())
+        Ok(id)
     }
 
     pub fn clear_override(&self) {
-        *self
-            .override_rule
-            .write()
-            .expect("failed to lock output override for write") = None;
-        let raw = self
-            .raw_slot
-            .read()
-            .expect("failed to lock raw output message for read")
-            .clone();
+        self.overrides.clear();
+        self.reapply();
+    }
+
+    /// Removes the one layer `id` identifies, leaving every other rule on
+    /// this output in force.
+    ///
+    /// Returns whether that layer was there to remove.
+    pub fn clear_override_by_id(&self, id: RuleId) -> bool {
+        if self.overrides.clear_rule(id) {
+            self.reapply();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Recomputes what consumers see from the raw value and the rules still
+    /// installed.
+    ///
+    /// Removing one layer of a stack leaves the others in force, so the visible
+    /// value cannot simply be reset to raw — that would drop every fault except
+    /// the one being withdrawn.
+    fn reapply(&self) {
+        let raw = self.read_upstream();
+        let effective = self.overrides.apply_installed(raw);
         *self
             .slot
             .write()
-            .expect("failed to lock output message for write") = raw;
-    }
-
-    fn apply_override(&self, raw: T) -> Result<T, serde_json::Error> {
-        let Some(rule) = self
-            .override_rule
-            .read()
-            .expect("failed to lock output override for read")
-            .clone()
-        else {
-            return Ok(raw);
-        };
-
-        apply_override_rule(raw, &rule)
-    }
-}
-
-fn apply_override_rule<T>(raw: T, rule: &MessageOverride) -> Result<T, serde_json::Error>
-where
-    T: SimulationMessage,
-{
-    match rule.mode {
-        MessageOverrideMode::Replace | MessageOverrideMode::Freeze => {
-            serde_json::from_value(rule.value.clone())
-        }
-        MessageOverrideMode::Patch => {
-            let mut base = serde_json::to_value(raw)?;
-            merge_json(&mut base, rule.value.clone());
-            serde_json::from_value(base)
-        }
-        MessageOverrideMode::Default => Ok(T::default()),
+            .expect("failed to lock output message for write") = effective;
     }
 }
 
@@ -284,29 +479,75 @@ impl<T: Clone + Default> Default for Output<T> {
 
 #[derive(Clone, Debug)]
 pub struct Input<T> {
-    slot: Option<Arc<RwLock<T>>>,
+    /// Shared, so a clone follows a later `connect` rather than keeping the
+    /// producer it was cloned with. Cloning a port aliases it; `vec![Input::default();
+    /// n]` gives one input under `n` names.
+    slot: Arc<RwLock<Option<Arc<RwLock<T>>>>>,
+    overrides: Overrides,
 }
 
 impl<T> Default for Input<T> {
     fn default() -> Self {
-        Self { slot: None }
+        Self {
+            slot: Arc::new(RwLock::new(None)),
+            overrides: Overrides::default(),
+        }
     }
 }
 
 impl<T> Input<T> {
     pub fn is_connected(&self) -> bool {
-        self.slot.is_some()
+        self.slot
+            .read()
+            .expect("failed to lock input connection for read")
+            .is_some()
     }
 
+    /// `&mut self` is no longer required by the field, and kept so a module
+    /// cannot rewire its own input mid-run.
     pub(crate) fn connect(&mut self, slot: Arc<RwLock<T>>) {
-        self.slot = Some(slot);
+        *self
+            .slot
+            .write()
+            .expect("failed to lock input connection for write") = Some(slot);
+    }
+
+    /// The rules in force, innermost first. Empty when nothing is overridden.
+    pub fn installed_overrides(&self) -> Vec<Rule> {
+        self.overrides.snapshot()
+    }
+
+    pub fn is_overridden(&self) -> bool {
+        !self.overrides.is_empty()
+    }
+
+    pub fn clear_override(&self) {
+        self.overrides.clear();
+    }
+
+    /// Removes the one layer `id` identifies, leaving every other rule on
+    /// this input in force.
+    ///
+    /// Returns whether that layer was there to remove.
+    pub fn clear_override_by_id(&self, id: RuleId) -> bool {
+        self.overrides.clear_rule(id)
     }
 }
 
 impl<T: Clone + Default> Input<T> {
-    pub fn read(&self) -> T {
-        self.slot
-            .as_ref()
+    /// The producer's value, before this input's own override.
+    ///
+    /// This is not necessarily what the simulation produced: if the producer's
+    /// output is itself overridden, this is the producer's *effective* value.
+    pub fn read_upstream(&self) -> T {
+        // Clone the handle out and drop the connection lock before taking the
+        // value lock, so the two are never held at once.
+        let producer = self
+            .slot
+            .read()
+            .expect("failed to lock input connection for read")
+            .clone();
+        producer
             .map(|slot| {
                 slot.read()
                     .expect("failed to lock input message for read")
@@ -316,244 +557,174 @@ impl<T: Clone + Default> Input<T> {
     }
 }
 
-fn merge_json(base: &mut Value, patch: Value) {
-    match (base, patch) {
-        (Value::Object(base_map), Value::Object(patch_map)) => {
-            for (key, patch_value) in patch_map {
-                if let Some(base_value) = base_map.get_mut(&key) {
-                    merge_json(base_value, patch_value);
-                } else {
-                    base_map.insert(key, patch_value);
-                }
-            }
-        }
-        (base_value, patch_value) => *base_value = patch_value,
+impl<T: SimulationMessage> Input<T> {
+    /// The value this consumer sees: upstream, with this input's override applied.
+    pub fn read(&self) -> T {
+        let upstream = self.read_upstream();
+        // Uncontended `RwLock` read of an empty `Vec` when nothing is injected.
+        self.overrides.apply_installed(upstream)
+    }
+
+    /// The two values a rule may draw from: the live value a `freeze` captures
+    /// and the type default a `default` resets to.
+    ///
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
+    /// why they cannot be read inside it. Both are sampled whichever mode is
+    /// asked for, since sampling is cheap and the alternative is a mode-shaped
+    /// hole here that has to be kept in step with the modes.
+    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
+        Ok((
+            serde_json::to_value(self.read())?,
+            serde_json::to_value(T::default())?,
+        ))
+    }
+
+    /// The value this consumer would read if the override were installed.
+    ///
+    /// Installs nothing. See [`Output::preview_override`].
+    pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
+        self.overrides
+            .preview(request, &live, &type_default, self.read_upstream())
+    }
+
+    /// Installs an override on this consumer's view alone.
+    ///
+    /// Unlike overriding the producer's output, this is invisible to every
+    /// other consumer of the same message.
+    pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        let (live, type_default) = self.rule_sources()?;
+        let (id, _) =
+            self.overrides
+                .install(request, &live, &type_default, self.read_upstream())?;
+        Ok(id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the two ports have in common
+// ---------------------------------------------------------------------------
+
+/// The override surface an [`Output`] and an [`Input`] both present.
+///
+/// The two are unrelated types with, as it turns out, exactly the same seven
+/// operations. Without a trait saying so, anything that wanted to accept either
+/// had to be written twice — which is what the registry did, down to two backend
+/// adapters whose bodies differed only in the type they wrapped.
+///
+/// The methods deliberately mirror the inherent ones rather than replacing them.
+/// `output.read()` is called on every tick throughout a simulation, and moving
+/// it onto a trait would mean every one of those callers importing the trait to
+/// keep compiling.
+/// `Clone` is a supertrait because registering a port means handing the registry
+/// its own handle on the same message — every port here clones to a second
+/// handle rather than a copy of the value, which is what lets a fault installed
+/// through the registry be visible to the module holding the original.
+pub trait Port: Clone + Send + Sync {
+    /// The message this port carries.
+    type Message: SimulationMessage;
+
+    /// The value a reader sees, with every installed rule folded in.
+    fn read(&self) -> Self::Message;
+
+    /// The value before any rule — what the port would carry if nothing were
+    /// installed.
+    fn read_upstream(&self) -> Self::Message;
+
+    fn preview_override(&self, request: Request) -> Result<Self::Message, serde_json::Error>;
+
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error>;
+
+    fn clear_override(&self);
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool;
+
+    /// The rules in force, innermost first.
+    fn installed_overrides(&self) -> Vec<Rule>;
+
+    /// Why this port cannot be registered as a target yet, if it cannot.
+    ///
+    /// A port that would misreport its own upstream value has to be refused at
+    /// registration rather than allowed to serve wrong answers later. Only
+    /// [`Input`] has such a state, so the default is that there is no reason.
+    fn registration_refusal(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+impl<T: SimulationMessage> Port for Output<T> {
+    type Message = T;
+
+    fn read(&self) -> T {
+        Output::read(self)
+    }
+
+    fn read_upstream(&self) -> T {
+        Output::read_upstream(self)
+    }
+
+    fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        Output::preview_override(self, request)
+    }
+
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        Output::set_override(self, request)
+    }
+
+    fn clear_override(&self) {
+        Output::clear_override(self);
+    }
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool {
+        Output::clear_override_by_id(self, id)
+    }
+
+    fn installed_overrides(&self) -> Vec<Rule> {
+        Output::installed_overrides(self)
+    }
+}
+
+impl<T: SimulationMessage> Port for Input<T> {
+    type Message = T;
+
+    fn read(&self) -> T {
+        Input::read(self)
+    }
+
+    fn read_upstream(&self) -> T {
+        Input::read_upstream(self)
+    }
+
+    fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
+        Input::preview_override(self, request)
+    }
+
+    fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
+        Input::set_override(self, request)
+    }
+
+    fn clear_override(&self) {
+        Input::clear_override(self);
+    }
+
+    fn clear_override_by_id(&self, id: RuleId) -> bool {
+        Input::clear_override_by_id(self, id)
+    }
+
+    fn installed_overrides(&self) -> Vec<Rule> {
+        Input::installed_overrides(self)
+    }
+
+    /// An unconnected input reads `T::default()`, so it would report that as the
+    /// upstream value and describe a fault against a number no producer ever
+    /// published. Registering has to wait until the wiring is done.
+    fn registration_refusal(&self) -> Option<&'static str> {
+        (!self.is_connected()).then_some(
+            "it was registered before it was connected; register inputs after \
+             wiring or they will report the type default",
+        )
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{ArrayMotorTorqueMsg, MessageOverrideMode, Output};
-    use crate::messages::{MAX_EFF_COUNT, PowerStorageStatusMsg};
-
-    #[test]
-    fn output_passes_raw_value_without_override() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 2.0);
-        assert_eq!(output.read().current_net_power_w, 3.0);
-    }
-
-    #[test]
-    fn patch_override_updates_only_requested_fields() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output
-            .set_override(
-                MessageOverrideMode::Patch,
-                json!({ "current_net_power_w": 9.0 }),
-            )
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 2.0);
-        assert_eq!(output.read().current_net_power_w, 9.0);
-    }
-
-    #[test]
-    fn patch_override_merges_successive_patches() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output
-            .set_override(
-                MessageOverrideMode::Patch,
-                json!({ "storage_level_j": 1.0 }),
-            )
-            .unwrap();
-        output
-            .set_override(
-                MessageOverrideMode::Patch,
-                json!({ "current_net_power_w": 3.0 }),
-            )
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 10.0,
-            storage_capacity_j: 20.0,
-            current_net_power_w: 30.0,
-        });
-
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 20.0);
-        assert_eq!(output.read().current_net_power_w, 3.0);
-    }
-
-    #[test]
-    fn clear_override_restores_latest_raw_value() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output
-            .set_override(
-                MessageOverrideMode::Patch,
-                json!({ "current_net_power_w": 9.0 }),
-            )
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-        output.clear_override();
-
-        assert_eq!(output.read().current_net_power_w, 3.0);
-    }
-
-    #[test]
-    fn freeze_override_holds_effective_value() {
-        let output = Output::new(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-
-        output
-            .set_override(MessageOverrideMode::Freeze, json!({}))
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 10.0,
-            storage_capacity_j: 20.0,
-            current_net_power_w: 30.0,
-        });
-
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 2.0);
-        assert_eq!(output.read().current_net_power_w, 3.0);
-    }
-
-    #[test]
-    fn replace_override_substitutes_the_complete_message() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output
-            .set_override(
-                MessageOverrideMode::Replace,
-                json!({
-                    "storage_level_j": 4.0,
-                    "storage_capacity_j": 5.0,
-                    "current_net_power_w": 6.0,
-                }),
-            )
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 10.0,
-            storage_capacity_j: 20.0,
-            current_net_power_w: 30.0,
-        });
-
-        assert_eq!(output.read().storage_level_j, 4.0);
-        assert_eq!(output.read().storage_capacity_j, 5.0);
-        assert_eq!(output.read().current_net_power_w, 6.0);
-    }
-
-    #[test]
-    fn default_override_emits_default_until_cleared() {
-        let output = Output::new(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-
-        output
-            .set_override(MessageOverrideMode::Default, json!(null))
-            .unwrap();
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 10.0,
-            storage_capacity_j: 20.0,
-            current_net_power_w: 30.0,
-        });
-        assert_eq!(output.read().storage_level_j, 0.0);
-        assert_eq!(output.read().storage_capacity_j, 0.0);
-        assert_eq!(output.read().current_net_power_w, 0.0);
-
-        output.clear_override();
-        assert_eq!(output.read().storage_level_j, 10.0);
-        assert_eq!(output.read().storage_capacity_j, 20.0);
-        assert_eq!(output.read().current_net_power_w, 30.0);
-    }
-
-    #[test]
-    fn malformed_replace_is_rejected_without_installing_the_override() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        let result = output.set_override(
-            MessageOverrideMode::Replace,
-            json!({ "storage_level_j": "not a number" }),
-        );
-        assert!(result.is_err());
-
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 2.0);
-        assert_eq!(output.read().current_net_power_w, 3.0);
-    }
-
-    #[test]
-    fn malformed_successive_patch_preserves_the_previous_valid_patch() {
-        let output = Output::new(PowerStorageStatusMsg::default());
-
-        output
-            .set_override(
-                MessageOverrideMode::Patch,
-                json!({ "current_net_power_w": 9.0 }),
-            )
-            .unwrap();
-        let result = output.set_override(
-            MessageOverrideMode::Patch,
-            json!({ "storage_capacity_j": "not a number" }),
-        );
-        assert!(result.is_err());
-
-        output.write(PowerStorageStatusMsg {
-            storage_level_j: 1.0,
-            storage_capacity_j: 2.0,
-            current_net_power_w: 3.0,
-        });
-        assert_eq!(output.read().storage_level_j, 1.0);
-        assert_eq!(output.read().storage_capacity_j, 2.0);
-        assert_eq!(output.read().current_net_power_w, 9.0);
-    }
-
-    #[test]
-    fn maximum_effector_array_round_trips_and_rejects_wrong_lengths() {
-        let mut message = ArrayMotorTorqueMsg::default();
-        for (index, value) in message.motor_torque_nm.iter_mut().enumerate() {
-            *value = index as f64 + 0.25;
-        }
-
-        let serialized = serde_json::to_value(&message).unwrap();
-        let round_tripped: ArrayMotorTorqueMsg =
-            serde_json::from_value(serialized.clone()).unwrap();
-        assert_eq!(round_tripped, message);
-
-        let mut short = serialized;
-        short["motor_torque_nm"] = json!(vec![0.0; MAX_EFF_COUNT - 1]);
-        assert!(serde_json::from_value::<ArrayMotorTorqueMsg>(short).is_err());
-    }
-}
+mod tests;

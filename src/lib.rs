@@ -17,6 +17,7 @@ pub mod gauss_markov;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
+pub mod overrides;
 pub mod power;
 pub mod sensors;
 pub mod simulation;

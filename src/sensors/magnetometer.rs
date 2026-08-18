@@ -4,22 +4,44 @@ use std::hash::{Hash, Hasher};
 use nalgebra::{Matrix3, Vector3};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
 
-use crate::messages::{Input, MagneticFieldMsg, Output, SpacecraftStateMsg, TamSensorMsg};
+use crate::gauss_markov::GaussMarkov;
+use crate::messages::{
+    Input, MagneticDipoleCommandMsg, MagneticFieldMsg, Output, SpacecraftStateMsg, TamSensorMsg,
+};
 use crate::{Module, SimulationContext};
+
+/// [T·m/A] permeability of free space.
+const MU_0: f64 = 4.0 * std::f64::consts::PI * 1.0e-7;
+
+/// Residual-field coupling from the magnetorquers: each commanded coil is
+/// modelled as a point dipole along its body axis, and the resulting field at
+/// the magnetometer is added to the true field before the sensor errors.
+#[derive(Clone, Debug)]
+pub struct MtbResidualFieldConfig {
+    /// [m] vector from each MTB coil to the magnetometer, in the body frame;
+    /// coil `i`'s dipole moment points along body axis `i`.
+    pub r_mag_from_mtb_m: [Vector3<f64>; 3],
+}
 
 #[derive(Clone, Debug)]
 pub struct MagnetometerConfig {
     pub name: String,
     pub body_to_sensor_quaternion: nalgebra::UnitQuaternion<f64>,
     pub bias_t: Vector3<f64>,
+    /// Matrix square root of the noise covariance in **3-sigma units** (see
+    /// [`crate::gauss_markov`]): a diagonal entry of `x` yields error steps
+    /// with standard deviation `x / 3`.
     pub p_matrix_sqrt_t: Matrix3<f64>,
     pub a_matrix: Matrix3<f64>,
+    /// Per-axis soft walk bounds; the error state is statistically herded
+    /// back rather than clamped.
     pub walk_bounds_t: Vector3<f64>,
     pub scale_factor: f64,
     pub min_output_t: f64,
     pub max_output_t: f64,
+    /// `None` disables the MTB coupling and leaves the model unchanged.
+    pub mtb_residual_field: Option<MtbResidualFieldConfig>,
 }
 
 impl MagnetometerConfig {
@@ -58,8 +80,31 @@ impl MagnetometerConfig {
                 self.min_output_t, self.max_output_t
             ));
         }
+        if let Some(residual) = &self.mtb_residual_field {
+            for (index, r) in residual.r_mag_from_mtb_m.iter().enumerate() {
+                if !r.iter().all(|v| v.is_finite()) {
+                    return Err(format!(
+                        "r_mag_from_mtb_m[{index}] must be finite, got {r:?}"
+                    ));
+                }
+                if r.norm() <= 0.0 {
+                    return Err(format!(
+                        "r_mag_from_mtb_m[{index}] must be non-zero: a coil cannot be co-located with the magnetometer"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Field of a point dipole `mu` (A·m²) at offset `r` (m), in teslas:
+/// B = μ₀/(4π r³) · (3(μ·r̂)r̂ − μ).
+fn dipole_field_t(r_m: Vector3<f64>, mu_am2: Vector3<f64>) -> Vector3<f64> {
+    let r_norm = r_m.norm();
+    let r_hat = r_m / r_norm;
+    let term = 3.0 * mu_am2.dot(&r_hat) * r_hat - mu_am2;
+    (MU_0 / (4.0 * std::f64::consts::PI)) / r_norm.powi(3) * term
 }
 
 #[derive(Clone, Debug)]
@@ -67,15 +112,22 @@ pub struct Magnetometer {
     pub config: MagnetometerConfig,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
+    /// Per-coil MTB dipole commands; read only when `mtb_residual_field` is
+    /// configured. Coil `i`'s dipole points along body axis `i`.
+    pub input_mtb_dipole_cmd_msgs: [Input<MagneticDipoleCommandMsg>; 3],
     pub output_tam_msg: Output<TamSensorMsg>,
-    error_state_t: Vector3<f64>,
+    error_model: GaussMarkov,
     rng: StdRng,
 }
 
 impl Module for Magnetometer {
     fn init(&mut self) {
-        // On reset, clear the accumulated Gauss-Markov walk state.
-        self.error_state_t = Vector3::zeros();
+        // On reset, rebuild the error model from config and clear its walk state.
+        self.error_model = GaussMarkov::new(
+            self.config.a_matrix,
+            self.config.p_matrix_sqrt_t,
+            self.config.walk_bounds_t,
+        );
         self.output_tam_msg.write(TamSensorMsg::default());
     }
 
@@ -97,11 +149,16 @@ impl Magnetometer {
         }
         Self {
             rng: StdRng::seed_from_u64(seed_from_name(&config.name)),
+            error_model: GaussMarkov::new(
+                config.a_matrix,
+                config.p_matrix_sqrt_t,
+                config.walk_bounds_t,
+            ),
             config,
             input_state_msg: Input::default(),
             input_magnetic_field_msg: Input::default(),
+            input_mtb_dipole_cmd_msgs: std::array::from_fn(|_| Input::default()),
             output_tam_msg: Output::default(),
-            error_state_t: Vector3::zeros(),
         }
     }
 
@@ -120,33 +177,37 @@ impl Magnetometer {
     ) -> Vector3<f64> {
         let magnetic_field_body_t = state
             .inertial_to_body()
-            .transform_vector(&magnetic_field.magnetic_field_inertial_t);
+            .transform_vector(&magnetic_field.magnetic_field_inertial_t)
+            + self.mtb_residual_field_body_t();
 
         self.config
             .body_to_sensor_quaternion
             .transform_vector(&magnetic_field_body_t)
     }
 
-    fn apply_sensor_errors(&mut self, true_field_sensor_t: Vector3<f64>) -> Vector3<f64> {
-        let random_vector = Vector3::new(
-            StandardNormal.sample(&mut self.rng),
-            StandardNormal.sample(&mut self.rng),
-            StandardNormal.sample(&mut self.rng),
-        );
-        self.error_state_t =
-            self.config.a_matrix * self.error_state_t + self.config.p_matrix_sqrt_t * random_vector;
-        self.error_state_t =
-            self.error_state_t
-                .zip_map(&self.config.walk_bounds_t, |error, bound| {
-                    if bound > 0.0 {
-                        error.clamp(-bound, bound)
-                    } else {
-                        error
-                    }
-                });
+    /// Stray field of the commanded magnetorquers at the magnetometer,
+    /// accumulated in the body frame so the sensor mounting rotation applies
+    /// to it like any other field contribution.
+    fn mtb_residual_field_body_t(&self) -> Vector3<f64> {
+        let Some(residual) = &self.config.mtb_residual_field else {
+            return Vector3::zeros();
+        };
+        let mut field_body_t = Vector3::zeros();
+        for (axis, r_m) in residual.r_mag_from_mtb_m.iter().enumerate() {
+            let mut mu_am2 = Vector3::zeros();
+            mu_am2[axis] = self.input_mtb_dipole_cmd_msgs[axis]
+                .read()
+                .dipole_moment_am2;
+            field_body_t += dipole_field_t(*r_m, mu_am2);
+        }
+        field_body_t
+    }
 
-        let sensed_field_sensor_t = (true_field_sensor_t + self.error_state_t + self.config.bias_t)
-            * self.config.scale_factor;
+    fn apply_sensor_errors(&mut self, true_field_sensor_t: Vector3<f64>) -> Vector3<f64> {
+        let error_state_t = self.error_model.compute_next_state(&mut self.rng);
+
+        let sensed_field_sensor_t =
+            (true_field_sensor_t + error_state_t + self.config.bias_t) * self.config.scale_factor;
 
         sensed_field_sensor_t
             .map(|value| value.clamp(self.config.min_output_t, self.config.max_output_t))
@@ -194,6 +255,7 @@ mod tests {
             scale_factor: 1.0,
             min_output_t: -1.0e-4,
             max_output_t: 1.0e-4,
+            mtb_residual_field: None,
         }
     }
 
@@ -275,7 +337,8 @@ mod tests {
     fn iid_noise_matches_configured_std() {
         let mut config = noiseless_config("tam_noise");
         let std = 3.0e-9;
-        config.p_matrix_sqrt_t = Matrix3::from_diagonal(&Vector3::repeat(std));
+        // The P matrix is in 3-sigma units: pass 3x the desired sigma.
+        config.p_matrix_sqrt_t = Matrix3::from_diagonal(&Vector3::repeat(3.0 * std));
         config.a_matrix = Matrix3::zeros(); // IID: no propagation of prior error
         config.min_output_t = -1.0;
         config.max_output_t = 1.0;
@@ -314,5 +377,74 @@ mod tests {
         config.min_output_t = 1.0;
         config.max_output_t = -1.0;
         let _ = Magnetometer::new(config);
+    }
+
+    /// A commanded X coil one metre along +z of the magnetometer adds the
+    /// textbook dipole field μ₀/(4π)·(3(μ·r̂)r̂ − μ)/r³ to the measurement.
+    #[test]
+    fn mtb_residual_field_adds_the_dipole_field() {
+        use super::MtbResidualFieldConfig;
+        use crate::messages::MagneticDipoleCommandMsg;
+
+        let mut config = noiseless_config("tam_residual");
+        config.mtb_residual_field = Some(MtbResidualFieldConfig {
+            r_mag_from_mtb_m: [
+                Vector3::new(0.0, 0.0, 1.0),
+                Vector3::new(0.0, 0.0, 1.0),
+                Vector3::new(0.0, 0.0, 1.0),
+            ],
+        });
+        let mut tam = Magnetometer::new(config);
+
+        let state_out = Output::new(SpacecraftStateMsg::default());
+        let field = Vector3::new(1.0e-5, 0.0, 0.0);
+        let field_out = Output::new(MagneticFieldMsg {
+            magnetic_field_inertial_t: field,
+        });
+        let dipole_am2 = 2.0;
+        let x_cmd_out = Output::new(MagneticDipoleCommandMsg {
+            dipole_moment_am2: dipole_am2,
+        });
+        tam.input_state_msg.connect(state_out.slot());
+        tam.input_magnetic_field_msg.connect(field_out.slot());
+        tam.input_mtb_dipole_cmd_msgs[0].connect(x_cmd_out.slot());
+        tam.init();
+        tam.update(&dummy_context());
+
+        // mu = [2, 0, 0] at r = ẑ: mu·r̂ = 0, so B = −μ₀/(4π)·mu (r = 1 m).
+        let mu_0 = 4.0 * std::f64::consts::PI * 1.0e-7;
+        let expected_residual = -(mu_0 / (4.0 * std::f64::consts::PI)) * dipole_am2;
+        let sensed = tam.output_tam_msg.read().magnetic_field_sensor_t;
+        let expected = field + Vector3::new(expected_residual, 0.0, 0.0);
+        assert!(
+            (sensed - expected).norm() < 1e-18,
+            "got {sensed:?}, want {expected:?}"
+        );
+    }
+
+    /// With no residual config the coil inputs are ignored entirely.
+    #[test]
+    fn residual_field_disabled_by_default() {
+        use crate::messages::MagneticDipoleCommandMsg;
+
+        let mut tam = Magnetometer::new(noiseless_config("tam_no_residual"));
+        let state_out = Output::new(SpacecraftStateMsg::default());
+        let field = Vector3::new(1.0e-5, 2.0e-5, 1.5e-5);
+        let field_out = Output::new(MagneticFieldMsg {
+            magnetic_field_inertial_t: field,
+        });
+        let cmd_out = Output::new(MagneticDipoleCommandMsg {
+            dipole_moment_am2: 100.0,
+        });
+        tam.input_state_msg.connect(state_out.slot());
+        tam.input_magnetic_field_msg.connect(field_out.slot());
+        for input in &mut tam.input_mtb_dipole_cmd_msgs {
+            input.connect(cmd_out.slot());
+        }
+        tam.init();
+        tam.update(&dummy_context());
+
+        let sensed = tam.output_tam_msg.read().magnetic_field_sensor_t;
+        assert!((sensed - field).norm() < 1e-18, "got {sensed:?}");
     }
 }

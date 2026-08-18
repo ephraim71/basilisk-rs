@@ -13,6 +13,7 @@ pub mod device_interface;
 pub mod dynamics;
 pub mod environment;
 pub mod fsw_algorithms;
+pub mod gauss_markov;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
@@ -50,7 +51,7 @@ pub fn add(left: u64, right: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
-    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+    use nalgebra::{Matrix3, Vector3};
 
     use crate::dynamics::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
     use crate::dynamics::reaction_wheel_state_effector::{
@@ -100,9 +101,7 @@ mod tests {
         });
         let mut imu = ImuSensor::new(ImuSensorConfig {
             name: "imu_1".to_string(),
-            position_m: Vector3::new(0.0, 0.0, 0.0),
-            body_to_sensor_quaternion: UnitQuaternion::identity(),
-            rate_noise_std_radps: Vector3::new(0.0, 0.0, 0.0),
+            ..ImuSensorConfig::default()
         });
 
         let module_names = {

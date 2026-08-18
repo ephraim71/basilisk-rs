@@ -161,9 +161,7 @@ mod tests {
     fn imu() -> ImuSensor {
         ImuSensor::new(ImuSensorConfig {
             name: "imu".into(),
-            position_m: Vector3::zeros(),
-            body_to_sensor_quaternion: UnitQuaternion::identity(),
-            rate_noise_std_radps: Vector3::zeros(),
+            ..ImuSensorConfig::default()
         })
     }
 

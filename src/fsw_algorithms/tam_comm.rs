@@ -186,6 +186,7 @@ mod tests {
             scale_factor: 1.0,
             min_output_t: -1.0,
             max_output_t: 1.0,
+            mtb_residual_field: None,
         });
         let mut module = TamComm::new(TamCommConfig {
             name: "tamComm".to_string(),

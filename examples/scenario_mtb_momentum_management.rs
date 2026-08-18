@@ -180,6 +180,7 @@ fn main() {
         scale_factor: 1.0,
         min_output_t: -f64::MAX,
         max_output_t: f64::MAX,
+        mtb_residual_field: None,
     });
     let mut tam_comm = TamComm::new(TamCommConfig {
         name: "tamComm".to_string(),

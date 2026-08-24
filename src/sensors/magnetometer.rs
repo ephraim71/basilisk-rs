@@ -17,14 +17,14 @@ const MU_0: f64 = 4.0 * std::f64::consts::PI * 1.0e-7;
 /// Residual-field coupling from the magnetorquers: each commanded coil is
 /// modelled as a point dipole along its body axis, and the resulting field at
 /// the magnetometer is added to the true field before the sensor errors.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MtbResidualFieldConfig {
     /// [m] vector from each MTB coil to the magnetometer, in the body frame;
     /// coil `i`'s dipole moment points along body axis `i`.
     pub r_mag_from_mtb_m: [Vector3<f64>; 3],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MagnetometerConfig {
     pub name: String,
     pub body_to_sensor_quaternion: nalgebra::UnitQuaternion<f64>,
@@ -109,7 +109,7 @@ fn dipole_field_t(r_m: Vector3<f64>, mu_am2: Vector3<f64>) -> Vector3<f64> {
 
 #[derive(Clone, Debug)]
 pub struct Magnetometer {
-    pub config: MagnetometerConfig,
+    pub config: Output<MagnetometerConfig>,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_magnetic_field_msg: Input<MagneticFieldMsg>,
     /// Per-coil MTB dipole commands; read only when `mtb_residual_field` is
@@ -123,10 +123,11 @@ pub struct Magnetometer {
 impl Module for Magnetometer {
     fn init(&mut self) {
         // On reset, rebuild the error model from config and clear its walk state.
+        let config = self.config.read();
         self.error_model = GaussMarkov::new(
-            self.config.a_matrix,
-            self.config.p_matrix_sqrt_t,
-            self.config.walk_bounds_t,
+            config.a_matrix,
+            config.p_matrix_sqrt_t,
+            config.walk_bounds_t,
         );
         self.output_tam_msg.write(TamSensorMsg::default());
     }
@@ -135,8 +136,9 @@ impl Module for Magnetometer {
         let state = self.read_state_input_message();
         let magnetic_field = self.read_magnetic_field_input_message();
 
-        let true_field_sensor_t = self.compute_true_output(&state, &magnetic_field);
-        let sensed_field_sensor_t = self.apply_sensor_errors(true_field_sensor_t);
+        let config = self.config.read();
+        let true_field_sensor_t = self.compute_true_output(&config, &state, &magnetic_field);
+        let sensed_field_sensor_t = self.apply_sensor_errors(&config, true_field_sensor_t);
 
         self.write_output_message(sensed_field_sensor_t);
     }
@@ -154,7 +156,7 @@ impl Magnetometer {
                 config.p_matrix_sqrt_t,
                 config.walk_bounds_t,
             ),
-            config,
+            config: Output::new(config),
             input_state_msg: Input::default(),
             input_magnetic_field_msg: Input::default(),
             input_mtb_dipole_cmd_msgs: std::array::from_fn(|_| Input::default()),
@@ -172,15 +174,16 @@ impl Magnetometer {
 
     fn compute_true_output(
         &self,
+        config: &MagnetometerConfig,
         state: &SpacecraftStateMsg,
         magnetic_field: &MagneticFieldMsg,
     ) -> Vector3<f64> {
         let magnetic_field_body_t = state
             .inertial_to_body()
             .transform_vector(&magnetic_field.magnetic_field_inertial_t)
-            + self.mtb_residual_field_body_t();
+            + self.mtb_residual_field_body_t(config);
 
-        self.config
+        config
             .body_to_sensor_quaternion
             .transform_vector(&magnetic_field_body_t)
     }
@@ -188,8 +191,8 @@ impl Magnetometer {
     /// Stray field of the commanded magnetorquers at the magnetometer,
     /// accumulated in the body frame so the sensor mounting rotation applies
     /// to it like any other field contribution.
-    fn mtb_residual_field_body_t(&self) -> Vector3<f64> {
-        let Some(residual) = &self.config.mtb_residual_field else {
+    fn mtb_residual_field_body_t(&self, config: &MagnetometerConfig) -> Vector3<f64> {
+        let Some(residual) = &config.mtb_residual_field else {
             return Vector3::zeros();
         };
         let mut field_body_t = Vector3::zeros();
@@ -203,14 +206,26 @@ impl Magnetometer {
         field_body_t
     }
 
-    fn apply_sensor_errors(&mut self, true_field_sensor_t: Vector3<f64>) -> Vector3<f64> {
+    fn apply_sensor_errors(
+        &mut self,
+        config: &MagnetometerConfig,
+        true_field_sensor_t: Vector3<f64>,
+    ) -> Vector3<f64> {
+        // Assigned rather than rebuilt: `GaussMarkov` reads all three live, and
+        // its accumulated walk is private state a rebuild would discard.
+        self.error_model.prop_matrix = config.a_matrix;
+        self.error_model.noise_matrix_sqrt = config.p_matrix_sqrt_t;
+        self.error_model.state_bounds = config.walk_bounds_t;
         let error_state_t = self.error_model.compute_next_state(&mut self.rng);
 
         let sensed_field_sensor_t =
-            (true_field_sensor_t + error_state_t + self.config.bias_t) * self.config.scale_factor;
+            (true_field_sensor_t + error_state_t + config.bias_t) * config.scale_factor;
 
-        sensed_field_sensor_t
-            .map(|value| value.clamp(self.config.min_output_t, self.config.max_output_t))
+        // `validate` runs on the value passed to `new`, never on one written to
+        // the port; `clamp` panics when low > high, so order them here.
+        let low = config.min_output_t.min(config.max_output_t);
+        let high = config.min_output_t.max(config.max_output_t);
+        sensed_field_sensor_t.map(|value| value.clamp(low, high))
     }
 
     fn write_output_message(&mut self, magnetic_field_sensor_t: Vector3<f64>) {

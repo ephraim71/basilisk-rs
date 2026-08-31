@@ -1,11 +1,17 @@
 //! What a rule is, and what it computes.
 //!
-//! Three modes, and they differ only in where the value comes from: a
-//! [`Mode::Replace`] takes it from the payload, a [`Mode::Default`] from the
-//! type's own default, a [`Mode::Freeze`] from the live value at the moment it
-//! is installed. All three are **relative** — they touch the paths they name and
-//! leave the rest to the layers beneath — so a stack is always the composition
-//! of all of its rules and nothing masks anything.
+//! Two modes, and they differ only in where the value comes from: a
+//! [`Mode::Replace`] takes it from the payload, a [`Mode::Freeze`] from the live
+//! value at the moment it is installed. Both are **relative** — they touch the
+//! paths they name and leave the rest to the layers beneath — so a stack is
+//! always the composition of all of its rules and nothing masks anything.
+//!
+//! There was a third, `default`, taking its value from the type's own default.
+//! It captured concrete values at install time, so it was a replace carrying
+//! numbers a client can read off the target's own schema as `typeDefault` --
+//! while reading like "restore the baseline", which is what clearing a rule
+//! does. Nothing asked for it in two topologies, so it is gone rather than kept
+//! as a second way to say replace.
 //!
 //! One path syntax throughout: every mode names RFC 6901 pointers, and so does
 //! the schema. A path read off a target's spec is pasted into any of the three
@@ -27,14 +33,13 @@ use serde_json::{Map, Value};
 
 use crate::messages::SimulationMessage;
 
-/// Which of the three a rule is. A label for reporting; the payload that goes
+/// Which of the two a rule is. A label for reporting; the payload that goes
 /// with it lives in [`Request`], where it cannot be paired with the wrong one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
     Replace,
     Freeze,
-    Default,
 }
 
 impl Mode {
@@ -44,7 +49,6 @@ impl Mode {
         match self {
             Self::Replace => "replace",
             Self::Freeze => "freeze",
-            Self::Default => "default",
         }
     }
 }
@@ -131,7 +135,7 @@ pub struct Assignment {
 /// ```
 ///
 /// The same syntax a [`Selection`] names and the schema publishes, so a path
-/// read off a target's spec is pasted into any of the three modes unchanged.
+/// read off a target's spec is pasted into either mode unchanged.
 ///
 /// Applied in pointer order. A container is a prefix of what it contains, so
 /// sorting lands the deeper assignment last and the more specific one survives.
@@ -188,7 +192,7 @@ impl<'de> Deserialize<'de> for Document {
     }
 }
 
-/// Which fields a [`Mode::Freeze`] or [`Mode::Default`] acts on.
+/// Which fields a [`Mode::Freeze`] acts on.
 ///
 /// An empty payload means the whole message.
 ///
@@ -233,8 +237,8 @@ impl Selection {
                 .collect::<Result<Vec<_>, _>>()
                 .map(Self::fields),
             other => Err(format!(
-                "a freeze or default takes an array of JSON pointers naming the fields to \
-                 act on, or an empty value for the whole message, and this is neither: {other}"
+                "a freeze takes an array of JSON pointers naming the fields to act on, or \
+                 an empty value for the whole message, and this is neither: {other}"
             )),
         }
     }
@@ -278,7 +282,6 @@ impl<'de> Deserialize<'de> for Selection {
 pub enum Request {
     Replace(Document),
     Freeze(Selection),
-    Default(Selection),
 }
 
 impl Request {
@@ -297,19 +300,10 @@ impl Request {
             .map_err(anyhow::Error::msg)
     }
 
-    /// A reset of the fields `value` names, or of the whole message when it is
-    /// empty.
-    pub fn default(value: Value) -> anyhow::Result<Self> {
-        Selection::from_value(value)
-            .map(Self::Default)
-            .map_err(anyhow::Error::msg)
-    }
-
     pub fn mode(&self) -> Mode {
         match self {
             Self::Replace(_) => Mode::Replace,
             Self::Freeze(_) => Mode::Freeze,
-            Self::Default(_) => Mode::Default,
         }
     }
 
@@ -345,7 +339,7 @@ impl Request {
                 }
                 paths
             }
-            Self::Freeze(selection) | Self::Default(selection) => selection
+            Self::Freeze(selection) => selection
                 .pointers()
                 .iter()
                 .map(|path| path.as_str().to_string())
@@ -386,9 +380,9 @@ pub(crate) fn next_rule_id() -> RuleId {
 /// holding a `Rule` is evidence that its payload was parsed, its pointers
 /// resolved and its values captured. Nothing downstream re-checks any of that.
 ///
-/// A freeze and a default are already resolved to concrete values by the time
-/// they get here, so all three modes are one document to apply; `mode` survives
-/// only to tell a client which was asked for.
+/// A freeze is already resolved to concrete values by the time it gets here, so
+/// both modes are one document to apply; `mode` survives only to tell a client
+/// which was asked for.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Rule {
     mode: Mode,
@@ -400,24 +394,21 @@ pub struct Rule {
 impl Rule {
     /// Resolves `request` against the values it draws from, and checks it.
     ///
-    /// `live` and `type_default` are required rather than optional, so a freeze
-    /// cannot be built without the value it freezes.
+    /// `live` is required rather than optional, so a freeze cannot be built
+    /// without the value it freezes.
     ///
-    /// A pointer is resolved against the value that mode reads from — the live
-    /// value for a freeze, the type default for a default — and one that misses
-    /// is refused here, rather than installed as a layer that does nothing on
+    /// A freeze's pointer is resolved against the live value, and one that misses
+    /// is refused here rather than installed as a layer that does nothing on
     /// every write.
     pub(crate) fn build(
         request: Request,
         live: &Value,
-        type_default: &Value,
         id: RuleId,
     ) -> Result<Self, serde_json::Error> {
         let mode = request.mode();
         let document = match request {
             Request::Replace(document) => document,
             Request::Freeze(selection) => capture(&selection, live, "freeze")?,
-            Request::Default(selection) => capture(&selection, type_default, "default")?,
         };
         Ok(Self { mode, document, id })
     }
@@ -430,7 +421,7 @@ impl Rule {
         self.id
     }
 
-    /// The document this rule applies, with a freeze or default already
+    /// The document this rule applies, with a freeze already
     /// resolved to the values it captured.
     pub fn document(&self) -> &Document {
         &self.document
@@ -485,8 +476,8 @@ fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
 
 /// Produces the value `rule` yields when laid over `upstream`.
 ///
-/// Takes no view on the mode: by this point a freeze and a default are documents
-/// like any other, so there is one way to apply all three.
+/// Takes no view on the mode: by this point a freeze is a document like any
+/// other, so there is one way to apply both.
 pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,

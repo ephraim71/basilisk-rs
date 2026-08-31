@@ -28,32 +28,6 @@ fn a_replace_naming_every_field_substitutes_the_whole_message() {
     assert_eq!(output.read().current_net_power_w, 6.0);
 }
 
-#[test]
-fn default_override_emits_default_until_cleared() {
-    let output = Output::new(PowerStorageStatusMsg {
-        storage_level_j: 1.0,
-        storage_capacity_j: 2.0,
-        current_net_power_w: 3.0,
-    });
-
-    output
-        .set_override(Request::default(json!(null)).unwrap())
-        .unwrap();
-    output.write(PowerStorageStatusMsg {
-        storage_level_j: 10.0,
-        storage_capacity_j: 20.0,
-        current_net_power_w: 30.0,
-    });
-    assert_eq!(output.read().storage_level_j, 0.0);
-    assert_eq!(output.read().storage_capacity_j, 0.0);
-    assert_eq!(output.read().current_net_power_w, 0.0);
-
-    output.clear_override();
-    assert_eq!(output.read().storage_level_j, 10.0);
-    assert_eq!(output.read().storage_capacity_j, 20.0);
-    assert_eq!(output.read().current_net_power_w, 30.0);
-}
-
 /// `MAX_EFF_COUNT` is past serde's built-in array impls, so these arrays
 /// travel as sequences and their length is checked on the way back.
 #[test]
@@ -656,34 +630,6 @@ fn a_freeze_naming_fields_holds_those_and_lets_the_rest_track() {
     assert_eq!(output.read().current_net_power_w, 7.0);
 }
 
-/// A default naming fields resets those and no others — the mirror of a
-/// per-field freeze, drawing from the type default instead of the live value.
-#[test]
-fn a_default_naming_fields_resets_those_and_leaves_the_rest() {
-    let output = Output::new(PowerStorageStatusMsg::default());
-    output.write(PowerStorageStatusMsg {
-        storage_level_j: 5.0,
-        storage_capacity_j: 6.0,
-        current_net_power_w: 7.0,
-    });
-
-    output
-        .set_override(Request::default(json!(["/storage_capacity_j"])).unwrap())
-        .unwrap();
-
-    assert_eq!(
-        output.read().storage_capacity_j,
-        0.0,
-        "the named field kept its value"
-    );
-    assert_eq!(
-        output.read().storage_level_j,
-        5.0,
-        "an unnamed field was reset"
-    );
-    assert_eq!(output.read().current_net_power_w, 7.0);
-}
-
 /// An empty payload still means the whole message, which is how both modes
 /// behaved when neither took one.
 #[test]
@@ -699,17 +645,6 @@ fn an_empty_selection_still_means_the_whole_message() {
             frozen.read().storage_level_j,
             1.0,
             "{empty} did not freeze all"
-        );
-
-        let reset = Output::new(PowerStorageStatusMsg::default());
-        reset.write(status(5.0));
-        reset
-            .set_override(Request::default(empty.clone()).unwrap())
-            .unwrap();
-        assert_eq!(
-            reset.read().storage_level_j,
-            0.0,
-            "{empty} did not reset all"
         );
     }
 }
@@ -727,10 +662,6 @@ fn every_mode_composes_because_none_of_them_mask() {
     output
         .set_override(Request::replace(json!({ "/current_net_power_w": 3.0 })).unwrap())
         .unwrap();
-    output
-        .set_override(Request::default(json!(["/storage_capacity_j"])).unwrap())
-        .unwrap();
-
     output.write(PowerStorageStatusMsg {
         storage_level_j: 99.0,
         storage_capacity_j: 88.0,
@@ -740,8 +671,8 @@ fn every_mode_composes_because_none_of_them_mask() {
     assert_eq!(output.read().storage_level_j, 1.0, "the freeze was masked");
     assert_eq!(
         output.read().storage_capacity_j,
-        0.0,
-        "the default was masked"
+        88.0,
+        "a field no rule names did not reach the reader"
     );
     assert_eq!(
         output.read().current_net_power_w,

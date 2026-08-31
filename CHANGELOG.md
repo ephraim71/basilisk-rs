@@ -28,22 +28,24 @@ actually have written against. Nothing has a deprecated alias.
   `FieldSpec`, `TargetKind`.
 - `TargetKind::Custom(&'static str)`, so an application can name a kind this
   crate has no opinion about and have it reach a client verbatim.
-- Three modes, differing only in where the value comes from: `Replace` takes it
-  from the payload, `Default` from the type's own default, `Freeze` from the
-  live value at the moment it is installed.
+- Two modes, differing only in where the value comes from: `Replace` takes it
+  from the payload, `Freeze` from the live value at the moment it is installed.
 - `Mode::Replace` takes an object mapping RFC 6901 pointers to the values to put
   there — `{"/omega_radps/1": 0.5}` — so one element of a vector is addressable
   without pinning its siblings to whatever the sender happened to write. Nested
   JSON mirroring the message is not a payload shape; there is only this one.
-- `Freeze` and `Default` take an array of the same pointers, so one axis of a
-  body rate can be held or reset without touching the others. An empty payload
-  means the whole message.
+- `Freeze` takes an array of the same pointers, so one axis of a body rate can
+  be held without touching the others. An empty payload means the whole message.
+  There is no third mode drawing from the type's own default: it would capture
+  concrete values at install time, making it a `replace` carrying numbers a
+  client can already read off the target's schema as `typeDefault`, while reading
+  like "restore the baseline" -- which is what clearing a rule does.
 - Every rule is relative: a rule touches the paths it names and leaves the rest
   to the layers beneath, so a stack is always the composition of all of it.
 - RFC 6901 pointers are the single path syntax across the feature. `FieldSpec`
   publishes them, a `replace` assigns to them, and a `freeze` names them, so a
-  path read off a target's schema is pasted into any of the three modes
-  unchanged and nothing translates between two spellings. The whole message is
+  path read off a target's schema is pasted into either mode unchanged and
+  nothing translates between two spellings. The whole message is
   the root pointer, `""`, rather than a special case.
 - A payload is parsed once into a type that cannot hold an invalid combination:
   `Request`, `Document`, `Selection`, `Assignment` and `Pointer`. `Rule` has

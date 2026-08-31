@@ -23,6 +23,7 @@
 
 pub(crate) mod rule;
 
+mod null_as_nan;
 mod paths;
 mod schedule;
 mod schema;

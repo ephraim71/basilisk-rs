@@ -681,6 +681,60 @@ fn every_mode_composes_because_none_of_them_mask() {
     );
 }
 
+/// A sun sensor facing away from the sun publishes NaN for its angles, and JSON
+/// has no spelling for one, so the round trip an override performs used to refuse
+/// the whole message -- naming a field the operator never touched. The fault the
+/// operator asked for is unrelated to the field that could not be written.
+#[test]
+fn a_replace_lands_on_a_message_whose_other_float_is_not_finite() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::NAN,
+        storage_capacity_j: 6.0,
+        current_net_power_w: f64::NAN,
+    });
+
+    output
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 20.0 })).unwrap())
+        .expect("a replace was refused because another field held NaN");
+
+    assert_eq!(
+        output.read().storage_capacity_j,
+        20.0,
+        "the named field did not take the value"
+    );
+    assert!(
+        output.read().storage_level_j.is_nan(),
+        "a field no rule names lost its NaN"
+    );
+    assert!(
+        output.read().current_net_power_w.is_nan(),
+        "a field no rule names lost its NaN"
+    );
+}
+
+/// The same message, frozen: a freeze captures the live value, and one of them is
+/// a NaN that has to survive being captured and written back.
+#[test]
+fn a_freeze_can_capture_a_float_that_is_not_finite() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::NAN,
+        storage_capacity_j: 6.0,
+        current_net_power_w: 0.0,
+    });
+
+    output
+        .set_override(Request::freeze(json!(["/storage_level_j"])).unwrap())
+        .expect("a freeze of a NaN was refused");
+    output.write(status(99.0));
+
+    assert!(
+        output.read().storage_level_j.is_nan(),
+        "the freeze did not hold the NaN it captured"
+    );
+}
+
 /// A pointer that cannot resolve is refused when the rule is built, so no layer
 /// is installed that would quietly do nothing on every write.
 #[test]

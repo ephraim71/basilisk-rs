@@ -478,6 +478,12 @@ fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
 ///
 /// Takes no view on the mode: by this point a freeze is a document like any
 /// other, so there is one way to apply both.
+///
+/// The read back goes through [`null_as_nan::from_value`] rather than
+/// `serde_json::from_value`, because JSON writes a NaN as `null` and reads
+/// `null` back as a type error. A sun sensor facing away from the sun publishes
+/// NaN for its angles, so without this an override on any other field of that
+/// message is refused, naming a field the operator never touched.
 pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,
@@ -494,7 +500,7 @@ pub(crate) fn apply_override<T: SimulationMessage>(
             }
         }
     }
-    serde_json::from_value(base)
+    super::null_as_nan::from_value(base)
 }
 
 /// Produces the value an installed stack yields when laid over `upstream`,

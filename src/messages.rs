@@ -281,7 +281,13 @@ impl Overrides {
 
         for (id, error) in &skipped {
             if !previously.contains(id) {
-                log::warn!("override rule {id:?} no longer applies and is being skipped: {error}");
+                // Printed rather than logged: a fault that has stopped acting is
+                // the one thing a run must not lose, and the `log` facade is a
+                // no-op in a binary that installs no logger -- which every
+                // caller of this crate so far is.
+                eprintln!(
+                    "[overrides] rule {id:?} no longer applies and is being skipped: {error}"
+                );
             }
         }
 
@@ -289,7 +295,7 @@ impl Overrides {
         for id in previously.iter() {
             // A rule that was removed while skipped has not resumed; it is gone.
             if !now.contains(id) && rules.iter().any(|rule| rule.id() == *id) {
-                log::info!("override rule {id:?} applies again");
+                println!("[overrides] rule {id:?} applies again");
             }
         }
 

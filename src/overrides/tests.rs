@@ -1706,3 +1706,33 @@ fn cancelling_drops_what_was_posted_before_it_and_not_what_follows() {
     faults.advance(2 * SECOND);
     assert_eq!(output.read().rate_dps, 4.0);
 }
+
+/// The sentinel is internal to the round trip, so the views the REST API reads
+/// still answer `null` for a non-finite float.
+///
+/// bifrost's condition evaluator reads `effective` and treats `null` as "not a
+/// number this instant", so a value that started answering `"inf"` here would
+/// turn a watched field into a hard error at arm time.
+#[test]
+fn the_outward_facing_views_still_answer_null_for_a_non_finite() {
+    let (registry, output) = registry_with_reading();
+    output.write(reading(f64::NEG_INFINITY));
+
+    registry
+        .install(
+            "sensor_0.output_msg",
+            Request::replace(json!({ "/rate_dps": 2.0 })).unwrap(),
+        )
+        .unwrap();
+
+    for view in [
+        registry.upstream("sensor_0.output_msg").unwrap(),
+        registry.effective("sensor_0.output_msg").unwrap(),
+    ] {
+        assert_eq!(
+            view["angle_deg"],
+            json!(null),
+            "a non-finite float reached a caller as something other than null"
+        );
+    }
+}

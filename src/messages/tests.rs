@@ -942,3 +942,33 @@ fn a_pointer_with_an_undefined_escape_is_refused() {
         "'~1' should be a literal '/'"
     );
 }
+
+/// A field the patch never named keeps the value it had, including the sign of
+/// an infinity. Before the serializer went through `non_finite`, every
+/// non-finite float came back as NaN because JSON writes all three as `null`.
+#[test]
+fn a_replace_leaves_an_untouched_infinity_alone() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::INFINITY,
+        storage_capacity_j: 6.0,
+        current_net_power_w: f64::NEG_INFINITY,
+    });
+
+    output
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 20.0 })).unwrap())
+        .expect("a replace was refused because another field was not finite");
+
+    let applied = output.read();
+    assert_eq!(applied.storage_capacity_j, 20.0, "the fault did not land");
+    assert_eq!(
+        applied.storage_level_j,
+        f64::INFINITY,
+        "an untouched infinity was flattened"
+    );
+    assert_eq!(
+        applied.current_net_power_w,
+        f64::NEG_INFINITY,
+        "an untouched infinity lost its sign"
+    );
+}

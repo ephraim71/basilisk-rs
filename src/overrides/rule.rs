@@ -470,7 +470,7 @@ fn capture(
 /// here are not deserialisation failures. Widening the error type would ripple
 /// through `fold`, `install` and `preview` on both ports; this borrows the one
 /// constructor serde offers for the purpose.
-fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
+pub(super) fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
     <serde_json::Error as serde::de::Error>::custom(message)
 }
 
@@ -479,16 +479,18 @@ fn json_error(message: impl std::fmt::Display) -> serde_json::Error {
 /// Takes no view on the mode: by this point a freeze is a document like any
 /// other, so there is one way to apply both.
 ///
-/// The read back goes through [`null_as_nan::from_value`] rather than
-/// `serde_json::from_value`, because JSON writes a NaN as `null` and reads
+/// Both ends of the round trip go through [`super::non_finite`] rather than
+/// `serde_json`, because JSON writes every non-finite float as `null` and reads
 /// `null` back as a type error. A sun sensor facing away from the sun publishes
 /// NaN for its angles, so without this an override on any other field of that
-/// message is refused, naming a field the operator never touched.
+/// message is refused, naming a field the operator never touched. Going out
+/// through the same module is what keeps an infinity an infinity rather than
+/// flattening it to NaN.
 pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,
 ) -> Result<T, serde_json::Error> {
-    let mut base = serde_json::to_value(upstream)?;
+    let mut base = super::non_finite::to_value(&upstream)?;
     for assignment in rule.document().assignments() {
         match base.pointer_mut(assignment.path.as_str()) {
             Some(slot) => *slot = assignment.value.clone(),
@@ -500,7 +502,7 @@ pub(crate) fn apply_override<T: SimulationMessage>(
             }
         }
     }
-    super::null_as_nan::from_value(base)
+    super::non_finite::from_value(base)
 }
 
 /// Produces the value an installed stack yields when laid over `upstream`,

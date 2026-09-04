@@ -18,9 +18,10 @@ pub struct ReactionWheelBackSubContribution {
     pub torque_body_nm: Vector3<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ReactionWheelModel {
     /// Ideal balanced wheel: only the spin-axis reaction torque couples to the hub.
+    #[default]
     BalancedWheels,
     /// Balanced back-substitution plus static/dynamic imbalance modelled as an
     /// external force and torque (does not add wheel mass/inertia to the hub).
@@ -30,7 +31,7 @@ pub enum ReactionWheelModel {
     JitterFullyCoupled,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReactionWheelStateEffectorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
@@ -242,7 +243,10 @@ impl ReactionWheelStateEffectorConfig {
 
 #[derive(Clone, Debug)]
 pub struct ReactionWheel {
-    pub config: ReactionWheelStateEffectorConfig,
+    /// A port, not a plain field, so an operator can derate the wheel mid-run.
+    /// Every method re-reads it, and `update_jitter_axes` recomputes the cached
+    /// imbalance axes from it each step.
+    pub config: Output<ReactionWheelStateEffectorConfig>,
     pub motor_torque_in_msg: Input<MotorTorqueMsg>,
     pub state_out: Output<ReactionWheelStateMsg>,
     pub omega_radps: f64,
@@ -281,7 +285,7 @@ impl ReactionWheel {
             w2_hat_b: torque_axis,
             w3_hat_b: gimbal_axis,
             fully_coupled_terms: RefCell::new(FullyCoupledOmegaTerms::default()),
-            config,
+            config: Output::new(config),
             motor_torque_in_msg: Input::default(),
             state_out: Output::default(),
         }
@@ -294,19 +298,18 @@ impl ReactionWheel {
     }
 
     pub fn compute_output(&self, _state: &crate::messages::SpacecraftStateMsg) -> EffectorOutput {
-        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
+        let config = self.config.read();
+        let spin_axis = normalize_or_zero(config.spin_axis_body);
         let motor_and_friction_torque = -(self.u_current_nm + self.friction_torque_nm) * spin_axis;
 
         if matches!(
-            self.config.model,
+            config.model,
             ReactionWheelModel::JitterSimple | ReactionWheelModel::JitterFullyCoupled
         ) {
-            let static_force_body = self.config.static_imbalance_kg_m
-                * self.omega_radps
-                * self.omega_radps
-                * self.w2_hat_b;
-            let imbalance_torque_body = self.config.position_m.cross(&static_force_body)
-                + self.config.dynamic_imbalance_kg_m2
+            let static_force_body =
+                config.static_imbalance_kg_m * self.omega_radps * self.omega_radps * self.w2_hat_b;
+            let imbalance_torque_body = config.position_m.cross(&static_force_body)
+                + config.dynamic_imbalance_kg_m2
                     * self.omega_radps
                     * self.omega_radps
                     * self.w2_hat_b;
@@ -323,10 +326,17 @@ impl ReactionWheel {
         }
     }
 
+    /// Its own accessor because the effector asks for only this field, on every
+    /// wheel, several times a step.
+    pub fn model(&self) -> ReactionWheelModel {
+        self.config.read().model
+    }
+
     pub fn set_omega_radps(&mut self, omega_radps: f64) {
+        let config = self.config.read();
         self.omega_radps = omega_radps;
         if matches!(
-            self.config.model,
+            config.model,
             ReactionWheelModel::JitterSimple | ReactionWheelModel::JitterFullyCoupled
         ) {
             self.update_jitter_axes();
@@ -339,24 +349,25 @@ impl ReactionWheel {
         wheel_theta_rad: f64,
         body_omega_radps: Vector3<f64>,
     ) -> Option<ReactionWheelBackSubContribution> {
+        let config = self.config.read();
         if !matches!(
-            self.config.model,
+            config.model,
             ReactionWheelModel::BalancedWheels | ReactionWheelModel::JitterSimple
         ) {
             return None;
         }
 
-        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
-        let matrix_d_correction_kg_m2 = -self.config.js_kg_m2 * (spin_axis * spin_axis.transpose());
+        let spin_axis = normalize_or_zero(config.spin_axis_body);
+        let matrix_d_correction_kg_m2 = -config.js_kg_m2 * (spin_axis * spin_axis.transpose());
         let mut torque_body_nm = -spin_axis * (self.u_current_nm + self.friction_torque_nm)
-            - self.config.js_kg_m2 * wheel_omega_radps * body_omega_radps.cross(&spin_axis);
+            - config.js_kg_m2 * wheel_omega_radps * body_omega_radps.cross(&spin_axis);
         let mut force_body_n = Vector3::zeros();
 
-        if matches!(self.config.model, ReactionWheelModel::JitterSimple) {
+        if matches!(config.model, ReactionWheelModel::JitterSimple) {
             let (w2_hat_b, _) = self.jitter_axes_for_theta(wheel_theta_rad);
-            force_body_n = self.config.static_imbalance_kg_m * wheel_omega_radps.powi(2) * w2_hat_b;
-            torque_body_nm += self.config.position_m.cross(&force_body_n)
-                + self.config.dynamic_imbalance_kg_m2 * wheel_omega_radps.powi(2) * w2_hat_b;
+            force_body_n = config.static_imbalance_kg_m * wheel_omega_radps.powi(2) * w2_hat_b;
+            torque_body_nm += config.position_m.cross(&force_body_n)
+                + config.dynamic_imbalance_kg_m2 * wheel_omega_radps.powi(2) * w2_hat_b;
         }
 
         Some(ReactionWheelBackSubContribution {
@@ -367,15 +378,16 @@ impl ReactionWheel {
     }
 
     pub fn omega_dot_radps2(&self, body_omega_dot_radps2: Vector3<f64>) -> Option<f64> {
+        let config = self.config.read();
         if !matches!(
-            self.config.model,
+            config.model,
             ReactionWheelModel::BalancedWheels | ReactionWheelModel::JitterSimple
         ) {
             return None;
         }
 
-        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
-        let js = self.config.js_kg_m2;
+        let spin_axis = normalize_or_zero(config.spin_axis_body);
+        let js = config.js_kg_m2;
         if js <= 0.0 {
             return Some(0.0);
         }
@@ -387,21 +399,21 @@ impl ReactionWheel {
     }
 
     fn configure_rw_request(&mut self, requested_torque_nm: f64) {
+        let config = self.config.read();
         let mut requested_torque = requested_torque_nm;
 
-        if self.config.max_torque_nm > 0.0 {
-            requested_torque =
-                requested_torque.clamp(-self.config.max_torque_nm, self.config.max_torque_nm);
+        if config.max_torque_nm > 0.0 {
+            requested_torque = requested_torque.clamp(-config.max_torque_nm, config.max_torque_nm);
         }
 
-        if self.config.min_torque_nm > 0.0 && requested_torque.abs() < self.config.min_torque_nm {
+        if config.min_torque_nm > 0.0 && requested_torque.abs() < config.min_torque_nm {
             requested_torque = 0.0;
         }
 
-        let max_speed = if self.config.max_speed_radps > 0.0 {
-            self.config.max_speed_radps
-        } else if self.config.max_momentum_nms > 0.0 && self.config.js_kg_m2 > 0.0 {
-            self.config.max_momentum_nms / self.config.js_kg_m2
+        let max_speed = if config.max_speed_radps > 0.0 {
+            config.max_speed_radps
+        } else if config.max_momentum_nms > 0.0 && config.js_kg_m2 > 0.0 {
+            config.max_momentum_nms / config.js_kg_m2
         } else {
             -1.0
         };
@@ -412,8 +424,8 @@ impl ReactionWheel {
             requested_torque = 0.0;
         }
 
-        if self.config.max_power_w > 0.0 && self.omega_radps.abs() > 0.0 {
-            let power_limited_torque = self.config.max_power_w / self.omega_radps.abs();
+        if config.max_power_w > 0.0 && self.omega_radps.abs() > 0.0 {
+            let power_limited_torque = config.max_power_w / self.omega_radps.abs();
             requested_torque = requested_torque.clamp(-power_limited_torque, power_limited_torque);
         }
 
@@ -421,8 +433,9 @@ impl ReactionWheel {
     }
 
     fn update_friction_torque(&mut self) {
-        if self.omega_radps.abs() < 0.10 * self.config.omega_limit_cycle_radps
-            && self.config.beta_static > 0.0
+        let config = self.config.read();
+        if self.omega_radps.abs() < 0.10 * config.omega_limit_cycle_radps
+            && config.beta_static > 0.0
         {
             self.friction_stribeck = true;
         }
@@ -432,48 +445,45 @@ impl ReactionWheel {
         let sign_of_omega_dot = sign(omega_dot);
         if self.friction_stribeck
             && (sign_of_omega - sign_of_omega_dot).abs() < 2.0
-            && self.config.beta_static > 0.0
+            && config.beta_static > 0.0
         {
             self.friction_stribeck = true;
         } else {
             self.friction_stribeck = false;
         }
 
-        let mut friction_force = if self.friction_stribeck && self.config.beta_static > 0.0 {
-            let omega_ratio = self.omega_radps / self.config.beta_static;
+        let mut friction_force = if self.friction_stribeck && config.beta_static > 0.0 {
+            let omega_ratio = self.omega_radps / config.beta_static;
             (2.0 * std::f64::consts::E).sqrt()
-                * (self.config.static_friction_nm - self.config.coulomb_friction_nm)
+                * (config.static_friction_nm - config.coulomb_friction_nm)
                 * (-(omega_ratio * omega_ratio) / 2.0).exp()
                 * self.omega_radps
-                / (self.config.beta_static * 2.0_f64.sqrt())
-                + self.config.coulomb_friction_nm
-                    * (self.omega_radps * 10.0 / self.config.beta_static).tanh()
-                + self.config.viscous_friction_nms_per_rad * self.omega_radps
+                / (config.beta_static * 2.0_f64.sqrt())
+                + config.coulomb_friction_nm * (self.omega_radps * 10.0 / config.beta_static).tanh()
+                + config.viscous_friction_nms_per_rad * self.omega_radps
         } else {
-            sign_of_omega * self.config.coulomb_friction_nm
-                + self.config.viscous_friction_nms_per_rad * self.omega_radps
+            sign_of_omega * config.coulomb_friction_nm
+                + config.viscous_friction_nms_per_rad * self.omega_radps
         };
 
-        let friction_force_at_limit_cycle = if self.friction_stribeck
-            && self.config.beta_static > 0.0
-        {
-            let omega_ratio = self.config.omega_limit_cycle_radps / self.config.beta_static;
+        let friction_force_at_limit_cycle = if self.friction_stribeck && config.beta_static > 0.0 {
+            let omega_ratio = config.omega_limit_cycle_radps / config.beta_static;
             (2.0 * std::f64::consts::E).sqrt()
-                * (self.config.static_friction_nm - self.config.coulomb_friction_nm)
+                * (config.static_friction_nm - config.coulomb_friction_nm)
                 * (-(omega_ratio * omega_ratio) / 2.0).exp()
-                * self.config.omega_limit_cycle_radps
-                / (self.config.beta_static * 2.0_f64.sqrt())
-                + self.config.coulomb_friction_nm
-                    * (self.config.omega_limit_cycle_radps * 10.0 / self.config.beta_static).tanh()
-                + self.config.viscous_friction_nms_per_rad * self.config.omega_limit_cycle_radps
+                * config.omega_limit_cycle_radps
+                / (config.beta_static * 2.0_f64.sqrt())
+                + config.coulomb_friction_nm
+                    * (config.omega_limit_cycle_radps * 10.0 / config.beta_static).tanh()
+                + config.viscous_friction_nms_per_rad * config.omega_limit_cycle_radps
         } else {
-            self.config.coulomb_friction_nm
-                + self.config.viscous_friction_nms_per_rad * self.config.omega_limit_cycle_radps
+            config.coulomb_friction_nm
+                + config.viscous_friction_nms_per_rad * config.omega_limit_cycle_radps
         };
 
-        if self.omega_radps.abs() < self.config.omega_limit_cycle_radps {
-            friction_force = friction_force_at_limit_cycle / self.config.omega_limit_cycle_radps
-                * self.omega_radps;
+        if self.omega_radps.abs() < config.omega_limit_cycle_radps {
+            friction_force =
+                friction_force_at_limit_cycle / config.omega_limit_cycle_radps * self.omega_radps;
         }
 
         self.friction_torque_nm = -friction_force;
@@ -490,19 +500,20 @@ impl ReactionWheel {
     /// and dynamic imbalance force and torque act along; `w3_hat_b` is the third
     /// (gimbal) wheel-frame axis used by the fully-coupled model.
     fn jitter_axes_for_theta(&self, theta_rad: f64) -> (Vector3<f64>, Vector3<f64>) {
-        let spin_axis = normalize_or_zero(self.config.spin_axis_body);
-        let phase_rad = theta_rad - self.omega_radps * self.config.jitter_phase_delay_sec;
+        let config = self.config.read();
+        let spin_axis = normalize_or_zero(config.spin_axis_body);
+        let phase_rad = theta_rad - self.omega_radps * config.jitter_phase_delay_sec;
         let rotation = nalgebra::UnitQuaternion::from_axis_angle(
             &nalgebra::Unit::new_normalize(spin_axis),
             phase_rad,
         );
         let w2_hat_b = rotation.transform_vector(&normalize_or_fallback(
-            self.config.torque_axis_body,
-            normalize_or_zero(orthogonal_unit_vector(self.config.spin_axis_body)),
+            config.torque_axis_body,
+            normalize_or_zero(orthogonal_unit_vector(config.spin_axis_body)),
         ));
         let w3_hat_b = rotation.transform_vector(&normalize_or_fallback(
-            self.config.gimbal_axis_body,
-            normalize_or_zero(orthogonal_unit_vector_2(self.config.spin_axis_body)),
+            config.gimbal_axis_body,
+            normalize_or_zero(orthogonal_unit_vector_2(config.spin_axis_body)),
         ));
         (w2_hat_b, w3_hat_b)
     }
@@ -512,32 +523,33 @@ impl ReactionWheel {
     /// body-frame time derivatives. `com_offset_m` is the imbalance center-of-mass
     /// offset along `w2_hat` and `j13_kg_m2` is the off-diagonal wheel inertia.
     fn fully_coupled_kinematics(&self, theta_rad: f64, omega_radps: f64) -> FullyCoupledKinematics {
-        let gs_hat = normalize_or_zero(self.config.spin_axis_body);
+        let config = self.config.read();
+        let gs_hat = normalize_or_zero(config.spin_axis_body);
         let (w2_hat, w3_hat) = self.jitter_axes_for_theta(theta_rad);
 
-        let mass = self.config.mass_kg;
-        let d = self.config.com_offset_m;
-        let j13 = self.config.j13_kg_m2;
+        let mass = config.mass_kg;
+        let d = config.com_offset_m;
+        let j13 = config.j13_kg_m2;
 
         // dcm_BW has the wheel frame axes as its columns.
         let dcm_body_wheel = Matrix3::from_columns(&[gs_hat, w2_hat, w3_hat]);
         let inertia_wheel = Matrix3::new(
-            self.config.js_kg_m2,
+            config.js_kg_m2,
             0.0,
             j13,
             0.0,
-            self.config.jt_kg_m2,
+            config.jt_kg_m2,
             0.0,
             j13,
             0.0,
-            self.config.jg_kg_m2,
+            config.jg_kg_m2,
         );
         let inertia_body = dcm_body_wheel * inertia_wheel * dcm_body_wheel.transpose();
         let inertia_prime_wheel =
             Matrix3::new(0.0, -j13, 0.0, -j13, 0.0, 0.0, 0.0, 0.0, 0.0) * omega_radps;
         let inertia_prime_body = dcm_body_wheel * inertia_prime_wheel * dcm_body_wheel.transpose();
 
-        let com_position_body = self.config.position_m + d * w2_hat;
+        let com_position_body = config.position_m + d * w2_hat;
         let com_prime_body = d * omega_radps * w3_hat;
 
         FullyCoupledKinematics {
@@ -563,12 +575,13 @@ impl ReactionWheel {
         body_omega_radps: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
     ) -> (FullyCoupledBackSub, FullyCoupledOmegaTerms) {
+        let config = self.config.read();
         let k = self.fully_coupled_kinematics(theta_rad, omega_radps);
         let mass = k.mass;
         let d = k.d;
         let mass_d = mass * d;
-        let j13 = self.config.j13_kg_m2;
-        let denom = self.config.js_kg_m2 + mass * d * d;
+        let j13 = config.j13_kg_m2;
+        let denom = config.js_kg_m2 + mass * d * d;
 
         let omega_s = k.gs_hat.dot(&body_omega_radps);
         let omega_w2 = k.w2_hat.dot(&body_omega_radps);
@@ -578,14 +591,13 @@ impl ReactionWheel {
 
         let a_omega = -mass_d / denom * k.w3_hat;
         let b_omega =
-            -(denom * k.gs_hat + j13 * k.w3_hat + mass_d * self.config.position_m.cross(&k.w3_hat))
+            -(denom * k.gs_hat + j13 * k.w3_hat + mass_d * config.position_m.cross(&k.w3_hat))
                 / denom;
         let c_omega = (omega_w2 * omega_w3 * (-mass * d * d)
             - j13 * omega_w2 * omega_s
             - mass_d
-                * k.w3_hat.dot(
-                    &body_omega_radps.cross(&body_omega_radps.cross(&self.config.position_m)),
-                )
+                * k.w3_hat
+                    .dot(&body_omega_radps.cross(&body_omega_radps.cross(&config.position_m)))
             + (self.u_current_nm + self.friction_torque_nm)
             + k.gs_hat.dot(&gravity_torque_about_wheel))
             / denom;
@@ -665,28 +677,13 @@ impl ReactionWheelStateEffector {
         &mut self.wheels
     }
 
-    fn jitter_wheel_count(&self) -> usize {
-        self.wheels
-            .iter()
-            .filter(|wheel| is_jitter_model(wheel.config.model))
-            .count()
-    }
-
-    fn theta_state_index(&self, wheel_index: usize) -> Option<usize> {
-        is_jitter_model(self.wheels[wheel_index].config.model).then(|| {
-            self.wheels.len()
-                + self.wheels[..wheel_index]
-                    .iter()
-                    .filter(|wheel| is_jitter_model(wheel.config.model))
-                    .count()
-        })
+    fn theta_state_index(&self, wheel_index: usize) -> usize {
+        self.wheels.len() + wheel_index
     }
 
     fn state_for_wheel(&self, state: &[f64], wheel_index: usize) -> (f64, f64) {
         let omega_radps = state[wheel_index];
-        let theta_rad = self
-            .theta_state_index(wheel_index)
-            .map_or(0.0, |index| state[index]);
+        let theta_rad = state[self.theta_state_index(wheel_index)];
         (omega_radps, theta_rad)
     }
 
@@ -705,7 +702,7 @@ impl StateEffector for ReactionWheelStateEffector {
     }
 
     fn state_len(&self) -> usize {
-        self.wheels.len() + self.jitter_wheel_count()
+        2 * self.wheels.len()
     }
 
     fn initial_state(&self) -> Vec<f64> {
@@ -713,7 +710,7 @@ impl StateEffector for ReactionWheelStateEffector {
         for wheel in &self.wheels {
             assert!(
                 matches!(
-                    wheel.config.model,
+                    wheel.model(),
                     ReactionWheelModel::BalancedWheels
                         | ReactionWheelModel::JitterSimple
                         | ReactionWheelModel::JitterFullyCoupled
@@ -723,9 +720,7 @@ impl StateEffector for ReactionWheelStateEffector {
             state.push(wheel.omega_radps);
         }
         for wheel in &self.wheels {
-            if is_jitter_model(wheel.config.model) {
-                state.push(wheel.theta_rad);
-            }
+            state.push(wheel.theta_rad);
         }
         state
     }
@@ -736,12 +731,10 @@ impl StateEffector for ReactionWheelStateEffector {
         let mut theta_index = wheel_count;
         for (wheel_index, wheel) in self.wheels.iter_mut().enumerate() {
             wheel.omega_radps = state[wheel_index];
-            if is_jitter_model(wheel.config.model) {
-                wheel.theta_rad = state[theta_index];
-                theta_index += 1;
+            wheel.theta_rad = state[theta_index];
+            theta_index += 1;
+            if is_jitter_model(wheel.model()) {
                 wheel.update_jitter_axes();
-            } else {
-                wheel.theta_rad = 0.0;
             }
         }
     }
@@ -763,7 +756,7 @@ impl StateEffector for ReactionWheelStateEffector {
         self.assert_state_length(effector_state);
         for (wheel_index, wheel) in self.wheels.iter().enumerate() {
             let (omega_radps, theta_rad) = self.state_for_wheel(effector_state, wheel_index);
-            if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+            if matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
                 let (terms, omega_terms) = wheel.fully_coupled_back_sub(
                     omega_radps,
                     theta_rad,
@@ -798,7 +791,7 @@ impl StateEffector for ReactionWheelStateEffector {
         let mut derivatives = vec![0.0; self.state_len()];
         for (wheel_index, wheel) in self.wheels.iter().enumerate() {
             let omega_dot_radps2 =
-                if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+                if matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
                     // a_omega/b_omega/c_omega were cached in update_contributions, which
                     // has the body rate that compute_derivatives is not given.
                     let terms = wheel.fully_coupled_terms.borrow();
@@ -817,9 +810,7 @@ impl StateEffector for ReactionWheelStateEffector {
                 MAX_WHEEL_ACCELERATION_RADPS2,
             );
             derivatives[wheel_index] = omega_dot_radps2;
-            if let Some(theta_index) = self.theta_state_index(wheel_index) {
-                derivatives[theta_index] = effector_state[wheel_index];
-            }
+            derivatives[self.theta_state_index(wheel_index)] = effector_state[wheel_index];
         }
         derivatives
     }
@@ -845,7 +836,7 @@ impl StateEffector for ReactionWheelStateEffector {
                     inertia_prime_sum,
                 ),
                  (wheel_index, wheel)| {
-                    if !matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+                    if !matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
                         return (
                             mass_sum,
                             first_moment_sum,
@@ -907,7 +898,7 @@ impl StateEffector for ReactionWheelStateEffector {
             .enumerate()
             .fold(Vector3::zeros(), |total, (wheel_index, wheel)| {
                 let (omega_radps, theta_rad) = self.state_for_wheel(effector_state, wheel_index);
-                if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+                if matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
                     let k = wheel.fully_coupled_kinematics(theta_rad, omega_radps);
                     let omega_wheel_body = body_omega_radps + omega_radps * k.gs_hat;
                     let com_velocity_body =
@@ -916,8 +907,8 @@ impl StateEffector for ReactionWheelStateEffector {
                         + k.inertia_body * omega_wheel_body
                         + k.mass * k.com_position_body.cross(&com_velocity_body)
                 } else {
-                    let spin_axis = normalize_or_zero(wheel.config.spin_axis_body);
-                    total + spin_axis * (wheel.config.js_kg_m2 * omega_radps)
+                    let spin_axis = normalize_or_zero(wheel.config.read().spin_axis_body);
+                    total + spin_axis * (wheel.config.read().js_kg_m2 * omega_radps)
                 }
             })
     }
@@ -929,7 +920,7 @@ impl StateEffector for ReactionWheelStateEffector {
             .enumerate()
             .map(|(wheel_index, wheel)| {
                 let (omega_radps, theta_rad) = self.state_for_wheel(effector_state, wheel_index);
-                if matches!(wheel.config.model, ReactionWheelModel::JitterFullyCoupled) {
+                if matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
                     let k = wheel.fully_coupled_kinematics(theta_rad, omega_radps);
                     let omega_wheel_body = body_omega_radps + omega_radps * k.gs_hat;
                     let com_velocity_body =
@@ -937,9 +928,11 @@ impl StateEffector for ReactionWheelStateEffector {
                     0.5 * omega_wheel_body.dot(&(k.inertia_body * omega_wheel_body))
                         + 0.5 * k.mass * com_velocity_body.dot(&com_velocity_body)
                 } else {
-                    let spin_axis = normalize_or_zero(wheel.config.spin_axis_body);
-                    0.5 * wheel.config.js_kg_m2 * omega_radps * omega_radps
-                        + wheel.config.js_kg_m2 * omega_radps * spin_axis.dot(&body_omega_radps)
+                    let spin_axis = normalize_or_zero(wheel.config.read().spin_axis_body);
+                    0.5 * wheel.config.read().js_kg_m2 * omega_radps * omega_radps
+                        + wheel.config.read().js_kg_m2
+                            * omega_radps
+                            * spin_axis.dot(&body_omega_radps)
                 }
             })
             .sum()
@@ -1069,12 +1062,23 @@ fn orthogonal_unit_vector_2(spin_axis_body: Vector3<f64>) -> Vector3<f64> {
 
 #[cfg(test)]
 mod tests {
+
     use nalgebra::{Matrix3, Vector3};
 
     use crate::messages::{MotorTorqueMsg, Output, SpacecraftStateMsg};
     use crate::spacecraft::{BackSubMatrices, StateEffector};
 
-    use super::{ReactionWheelStateEffector, ReactionWheelStateEffectorConfig};
+    use super::{
+        ReactionWheel, ReactionWheelModel, ReactionWheelStateEffector,
+        ReactionWheelStateEffectorConfig,
+    };
+
+    /// Read-modify-write, so tuning one field does not drop the rest.
+    fn tune(wheel: &ReactionWheel, apply: impl FnOnce(&mut ReactionWheelStateEffectorConfig)) {
+        let mut config = wheel.config.read();
+        apply(&mut config);
+        wheel.config.write(config);
+    }
 
     fn rw_with_command(
         max_torque_nm: f64,
@@ -1103,6 +1107,19 @@ mod tests {
             .motor_torque_in_msg
             .connect(command.slot());
         reaction_wheels
+    }
+
+    #[test]
+    fn changing_model_does_not_change_the_integrated_state_shape() {
+        let mut reaction_wheels = rw_with_command(1.0, 0.0, 10.0, -1.0, 4.0, 0.0);
+        let state = reaction_wheels.initial_state();
+
+        tune(&reaction_wheels.wheels()[0], |config| {
+            config.model = ReactionWheelModel::JitterSimple;
+        });
+
+        assert_eq!(reaction_wheels.state_len(), state.len());
+        reaction_wheels.load_state(&state);
     }
 
     /// Commands [-1.2, 1.5, 2.5] Nm with limits [1, 2, 2] Nm → clamped to [-1.0, 1.5, 2.0].
@@ -1255,11 +1272,11 @@ mod tests {
         assert_eq!(reaction_wheels.wheels()[0].u_current_nm, 0.25);
         assert_eq!(reaction_wheels.wheels()[1].u_current_nm, -0.5);
 
-        reaction_wheels.load_state(&[12.0, -8.0, 0.2]);
+        reaction_wheels.load_state(&[12.0, -8.0, 0.1, 0.2]);
         reaction_wheels.write_outputs(0, &SpacecraftStateMsg::default());
         let speed = reaction_wheels.rw_speed_out_msg.read();
         assert_eq!(speed.wheel_speeds_radps[..2], [12.0, -8.0]);
-        assert_eq!(speed.wheel_angles_rad[..2], [0.0, 0.2]);
+        assert_eq!(speed.wheel_angles_rad[..2], [0.1, 0.2]);
         assert_eq!(
             reaction_wheels.wheels()[0]
                 .state_out
@@ -1310,11 +1327,11 @@ mod tests {
         reaction_wheels.add_reaction_wheel(balanced);
         reaction_wheels.add_reaction_wheel(jitter);
 
-        // Every wheel speed is stored first, followed by the jitter-wheel
-        // angles: [omega_x, omega_y, theta_y].
-        assert_eq!(reaction_wheels.state_len(), 3);
-        assert_eq!(reaction_wheels.initial_state(), vec![4.0, 5.0, 0.0]);
-        let state = [4.0, 5.0, 0.2];
+        // Every wheel speed is stored first, followed by every wheel angle:
+        // [omega_x, omega_y, theta_x, theta_y].
+        assert_eq!(reaction_wheels.state_len(), 4);
+        assert_eq!(reaction_wheels.initial_state(), vec![4.0, 5.0, 0.0, 0.0]);
+        let state = [4.0, 5.0, 0.1, 0.2];
         reaction_wheels.load_state(&state);
 
         let mut back_sub = BackSubMatrices::default();
@@ -1335,7 +1352,7 @@ mod tests {
                 Vector3::zeros(),
                 Vector3::new(1.0, 2.0, 3.0),
             ),
-            vec![-1.0, -2.0, 5.0]
+            vec![-1.0, -2.0, 4.0, 5.0]
         );
         assert_eq!(
             reaction_wheels.rotational_angular_momentum_body(&state, Vector3::zeros()),
@@ -1355,8 +1372,10 @@ mod tests {
         let cases = [(10.0, -0.06), (-10.0, 0.06)];
         for (omega, expected) in cases {
             let mut rw = rw_with_command(10.0, 0.0, 0.0, -1.0, omega, 0.0);
-            rw.wheels[0].config.coulomb_friction_nm = 0.05;
-            rw.wheels[0].config.viscous_friction_nms_per_rad = 0.001;
+            tune(&rw.wheels()[0], |config| {
+                config.coulomb_friction_nm = 0.05;
+                config.viscous_friction_nms_per_rad = 0.001;
+            });
             StateEffector::pre_integration(&mut rw, 0, 1.0);
             assert!(
                 (rw.wheels()[0].friction_torque_nm - expected).abs() < 1e-10,
@@ -1379,11 +1398,13 @@ mod tests {
         let omega = 0.05; // < 0.1 * omega_limit_cycle: Stribeck engages
 
         let mut rw = rw_with_command(10.0, 0.0, 0.0, -1.0, omega, 0.0);
-        rw.wheels[0].config.beta_static = beta_static;
-        rw.wheels[0].config.static_friction_nm = static_friction_nm;
-        rw.wheels[0].config.coulomb_friction_nm = coulomb_friction_nm;
-        rw.wheels[0].config.viscous_friction_nms_per_rad = viscous;
-        rw.wheels[0].config.omega_limit_cycle_radps = omega_limit_cycle;
+        tune(&rw.wheels()[0], |config| {
+            config.beta_static = beta_static;
+            config.static_friction_nm = static_friction_nm;
+            config.coulomb_friction_nm = coulomb_friction_nm;
+            config.viscous_friction_nms_per_rad = viscous;
+            config.omega_limit_cycle_radps = omega_limit_cycle;
+        });
         StateEffector::pre_integration(&mut rw, 0, 1.0);
 
         let ratio = omega_limit_cycle / beta_static;

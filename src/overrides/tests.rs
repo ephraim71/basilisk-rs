@@ -344,15 +344,11 @@ fn a_freeze_and_a_default_accept_an_empty_payload() {
         "patch touched a field it did not name"
     );
 
-    for request in [
-        Request::freeze(json!(null)).unwrap(),
-        Request::default(json!(null)).unwrap(),
-    ] {
-        let mode = request.mode();
-        registry
-            .install("sensor_0.config", request)
-            .unwrap_or_else(|err| panic!("{mode:?} was refused as incomplete: {err}"));
-    }
+    let request = Request::freeze(json!(null)).unwrap();
+    let mode = request.mode();
+    registry
+        .install("sensor_0.config", request)
+        .unwrap_or_else(|err| panic!("{mode:?} was refused as incomplete: {err}"));
 }
 
 /// Serde ignores a field it does not recognise, so a misspelling merges
@@ -926,11 +922,7 @@ fn a_replace_filling_an_empty_option_badly_reports_the_value_not_the_name() {
 /// asserted rather than left to `rename_all` to keep right.
 #[test]
 fn every_mode_serialises_to_the_name_a_client_sends() {
-    for (mode, name) in [
-        (Mode::Replace, "replace"),
-        (Mode::Freeze, "freeze"),
-        (Mode::Default, "default"),
-    ] {
+    for (mode, name) in [(Mode::Replace, "replace"), (Mode::Freeze, "freeze")] {
         assert_eq!(serde_json::to_value(mode).unwrap(), json!(name));
         assert_eq!(
             serde_json::from_value::<Mode>(json!(name)).unwrap(),
@@ -1713,4 +1705,34 @@ fn cancelling_drops_what_was_posted_before_it_and_not_what_follows() {
         .unwrap();
     faults.advance(2 * SECOND);
     assert_eq!(output.read().rate_dps, 4.0);
+}
+
+/// The sentinel is internal to the round trip, so the views the REST API reads
+/// still answer `null` for a non-finite float.
+///
+/// bifrost's condition evaluator reads `effective` and treats `null` as "not a
+/// number this instant", so a value that started answering `"inf"` here would
+/// turn a watched field into a hard error at arm time.
+#[test]
+fn the_outward_facing_views_still_answer_null_for_a_non_finite() {
+    let (registry, output) = registry_with_reading();
+    output.write(reading(f64::NEG_INFINITY));
+
+    registry
+        .install(
+            "sensor_0.output_msg",
+            Request::replace(json!({ "/rate_dps": 2.0 })).unwrap(),
+        )
+        .unwrap();
+
+    for view in [
+        registry.upstream("sensor_0.output_msg").unwrap(),
+        registry.effective("sensor_0.output_msg").unwrap(),
+    ] {
+        assert_eq!(
+            view["angle_deg"],
+            json!(null),
+            "a non-finite float reached a caller as something other than null"
+        );
+    }
 }

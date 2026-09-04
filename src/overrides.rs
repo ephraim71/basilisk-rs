@@ -23,6 +23,7 @@
 
 pub(crate) mod rule;
 
+pub(crate) mod non_finite;
 mod paths;
 mod schedule;
 mod schema;

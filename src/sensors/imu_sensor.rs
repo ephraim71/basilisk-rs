@@ -15,7 +15,7 @@ use crate::{Module, SimulationContext};
 /// + sensor bias -> per-axis scale -> LSB discretization -> saturation. Only
 /// the rotational states are modelled; `ImuMsg` carries no accelerometer
 /// output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImuSensorConfig {
     pub name: String,
     pub position_m: Vector3<f64>,
@@ -108,7 +108,7 @@ impl ImuSensorConfig {
 
 #[derive(Clone, Debug)]
 pub struct ImuSensor {
-    pub config: ImuSensorConfig,
+    pub config: Output<ImuSensorConfig>,
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub output_imu_msg: Output<ImuMsg>,
     error_model: GaussMarkov,
@@ -118,23 +118,27 @@ pub struct ImuSensor {
 impl Module for ImuSensor {
     fn init(&mut self) {
         // On reset, rebuild the error model from config and clear its walk state.
+        let config = self.config.read();
         self.error_model = GaussMarkov::new(
-            self.config.a_matrix,
-            self.config.p_matrix_sqrt_radps,
-            self.config.walk_bounds_radps,
+            config.a_matrix,
+            config.p_matrix_sqrt_radps,
+            config.walk_bounds_radps,
         );
         self.output_imu_msg.write(ImuMsg::default());
     }
 
     fn update(&mut self, _context: &SimulationContext) {
         let state = self.input_state_msg.read();
+        let config = self.config.read();
 
-        let true_rate_sensor = self.compute_body_to_sensor_rate(&state);
-        let with_errors = self.apply_sensor_errors(true_rate_sensor);
-        let scaled = with_errors.component_mul(&self.config.gyro_scale);
-        let quantized = self.apply_discretization(scaled);
-        let saturated = quantized
-            .map(|value| value.clamp(-self.config.max_rate_radps, self.config.max_rate_radps));
+        let true_rate_sensor = self.compute_body_to_sensor_rate(&config, &state);
+        let with_errors = self.apply_sensor_errors(&config, true_rate_sensor);
+        let scaled = with_errors.component_mul(&config.gyro_scale);
+        let quantized = self.apply_discretization(&config, scaled);
+        // `abs`: `validate` runs on the value passed to `new`, never on one
+        // written to the port, and `clamp` panics when low > high.
+        let limit = config.max_rate_radps.abs();
+        let saturated = quantized.map(|value| value.clamp(-limit, limit));
 
         self.output_imu_msg.write(ImuMsg {
             angular_rate_sensor_radps: saturated,
@@ -154,30 +158,47 @@ impl ImuSensor {
                 config.p_matrix_sqrt_radps,
                 config.walk_bounds_radps,
             ),
-            config,
+            config: Output::new(config),
             input_state_msg: Input::default(),
             output_imu_msg: Output::default(),
         }
     }
 
-    fn compute_body_to_sensor_rate(&self, state: &SpacecraftStateMsg) -> Vector3<f64> {
-        self.config
+    fn compute_body_to_sensor_rate(
+        &self,
+        config: &ImuSensorConfig,
+        state: &SpacecraftStateMsg,
+    ) -> Vector3<f64> {
+        config
             .body_to_sensor_quaternion
-            .transform_vector(&(state.omega_radps + self.config.body_rate_bias_radps))
+            .transform_vector(&(state.omega_radps + config.body_rate_bias_radps))
     }
 
-    fn apply_sensor_errors(&mut self, rate_sensor_radps: Vector3<f64>) -> Vector3<f64> {
+    fn apply_sensor_errors(
+        &mut self,
+        config: &ImuSensorConfig,
+        rate_sensor_radps: Vector3<f64>,
+    ) -> Vector3<f64> {
+        // Assigned rather than rebuilt: `GaussMarkov` reads all three live, and
+        // its accumulated walk is private state a rebuild would discard.
+        self.error_model.prop_matrix = config.a_matrix;
+        self.error_model.noise_matrix_sqrt = config.p_matrix_sqrt_radps;
+        self.error_model.state_bounds = config.walk_bounds_radps;
         let error_state_radps = self.error_model.compute_next_state(&mut self.rng);
 
-        rate_sensor_radps + error_state_radps + self.config.sensor_rate_bias_radps
+        rate_sensor_radps + error_state_radps + config.sensor_rate_bias_radps
     }
 
-    fn apply_discretization(&self, rate_sensor_radps: Vector3<f64>) -> Vector3<f64> {
-        if self.config.lsb_radps <= 0.0 {
+    fn apply_discretization(
+        &self,
+        config: &ImuSensorConfig,
+        rate_sensor_radps: Vector3<f64>,
+    ) -> Vector3<f64> {
+        if config.lsb_radps <= 0.0 {
             return rate_sensor_radps;
         }
         rate_sensor_radps.map(|value| {
-            (value.abs() / self.config.lsb_radps).floor() * self.config.lsb_radps * value.signum()
+            (value.abs() / config.lsb_radps).floor() * config.lsb_radps * value.signum()
         })
     }
 }

@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::overrides::{Mode, Request};
@@ -6,6 +9,17 @@ use super::{Input, Output};
 use crate::messages::PowerStorageStatusMsg;
 use crate::messages::SpacecraftStateMsg;
 use crate::messages::{ArrayMotorTorqueMsg, MAX_EFF_COUNT};
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+enum PayloadMessage {
+    #[default]
+    Unit,
+    Newtype(f64),
+    Tuple(f64, f64),
+    Struct {
+        value: f64,
+    },
+}
 
 #[test]
 fn a_replace_naming_every_field_substitutes_the_whole_message() {
@@ -28,32 +42,6 @@ fn a_replace_naming_every_field_substitutes_the_whole_message() {
     assert_eq!(output.read().current_net_power_w, 6.0);
 }
 
-#[test]
-fn default_override_emits_default_until_cleared() {
-    let output = Output::new(PowerStorageStatusMsg {
-        storage_level_j: 1.0,
-        storage_capacity_j: 2.0,
-        current_net_power_w: 3.0,
-    });
-
-    output
-        .set_override(Request::default(json!(null)).unwrap())
-        .unwrap();
-    output.write(PowerStorageStatusMsg {
-        storage_level_j: 10.0,
-        storage_capacity_j: 20.0,
-        current_net_power_w: 30.0,
-    });
-    assert_eq!(output.read().storage_level_j, 0.0);
-    assert_eq!(output.read().storage_capacity_j, 0.0);
-    assert_eq!(output.read().current_net_power_w, 0.0);
-
-    output.clear_override();
-    assert_eq!(output.read().storage_level_j, 10.0);
-    assert_eq!(output.read().storage_capacity_j, 20.0);
-    assert_eq!(output.read().current_net_power_w, 30.0);
-}
-
 /// `MAX_EFF_COUNT` is past serde's built-in array impls, so these arrays
 /// travel as sequences and their length is checked on the way back.
 #[test]
@@ -70,6 +58,63 @@ fn maximum_effector_array_round_trips_and_rejects_wrong_lengths() {
     let mut short = serialized;
     short["motor_torque_nm"] = json!(vec![0.0; MAX_EFF_COUNT - 1]);
     assert!(serde_json::from_value::<ArrayMotorTorqueMsg>(short).is_err());
+}
+
+#[test]
+fn a_map_message_remains_overrideable() {
+    let output = Output::new(BTreeMap::from([("level".to_owned(), 1.0)]));
+
+    output
+        .set_override(Request::replace(json!({ "": { "level": 2.0 } })).unwrap())
+        .expect("a serde-round-trippable map was refused");
+
+    assert_eq!(output.read()["level"], 2.0);
+}
+
+#[test]
+fn payload_enum_variants_remain_overrideable() {
+    for (upstream, replacement, expected) in [
+        (
+            PayloadMessage::Newtype(1.0),
+            json!({ "Newtype": 2.0 }),
+            PayloadMessage::Newtype(2.0),
+        ),
+        (
+            PayloadMessage::Tuple(1.0, 2.0),
+            json!({ "Tuple": [3.0, 4.0] }),
+            PayloadMessage::Tuple(3.0, 4.0),
+        ),
+        (
+            PayloadMessage::Struct { value: 1.0 },
+            json!({ "Struct": { "value": 5.0 } }),
+            PayloadMessage::Struct { value: 5.0 },
+        ),
+    ] {
+        let output = Output::new(upstream);
+        output
+            .set_override(Request::replace(json!({ "": replacement })).unwrap())
+            .expect("a serde-round-trippable enum variant was refused");
+        assert_eq!(output.read(), expected);
+    }
+}
+
+#[test]
+fn a_replace_cannot_send_an_internal_sentinel_as_a_float() {
+    for sentinel in ["inf", "-inf", "NaN"] {
+        let output = Output::new(PowerStorageStatusMsg::default());
+
+        let error = output
+            .set_override(Request::replace(json!({ "/storage_level_j": sentinel })).unwrap())
+            .expect_err("an internal sentinel was accepted from an operator")
+            .to_string();
+
+        assert!(error.contains("invalid type: string"), "{error}");
+    }
+
+    let text = Output::new(String::new());
+    text.set_override(Request::replace(json!({ "": "inf" })).unwrap())
+        .expect("ordinary text matching a sentinel was refused");
+    assert_eq!(text.read(), "inf");
 }
 
 fn status(storage_level_j: f64) -> PowerStorageStatusMsg {
@@ -656,34 +701,6 @@ fn a_freeze_naming_fields_holds_those_and_lets_the_rest_track() {
     assert_eq!(output.read().current_net_power_w, 7.0);
 }
 
-/// A default naming fields resets those and no others — the mirror of a
-/// per-field freeze, drawing from the type default instead of the live value.
-#[test]
-fn a_default_naming_fields_resets_those_and_leaves_the_rest() {
-    let output = Output::new(PowerStorageStatusMsg::default());
-    output.write(PowerStorageStatusMsg {
-        storage_level_j: 5.0,
-        storage_capacity_j: 6.0,
-        current_net_power_w: 7.0,
-    });
-
-    output
-        .set_override(Request::default(json!(["/storage_capacity_j"])).unwrap())
-        .unwrap();
-
-    assert_eq!(
-        output.read().storage_capacity_j,
-        0.0,
-        "the named field kept its value"
-    );
-    assert_eq!(
-        output.read().storage_level_j,
-        5.0,
-        "an unnamed field was reset"
-    );
-    assert_eq!(output.read().current_net_power_w, 7.0);
-}
-
 /// An empty payload still means the whole message, which is how both modes
 /// behaved when neither took one.
 #[test]
@@ -699,17 +716,6 @@ fn an_empty_selection_still_means_the_whole_message() {
             frozen.read().storage_level_j,
             1.0,
             "{empty} did not freeze all"
-        );
-
-        let reset = Output::new(PowerStorageStatusMsg::default());
-        reset.write(status(5.0));
-        reset
-            .set_override(Request::default(empty.clone()).unwrap())
-            .unwrap();
-        assert_eq!(
-            reset.read().storage_level_j,
-            0.0,
-            "{empty} did not reset all"
         );
     }
 }
@@ -727,10 +733,6 @@ fn every_mode_composes_because_none_of_them_mask() {
     output
         .set_override(Request::replace(json!({ "/current_net_power_w": 3.0 })).unwrap())
         .unwrap();
-    output
-        .set_override(Request::default(json!(["/storage_capacity_j"])).unwrap())
-        .unwrap();
-
     output.write(PowerStorageStatusMsg {
         storage_level_j: 99.0,
         storage_capacity_j: 88.0,
@@ -740,14 +742,85 @@ fn every_mode_composes_because_none_of_them_mask() {
     assert_eq!(output.read().storage_level_j, 1.0, "the freeze was masked");
     assert_eq!(
         output.read().storage_capacity_j,
-        0.0,
-        "the default was masked"
+        88.0,
+        "a field no rule names did not reach the reader"
     );
     assert_eq!(
         output.read().current_net_power_w,
         3.0,
         "the replace was masked"
     );
+}
+
+/// A sun sensor facing away from the sun publishes NaN for its angles, and JSON
+/// has no spelling for one, so the round trip an override performs used to refuse
+/// the whole message -- naming a field the operator never touched. The fault the
+/// operator asked for is unrelated to the field that could not be written.
+#[test]
+fn a_replace_lands_on_a_message_whose_other_float_is_not_finite() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::NAN,
+        storage_capacity_j: 6.0,
+        current_net_power_w: f64::NAN,
+    });
+
+    output
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 20.0 })).unwrap())
+        .expect("a replace was refused because another field held NaN");
+
+    assert_eq!(
+        output.read().storage_capacity_j,
+        20.0,
+        "the named field did not take the value"
+    );
+    assert!(
+        output.read().storage_level_j.is_nan(),
+        "a field no rule names lost its NaN"
+    );
+    assert!(
+        output.read().current_net_power_w.is_nan(),
+        "a field no rule names lost its NaN"
+    );
+}
+
+/// The same message, frozen: a freeze captures the live value, and one of them is
+/// a NaN that has to survive being captured and written back.
+#[test]
+fn a_freeze_can_capture_a_float_that_is_not_finite() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::NAN,
+        storage_capacity_j: 6.0,
+        current_net_power_w: 0.0,
+    });
+
+    output
+        .set_override(Request::freeze(json!(["/storage_level_j"])).unwrap())
+        .expect("a freeze of a NaN was refused");
+    output.write(status(99.0));
+
+    assert!(
+        output.read().storage_level_j.is_nan(),
+        "the freeze did not hold the NaN it captured"
+    );
+}
+
+#[test]
+fn a_freeze_keeps_the_sign_of_an_infinity() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::INFINITY,
+        storage_capacity_j: 6.0,
+        current_net_power_w: 0.0,
+    });
+
+    output
+        .set_override(Request::freeze(json!(["/storage_level_j"])).unwrap())
+        .expect("a freeze of infinity was refused");
+    output.write(status(99.0));
+
+    assert_eq!(output.read().storage_level_j, f64::INFINITY);
 }
 
 /// A pointer that cannot resolve is refused when the rule is built, so no layer
@@ -955,5 +1028,35 @@ fn a_pointer_with_an_undefined_escape_is_refused() {
     assert!(
         Pointer::parse("/a~1b").is_ok(),
         "'~1' should be a literal '/'"
+    );
+}
+
+/// A field the patch never named keeps the value it had, including the sign of
+/// an infinity. Before the serializer went through `non_finite`, every
+/// non-finite float came back as NaN because JSON writes all three as `null`.
+#[test]
+fn a_replace_leaves_an_untouched_infinity_alone() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::INFINITY,
+        storage_capacity_j: 6.0,
+        current_net_power_w: f64::NEG_INFINITY,
+    });
+
+    output
+        .set_override(Request::replace(json!({ "/storage_capacity_j": 20.0 })).unwrap())
+        .expect("a replace was refused because another field was not finite");
+
+    let applied = output.read();
+    assert_eq!(applied.storage_capacity_j, 20.0, "the fault did not land");
+    assert_eq!(
+        applied.storage_level_j,
+        f64::INFINITY,
+        "an untouched infinity was flattened"
+    );
+    assert_eq!(
+        applied.current_net_power_w,
+        f64::NEG_INFINITY,
+        "an untouched infinity lost its sign"
     );
 }

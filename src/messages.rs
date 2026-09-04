@@ -185,17 +185,15 @@ impl Overrides {
 
     /// The value `request` would produce, without installing anything.
     ///
-    /// Takes the same already-sampled `live` and `type_default` as
-    /// [`Self::install`], so that previewing a rule and installing it read from
-    /// identical inputs.
+    /// Takes the same already-sampled `live` as [`Self::install`], so that
+    /// previewing a rule and installing it read from identical inputs.
     fn preview<T: SimulationMessage>(
         &self,
         request: Request,
         live: &Value,
-        type_default: &Value,
         upstream: T,
     ) -> Result<T, serde_json::Error> {
-        let candidate = Rule::build(request, live, type_default, RuleId::UNINSTALLED)?;
+        let candidate = Rule::build(request, live, RuleId::UNINSTALLED)?;
         fold_candidate(&self.snapshot(), &candidate, upstream)
     }
 
@@ -213,7 +211,6 @@ impl Overrides {
         &self,
         request: Request,
         live: &Value,
-        type_default: &Value,
         upstream: T,
     ) -> Result<(RuleId, T), serde_json::Error>
     where
@@ -224,7 +221,7 @@ impl Overrides {
             .write()
             .expect("failed to lock override rules for write");
 
-        let candidate = Rule::build(request, live, type_default, next_rule_id())?;
+        let candidate = Rule::build(request, live, next_rule_id())?;
         let id = candidate.id();
         // Fold before storing, so a rejected rule leaves the installed stack
         // exactly as it was.
@@ -284,7 +281,13 @@ impl Overrides {
 
         for (id, error) in &skipped {
             if !previously.contains(id) {
-                log::warn!("override rule {id:?} no longer applies and is being skipped: {error}");
+                // Printed rather than logged: a fault that has stopped acting is
+                // the one thing a run must not lose, and the `log` facade is a
+                // no-op in a binary that installs no logger -- which every
+                // caller of this crate so far is.
+                eprintln!(
+                    "[overrides] rule {id:?} no longer applies and is being skipped: {error}"
+                );
             }
         }
 
@@ -292,7 +295,7 @@ impl Overrides {
         for id in previously.iter() {
             // A rule that was removed while skipped has not resumed; it is gone.
             if !now.contains(id) && rules.iter().any(|rule| rule.id() == *id) {
-                log::info!("override rule {id:?} applies again");
+                println!("[overrides] rule {id:?} applies again");
             }
         }
 
@@ -394,18 +397,14 @@ where
             .expect("failed to lock output message for write") = effective;
     }
 
-    /// The two values a rule may draw from: the live value a `freeze` captures
-    /// and the type default a `default` resets to.
+    /// The value a rule may draw from: the live value a `freeze` captures.
     ///
-    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
-    /// why they cannot be read inside it. Both are sampled whichever mode is
-    /// asked for, since sampling is cheap and the alternative is a mode-shaped
-    /// hole here that has to be kept in step with the modes.
-    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
-        Ok((
-            serde_json::to_value(self.read())?,
-            serde_json::to_value(T::default())?,
-        ))
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for why
+    /// it cannot be read inside it. Sampled whichever mode is asked for, since
+    /// sampling is cheap and the alternative is a mode-shaped hole here that has
+    /// to be kept in step with the modes.
+    fn rule_source(&self) -> Result<Value, serde_json::Error> {
+        crate::overrides::non_finite::to_value(&self.read())
     }
 
     /// The value this output would take if the override were installed.
@@ -414,9 +413,8 @@ where
     /// result rather than the incoming fragment, so a `patch` is judged on what
     /// it accumulates to rather than on the keys it happens to mention.
     pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
-        let (live, type_default) = self.rule_sources()?;
-        self.overrides
-            .preview(request, &live, &type_default, self.read_upstream())
+        let live = self.rule_source()?;
+        self.overrides.preview(request, &live, self.read_upstream())
     }
 
     /// Installs an override, returning an id that identifies it.
@@ -425,10 +423,10 @@ where
     /// that cannot produce a well-formed `T` is rejected and the previously
     /// installed rule is left untouched.
     pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
-        let (live, type_default) = self.rule_sources()?;
-        let (id, effective) =
-            self.overrides
-                .install(request, &live, &type_default, self.read_upstream())?;
+        let live = self.rule_source()?;
+        let (id, effective) = self
+            .overrides
+            .install(request, &live, self.read_upstream())?;
 
         *self
             .slot
@@ -565,27 +563,22 @@ impl<T: SimulationMessage> Input<T> {
         self.overrides.apply_installed(upstream)
     }
 
-    /// The two values a rule may draw from: the live value a `freeze` captures
-    /// and the type default a `default` resets to.
+    /// The value a rule may draw from: the live value a `freeze` captures.
     ///
-    /// Sampled before any rule lock is taken — see [`Overrides::install`] for
-    /// why they cannot be read inside it. Both are sampled whichever mode is
-    /// asked for, since sampling is cheap and the alternative is a mode-shaped
-    /// hole here that has to be kept in step with the modes.
-    fn rule_sources(&self) -> Result<(Value, Value), serde_json::Error> {
-        Ok((
-            serde_json::to_value(self.read())?,
-            serde_json::to_value(T::default())?,
-        ))
+    /// Sampled before any rule lock is taken — see [`Overrides::install`] for why
+    /// it cannot be read inside it. Sampled whichever mode is asked for, since
+    /// sampling is cheap and the alternative is a mode-shaped hole here that has
+    /// to be kept in step with the modes.
+    fn rule_source(&self) -> Result<Value, serde_json::Error> {
+        crate::overrides::non_finite::to_value(&self.read())
     }
 
     /// The value this consumer would read if the override were installed.
     ///
     /// Installs nothing. See [`Output::preview_override`].
     pub fn preview_override(&self, request: Request) -> Result<T, serde_json::Error> {
-        let (live, type_default) = self.rule_sources()?;
-        self.overrides
-            .preview(request, &live, &type_default, self.read_upstream())
+        let live = self.rule_source()?;
+        self.overrides.preview(request, &live, self.read_upstream())
     }
 
     /// Installs an override on this consumer's view alone.
@@ -593,10 +586,10 @@ impl<T: SimulationMessage> Input<T> {
     /// Unlike overriding the producer's output, this is invisible to every
     /// other consumer of the same message.
     pub fn set_override(&self, request: Request) -> Result<RuleId, serde_json::Error> {
-        let (live, type_default) = self.rule_sources()?;
-        let (id, _) =
-            self.overrides
-                .install(request, &live, &type_default, self.read_upstream())?;
+        let live = self.rule_source()?;
+        let (id, _) = self
+            .overrides
+            .install(request, &live, self.read_upstream())?;
         Ok(id)
     }
 }

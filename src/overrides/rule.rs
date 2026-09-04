@@ -490,7 +490,11 @@ pub(crate) fn apply_override<T: SimulationMessage>(
     rule: &Rule,
     upstream: T,
 ) -> Result<T, serde_json::Error> {
-    let mut base = super::non_finite::to_value(&upstream)?;
+    let base = apply_document(super::non_finite::to_value(&upstream)?, rule)?;
+    super::non_finite::from_value(base)
+}
+
+fn apply_document(mut base: Value, rule: &Rule) -> Result<Value, serde_json::Error> {
     for assignment in rule.document().assignments() {
         match base.pointer_mut(assignment.path.as_str()) {
             Some(slot) => *slot = assignment.value.clone(),
@@ -502,7 +506,7 @@ pub(crate) fn apply_override<T: SimulationMessage>(
             }
         }
     }
-    super::non_finite::from_value(base)
+    Ok(base)
 }
 
 /// Produces the value an installed stack yields when laid over `upstream`,
@@ -551,5 +555,9 @@ pub(crate) fn fold_candidate<T: SimulationMessage>(
     upstream: T,
 ) -> Result<T, serde_json::Error> {
     let (value, _) = fold_installed(installed, upstream);
+    if candidate.mode() == Mode::Replace {
+        let plain = apply_document(serde_json::to_value(&value)?, candidate)?;
+        let _: T = super::non_finite::from_json_value(plain)?;
+    }
     apply_override(candidate, value)
 }

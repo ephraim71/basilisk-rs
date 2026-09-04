@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::overrides::{Mode, Request};
@@ -6,6 +9,17 @@ use super::{Input, Output};
 use crate::messages::PowerStorageStatusMsg;
 use crate::messages::SpacecraftStateMsg;
 use crate::messages::{ArrayMotorTorqueMsg, MAX_EFF_COUNT};
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+enum PayloadMessage {
+    #[default]
+    Unit,
+    Newtype(f64),
+    Tuple(f64, f64),
+    Struct {
+        value: f64,
+    },
+}
 
 #[test]
 fn a_replace_naming_every_field_substitutes_the_whole_message() {
@@ -44,6 +58,63 @@ fn maximum_effector_array_round_trips_and_rejects_wrong_lengths() {
     let mut short = serialized;
     short["motor_torque_nm"] = json!(vec![0.0; MAX_EFF_COUNT - 1]);
     assert!(serde_json::from_value::<ArrayMotorTorqueMsg>(short).is_err());
+}
+
+#[test]
+fn a_map_message_remains_overrideable() {
+    let output = Output::new(BTreeMap::from([("level".to_owned(), 1.0)]));
+
+    output
+        .set_override(Request::replace(json!({ "": { "level": 2.0 } })).unwrap())
+        .expect("a serde-round-trippable map was refused");
+
+    assert_eq!(output.read()["level"], 2.0);
+}
+
+#[test]
+fn payload_enum_variants_remain_overrideable() {
+    for (upstream, replacement, expected) in [
+        (
+            PayloadMessage::Newtype(1.0),
+            json!({ "Newtype": 2.0 }),
+            PayloadMessage::Newtype(2.0),
+        ),
+        (
+            PayloadMessage::Tuple(1.0, 2.0),
+            json!({ "Tuple": [3.0, 4.0] }),
+            PayloadMessage::Tuple(3.0, 4.0),
+        ),
+        (
+            PayloadMessage::Struct { value: 1.0 },
+            json!({ "Struct": { "value": 5.0 } }),
+            PayloadMessage::Struct { value: 5.0 },
+        ),
+    ] {
+        let output = Output::new(upstream);
+        output
+            .set_override(Request::replace(json!({ "": replacement })).unwrap())
+            .expect("a serde-round-trippable enum variant was refused");
+        assert_eq!(output.read(), expected);
+    }
+}
+
+#[test]
+fn a_replace_cannot_send_an_internal_sentinel_as_a_float() {
+    for sentinel in ["inf", "-inf", "NaN"] {
+        let output = Output::new(PowerStorageStatusMsg::default());
+
+        let error = output
+            .set_override(Request::replace(json!({ "/storage_level_j": sentinel })).unwrap())
+            .expect_err("an internal sentinel was accepted from an operator")
+            .to_string();
+
+        assert!(error.contains("invalid type: string"), "{error}");
+    }
+
+    let text = Output::new(String::new());
+    text.set_override(Request::replace(json!({ "": "inf" })).unwrap())
+        .expect("ordinary text matching a sentinel was refused");
+    assert_eq!(text.read(), "inf");
 }
 
 fn status(storage_level_j: f64) -> PowerStorageStatusMsg {
@@ -733,6 +804,23 @@ fn a_freeze_can_capture_a_float_that_is_not_finite() {
         output.read().storage_level_j.is_nan(),
         "the freeze did not hold the NaN it captured"
     );
+}
+
+#[test]
+fn a_freeze_keeps_the_sign_of_an_infinity() {
+    let output = Output::new(PowerStorageStatusMsg::default());
+    output.write(PowerStorageStatusMsg {
+        storage_level_j: f64::INFINITY,
+        storage_capacity_j: 6.0,
+        current_net_power_w: 0.0,
+    });
+
+    output
+        .set_override(Request::freeze(json!(["/storage_level_j"])).unwrap())
+        .expect("a freeze of infinity was refused");
+    output.write(status(99.0));
+
+    assert_eq!(output.read().storage_level_j, f64::INFINITY);
 }
 
 /// A pointer that cannot resolve is refused when the rule is built, so no layer

@@ -404,7 +404,7 @@ where
     /// sampling is cheap and the alternative is a mode-shaped hole here that has
     /// to be kept in step with the modes.
     fn rule_source(&self) -> Result<Value, serde_json::Error> {
-        serde_json::to_value(self.read())
+        crate::overrides::non_finite::to_value(&self.read())
     }
 
     /// The value this output would take if the override were installed.
@@ -570,7 +570,7 @@ impl<T: SimulationMessage> Input<T> {
     /// sampling is cheap and the alternative is a mode-shaped hole here that has
     /// to be kept in step with the modes.
     fn rule_source(&self) -> Result<Value, serde_json::Error> {
-        serde_json::to_value(self.read())
+        crate::overrides::non_finite::to_value(&self.read())
     }
 
     /// The value this consumer would read if the override were installed.

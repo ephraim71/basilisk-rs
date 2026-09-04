@@ -677,28 +677,13 @@ impl ReactionWheelStateEffector {
         &mut self.wheels
     }
 
-    fn jitter_wheel_count(&self) -> usize {
-        self.wheels
-            .iter()
-            .filter(|wheel| is_jitter_model(wheel.model()))
-            .count()
-    }
-
-    fn theta_state_index(&self, wheel_index: usize) -> Option<usize> {
-        is_jitter_model(self.wheels[wheel_index].model()).then(|| {
-            self.wheels.len()
-                + self.wheels[..wheel_index]
-                    .iter()
-                    .filter(|wheel| is_jitter_model(wheel.model()))
-                    .count()
-        })
+    fn theta_state_index(&self, wheel_index: usize) -> usize {
+        self.wheels.len() + wheel_index
     }
 
     fn state_for_wheel(&self, state: &[f64], wheel_index: usize) -> (f64, f64) {
         let omega_radps = state[wheel_index];
-        let theta_rad = self
-            .theta_state_index(wheel_index)
-            .map_or(0.0, |index| state[index]);
+        let theta_rad = state[self.theta_state_index(wheel_index)];
         (omega_radps, theta_rad)
     }
 
@@ -717,7 +702,7 @@ impl StateEffector for ReactionWheelStateEffector {
     }
 
     fn state_len(&self) -> usize {
-        self.wheels.len() + self.jitter_wheel_count()
+        2 * self.wheels.len()
     }
 
     fn initial_state(&self) -> Vec<f64> {
@@ -735,9 +720,7 @@ impl StateEffector for ReactionWheelStateEffector {
             state.push(wheel.omega_radps);
         }
         for wheel in &self.wheels {
-            if is_jitter_model(wheel.model()) {
-                state.push(wheel.theta_rad);
-            }
+            state.push(wheel.theta_rad);
         }
         state
     }
@@ -748,12 +731,10 @@ impl StateEffector for ReactionWheelStateEffector {
         let mut theta_index = wheel_count;
         for (wheel_index, wheel) in self.wheels.iter_mut().enumerate() {
             wheel.omega_radps = state[wheel_index];
+            wheel.theta_rad = state[theta_index];
+            theta_index += 1;
             if is_jitter_model(wheel.model()) {
-                wheel.theta_rad = state[theta_index];
-                theta_index += 1;
                 wheel.update_jitter_axes();
-            } else {
-                wheel.theta_rad = 0.0;
             }
         }
     }
@@ -829,9 +810,7 @@ impl StateEffector for ReactionWheelStateEffector {
                 MAX_WHEEL_ACCELERATION_RADPS2,
             );
             derivatives[wheel_index] = omega_dot_radps2;
-            if let Some(theta_index) = self.theta_state_index(wheel_index) {
-                derivatives[theta_index] = effector_state[wheel_index];
-            }
+            derivatives[self.theta_state_index(wheel_index)] = effector_state[wheel_index];
         }
         derivatives
     }
@@ -1089,7 +1068,10 @@ mod tests {
     use crate::messages::{MotorTorqueMsg, Output, SpacecraftStateMsg};
     use crate::spacecraft::{BackSubMatrices, StateEffector};
 
-    use super::{ReactionWheel, ReactionWheelStateEffector, ReactionWheelStateEffectorConfig};
+    use super::{
+        ReactionWheel, ReactionWheelModel, ReactionWheelStateEffector,
+        ReactionWheelStateEffectorConfig,
+    };
 
     /// Read-modify-write, so tuning one field does not drop the rest.
     fn tune(wheel: &ReactionWheel, apply: impl FnOnce(&mut ReactionWheelStateEffectorConfig)) {
@@ -1125,6 +1107,19 @@ mod tests {
             .motor_torque_in_msg
             .connect(command.slot());
         reaction_wheels
+    }
+
+    #[test]
+    fn changing_model_does_not_change_the_integrated_state_shape() {
+        let mut reaction_wheels = rw_with_command(1.0, 0.0, 10.0, -1.0, 4.0, 0.0);
+        let state = reaction_wheels.initial_state();
+
+        tune(&reaction_wheels.wheels()[0], |config| {
+            config.model = ReactionWheelModel::JitterSimple;
+        });
+
+        assert_eq!(reaction_wheels.state_len(), state.len());
+        reaction_wheels.load_state(&state);
     }
 
     /// Commands [-1.2, 1.5, 2.5] Nm with limits [1, 2, 2] Nm → clamped to [-1.0, 1.5, 2.0].
@@ -1277,11 +1272,11 @@ mod tests {
         assert_eq!(reaction_wheels.wheels()[0].u_current_nm, 0.25);
         assert_eq!(reaction_wheels.wheels()[1].u_current_nm, -0.5);
 
-        reaction_wheels.load_state(&[12.0, -8.0, 0.2]);
+        reaction_wheels.load_state(&[12.0, -8.0, 0.1, 0.2]);
         reaction_wheels.write_outputs(0, &SpacecraftStateMsg::default());
         let speed = reaction_wheels.rw_speed_out_msg.read();
         assert_eq!(speed.wheel_speeds_radps[..2], [12.0, -8.0]);
-        assert_eq!(speed.wheel_angles_rad[..2], [0.0, 0.2]);
+        assert_eq!(speed.wheel_angles_rad[..2], [0.1, 0.2]);
         assert_eq!(
             reaction_wheels.wheels()[0]
                 .state_out
@@ -1332,11 +1327,11 @@ mod tests {
         reaction_wheels.add_reaction_wheel(balanced);
         reaction_wheels.add_reaction_wheel(jitter);
 
-        // Every wheel speed is stored first, followed by the jitter-wheel
-        // angles: [omega_x, omega_y, theta_y].
-        assert_eq!(reaction_wheels.state_len(), 3);
-        assert_eq!(reaction_wheels.initial_state(), vec![4.0, 5.0, 0.0]);
-        let state = [4.0, 5.0, 0.2];
+        // Every wheel speed is stored first, followed by every wheel angle:
+        // [omega_x, omega_y, theta_x, theta_y].
+        assert_eq!(reaction_wheels.state_len(), 4);
+        assert_eq!(reaction_wheels.initial_state(), vec![4.0, 5.0, 0.0, 0.0]);
+        let state = [4.0, 5.0, 0.1, 0.2];
         reaction_wheels.load_state(&state);
 
         let mut back_sub = BackSubMatrices::default();
@@ -1357,7 +1352,7 @@ mod tests {
                 Vector3::zeros(),
                 Vector3::new(1.0, 2.0, 3.0),
             ),
-            vec![-1.0, -2.0, 5.0]
+            vec![-1.0, -2.0, 4.0, 5.0]
         );
         assert_eq!(
             reaction_wheels.rotational_angular_momentum_body(&state, Vector3::zeros()),

@@ -16,10 +16,17 @@
 //!   because a patch payload arrives as ordinary JSON where `null` is the only
 //!   way an operator can spell a non-finite at all.
 //!
-//! Neither is a wire format. This value never leaves `apply_override`, and the
-//! outward-facing views in [`super::TargetBackend`] still use
-//! `serde_json::to_value`, so the REST API keeps answering `null` and nothing
-//! downstream has to learn the sentinel.
+//! The reads a client makes are untouched: `upstream` and `effective` in
+//! [`super::TargetBackend`] still use `serde_json::to_value`, so they still
+//! answer `null` for a non-finite, which is what bifrost's condition evaluator
+//! relies on when it treats an unreadable field as one that does not hold.
+//!
+//! A sentinel does reach a client in one place. A `freeze` captures the live
+//! value into its own rule document, so freezing a field that holds an infinity
+//! stores `"inf"` there, and `Registry::rules` serialises that document as it
+//! is. That is the price of a freeze keeping the sign it froze. Only the trusted
+//! freeze document is decoded as a sentinel; an operator's replacement string
+//! is still checked as ordinary JSON and refused at a float field.
 //!
 //! Why a `Deserializer` rather than a walk over the value: `null` means two
 //! different things depending on what is being built from it. At an `Option<f64>`
@@ -40,7 +47,10 @@ use serde::de::{
     DeserializeOwned, DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess,
     SeqAccess, Visitor,
 };
-use serde::ser::{Impossible, SerializeSeq, SerializeStruct, SerializeTuple, SerializeTupleStruct};
+use serde::ser::{
+    SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    SerializeTupleStruct, SerializeTupleVariant,
+};
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Number, Value};
 
@@ -53,11 +63,23 @@ use super::rule::json_error;
 /// `serde_json::from_value`, restoring a non-finite float wherever one is asked
 /// for: a sentinel written by [`to_value`] exactly, and a plain `null` as NaN.
 pub(crate) fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, serde_json::Error> {
-    T::deserialize(Decoder(value))
+    decode(value, true)
+}
+
+/// Decodes an operator-authored value without recognizing internal sentinels.
+pub(crate) fn from_json_value<T: DeserializeOwned>(value: Value) -> Result<T, serde_json::Error> {
+    decode(value, false)
+}
+
+fn decode<T: DeserializeOwned>(value: Value, sentinels: bool) -> Result<T, serde_json::Error> {
+    T::deserialize(Decoder { value, sentinels })
 }
 
 /// A `Value` that yields a non-finite float where JSON could not hold one.
-struct Decoder(Value);
+struct Decoder {
+    value: Value,
+    sentinels: bool,
+}
 
 impl Decoder {
     /// The non-finite float this value stands for, if JSON could not spell it.
@@ -67,7 +89,10 @@ impl Decoder {
     /// NaN, which is the one a sensor publishes and the one an operator can
     /// therefore mean by writing `null` in a patch.
     fn non_finite(&self) -> Option<f64> {
-        from_sentinel(&self.0).or_else(|| self.0.is_null().then_some(f64::NAN))
+        self.sentinels
+            .then(|| from_sentinel(&self.value))
+            .flatten()
+            .or_else(|| self.value.is_null().then_some(f64::NAN))
     }
 }
 
@@ -77,7 +102,7 @@ macro_rules! delegate {
     ($($method:ident)*) => {
         $(
             fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-                self.0.$method(visitor)
+                self.value.$method(visitor)
             }
         )*
     };
@@ -88,8 +113,8 @@ impl<'de> Deserializer<'de> for Decoder {
 
     delegate! {
         deserialize_bool
-        deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64
-        deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64
+        deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64 deserialize_i128
+        deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64 deserialize_u128
         deserialize_char deserialize_str deserialize_string
         deserialize_bytes deserialize_byte_buf
         deserialize_unit deserialize_identifier deserialize_ignored_any
@@ -100,43 +125,43 @@ impl<'de> Deserializer<'de> for Decoder {
         if let Some(value) = self.non_finite() {
             return visitor.visit_f64(value);
         }
-        self.0.deserialize_f64(visitor)
+        self.value.deserialize_f64(visitor)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         if let Some(value) = self.non_finite() {
             return visitor.visit_f32(value as f32);
         }
-        self.0.deserialize_f32(visitor)
+        self.value.deserialize_f32(visitor)
     }
 
     /// `null` at an option is still `None`. This is the case a substitution on the
     /// value tree would get wrong.
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if self.0.is_null() {
+        if self.value.is_null() {
             return visitor.visit_none();
         }
         visitor.visit_some(self)
     }
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Value::Array(values) => visitor.visit_seq(Seq(values.into_iter())),
-            Value::Object(entries) => visitor.visit_map(Entries::new(entries)),
+        match self.value {
+            Value::Array(values) => visitor.visit_seq(Seq::new(values, self.sentinels)),
+            Value::Object(entries) => visitor.visit_map(Entries::new(entries, self.sentinels)),
             leaf => leaf.deserialize_any(visitor),
         }
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Value::Array(values) => visitor.visit_seq(Seq(values.into_iter())),
+        match self.value {
+            Value::Array(values) => visitor.visit_seq(Seq::new(values, self.sentinels)),
             other => other.deserialize_seq(visitor),
         }
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Value::Object(entries) => visitor.visit_map(Entries::new(entries)),
+        match self.value {
+            Value::Object(entries) => visitor.visit_map(Entries::new(entries, self.sentinels)),
             other => other.deserialize_map(visitor),
         }
     }
@@ -164,9 +189,9 @@ impl<'de> Deserializer<'de> for Decoder {
         _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Value::Object(entries) => visitor.visit_map(Entries::new(entries)),
-            Value::Array(values) => visitor.visit_seq(Seq(values.into_iter())),
+        match self.value {
+            Value::Object(entries) => visitor.visit_map(Entries::new(entries, self.sentinels)),
+            Value::Array(values) => visitor.visit_seq(Seq::new(values, self.sentinels)),
             other => other.deserialize_any(visitor),
         }
     }
@@ -184,7 +209,7 @@ impl<'de> Deserializer<'de> for Decoder {
         name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        self.0.deserialize_unit_struct(name, visitor)
+        self.value.deserialize_unit_struct(name, visitor)
     }
 
     /// A variant's payload can hold a float, so it is wrapped rather than
@@ -195,10 +220,14 @@ impl<'de> Deserializer<'de> for Decoder {
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        match self.0 {
+        match self.value {
             Value::Object(entries) if entries.len() == 1 => {
                 let (variant, payload) = entries.into_iter().next().expect("one entry");
-                visitor.visit_enum(Variant { variant, payload })
+                visitor.visit_enum(Variant {
+                    variant,
+                    payload,
+                    sentinels: self.sentinels,
+                })
             }
             other => other.deserialize_enum(name, variants, visitor),
         }
@@ -206,7 +235,19 @@ impl<'de> Deserializer<'de> for Decoder {
 }
 
 /// Array elements, each wrapped so a float inside one is read the same way.
-struct Seq(std::vec::IntoIter<Value>);
+struct Seq {
+    values: std::vec::IntoIter<Value>,
+    sentinels: bool,
+}
+
+impl Seq {
+    fn new(values: Vec<Value>, sentinels: bool) -> Self {
+        Self {
+            values: values.into_iter(),
+            sentinels,
+        }
+    }
+}
 
 impl<'de> SeqAccess<'de> for Seq {
     type Error = serde_json::Error;
@@ -215,14 +256,19 @@ impl<'de> SeqAccess<'de> for Seq {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>, Self::Error> {
-        match self.0.next() {
-            Some(value) => seed.deserialize(Decoder(value)).map(Some),
+        match self.values.next() {
+            Some(value) => seed
+                .deserialize(Decoder {
+                    value,
+                    sentinels: self.sentinels,
+                })
+                .map(Some),
             None => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.0.len())
+        Some(self.values.len())
     }
 }
 
@@ -230,13 +276,15 @@ impl<'de> SeqAccess<'de> for Seq {
 struct Entries {
     entries: <Map<String, Value> as IntoIterator>::IntoIter,
     value: Option<Value>,
+    sentinels: bool,
 }
 
 impl Entries {
-    fn new(entries: Map<String, Value>) -> Self {
+    fn new(entries: Map<String, Value>, sentinels: bool) -> Self {
         Self {
             entries: entries.into_iter(),
             value: None,
+            sentinels,
         }
     }
 }
@@ -265,7 +313,10 @@ impl<'de> MapAccess<'de> for Entries {
             .value
             .take()
             .expect("next_value_seed is only called after next_key_seed");
-        seed.deserialize(Decoder(value))
+        seed.deserialize(Decoder {
+            value,
+            sentinels: self.sentinels,
+        })
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -277,6 +328,7 @@ impl<'de> MapAccess<'de> for Entries {
 struct Variant {
     variant: String,
     payload: Value,
+    sentinels: bool,
 }
 
 impl<'de> EnumAccess<'de> for Variant {
@@ -288,7 +340,13 @@ impl<'de> EnumAccess<'de> for Variant {
         seed: V,
     ) -> Result<(V::Value, Self::Variant), Self::Error> {
         let name = seed.deserialize(self.variant.into_deserializer())?;
-        Ok((name, Decoder(self.payload)))
+        Ok((
+            name,
+            Decoder {
+                value: self.payload,
+                sentinels: self.sentinels,
+            },
+        ))
     }
 }
 
@@ -296,7 +354,7 @@ impl<'de> serde::de::VariantAccess<'de> for Decoder {
     type Error = serde_json::Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
-        serde::de::Deserialize::deserialize(self.0)
+        serde::de::Deserialize::deserialize(self.value)
     }
 
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(
@@ -335,10 +393,9 @@ impl<'de> serde::de::VariantAccess<'de> for Decoder {
 /// `"-inf"` or `"NaN"` instead keeps them apart, and [`from_value`] reads them
 /// back exactly.
 ///
-/// This value never leaves [`super::rule::apply_override`], so the sentinel is
-/// not part of any wire format. The outward-facing views in
-/// [`super::TargetBackend`] still use `serde_json::to_value` and still answer
-/// `null`, which is what the REST API and its callers already expect.
+/// The outward-facing value views in [`super::TargetBackend`] still use
+/// `serde_json::to_value` and answer `null`. A frozen rule can expose a sentinel
+/// through `Registry::rules`, but replacement payloads do not recognize it.
 pub(crate) fn to_value<T: Serialize>(value: &T) -> Result<Value, serde_json::Error> {
     value.serialize(Encoder)
 }
@@ -380,10 +437,10 @@ impl Serializer for Encoder {
     type SerializeSeq = Items;
     type SerializeTuple = Items;
     type SerializeTupleStruct = Items;
-    type SerializeTupleVariant = Impossible<Value, serde_json::Error>;
-    type SerializeMap = Impossible<Value, serde_json::Error>;
+    type SerializeTupleVariant = Items;
+    type SerializeMap = EntriesOut;
     type SerializeStruct = Fields;
-    type SerializeStructVariant = Impossible<Value, serde_json::Error>;
+    type SerializeStructVariant = Fields;
 
     /// The whole point of the way out: the sign survives, so the way back does
     /// not have to guess.
@@ -405,6 +462,14 @@ impl Serializer for Encoder {
         serialize_i8(i8) serialize_i16(i16) serialize_i32(i32) serialize_i64(i64)
         serialize_u8(u8) serialize_u16(u16) serialize_u32(u32) serialize_u64(u64)
         serialize_str(&str)
+    }
+
+    fn serialize_i128(self, value: i128) -> Result<Value, Self::Error> {
+        serde_json::to_value(value)
+    }
+
+    fn serialize_u128(self, value: u128) -> Result<Value, Self::Error> {
+        serde_json::to_value(value)
     }
 
     fn serialize_char(self, value: char) -> Result<Value, Self::Error> {
@@ -454,18 +519,18 @@ impl Serializer for Encoder {
         self,
         _name: &'static str,
         _index: u32,
-        _variant: &'static str,
-        _value: &T,
+        variant: &'static str,
+        value: &T,
     ) -> Result<Value, Self::Error> {
-        Err(unsupported("a newtype variant"))
+        Ok(object(variant, value.serialize(Encoder)?))
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Items, Self::Error> {
-        Ok(Items(Vec::new()))
+        Ok(Items::new(None))
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Items, Self::Error> {
-        Ok(Items(Vec::new()))
+        Ok(Items::new(None))
     }
 
     fn serialize_tuple_struct(
@@ -473,68 +538,76 @@ impl Serializer for Encoder {
         _name: &'static str,
         _len: usize,
     ) -> Result<Items, Self::Error> {
-        Ok(Items(Vec::new()))
+        Ok(Items::new(None))
     }
 
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
         _index: u32,
-        _variant: &'static str,
+        variant: &'static str,
         _len: usize,
-    ) -> Result<Impossible<Value, serde_json::Error>, Self::Error> {
-        Err(unsupported("a tuple variant"))
+    ) -> Result<Items, Self::Error> {
+        Ok(Items::new(Some(variant)))
     }
 
-    fn serialize_map(
-        self,
-        _len: Option<usize>,
-    ) -> Result<Impossible<Value, serde_json::Error>, Self::Error> {
-        Err(unsupported("a map"))
+    fn serialize_map(self, _len: Option<usize>) -> Result<EntriesOut, Self::Error> {
+        Ok(EntriesOut::default())
     }
 
     fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Fields, Self::Error> {
-        Ok(Fields(Map::new()))
+        Ok(Fields::new(None))
     }
 
     fn serialize_struct_variant(
         self,
         _name: &'static str,
         _index: u32,
-        _variant: &'static str,
+        variant: &'static str,
         _len: usize,
-    ) -> Result<Impossible<Value, serde_json::Error>, Self::Error> {
-        Err(unsupported("a struct variant"))
+    ) -> Result<Fields, Self::Error> {
+        Ok(Fields::new(Some(variant)))
     }
 }
 
-/// Refuses a shape no message uses, loudly.
-///
-/// Handing these to `serde_json` instead would compile and quietly flatten the
-/// sign of any float nested inside one, which is the bug this module exists to
-/// remove. Refusing names the method to teach, and `super::rule::fold_installed`
-/// records a skipped rule rather than taking the run down.
-fn unsupported(shape: &str) -> serde_json::Error {
-    json_error(format!(
-        "{shape} is not carried through the override round trip yet, because no \
-         message contains one; teach `non_finite` when one does"
-    ))
+fn object(key: &str, value: Value) -> Value {
+    Value::Object(Map::from_iter([(key.to_owned(), value)]))
 }
 
 /// Collected elements of a sequence, tuple or tuple struct.
-struct Items(Vec<Value>);
+struct Items {
+    values: Vec<Value>,
+    variant: Option<&'static str>,
+}
+
+impl Items {
+    fn new(variant: Option<&'static str>) -> Self {
+        Self {
+            values: Vec::new(),
+            variant,
+        }
+    }
+
+    fn finish(self) -> Value {
+        let value = Value::Array(self.values);
+        match self.variant {
+            Some(variant) => object(variant, value),
+            None => value,
+        }
+    }
+}
 
 impl SerializeSeq for Items {
     type Ok = Value;
     type Error = serde_json::Error;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
-        self.0.push(value.serialize(Encoder)?);
+        self.values.push(value.serialize(Encoder)?);
         Ok(())
     }
 
     fn end(self) -> Result<Value, Self::Error> {
-        Ok(Value::Array(self.0))
+        Ok(self.finish())
     }
 }
 
@@ -564,8 +637,90 @@ impl SerializeTupleStruct for Items {
     }
 }
 
+impl SerializeTupleVariant for Items {
+    type Ok = Value;
+    type Error = serde_json::Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        SerializeSeq::serialize_element(self, value)
+    }
+
+    fn end(self) -> Result<Value, Self::Error> {
+        SerializeSeq::end(self)
+    }
+}
+
+#[derive(Default)]
+struct EntriesOut {
+    entries: Map<String, Value>,
+    key: Option<String>,
+}
+
+impl SerializeMap for EntriesOut {
+    type Ok = Value;
+    type Error = serde_json::Error;
+
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
+        self.key = Some(map_key(key)?);
+        Ok(())
+    }
+
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        let key = self
+            .key
+            .take()
+            .ok_or_else(|| json_error("serialize_value called before serialize_key"))?;
+        self.entries.insert(key, value.serialize(Encoder)?);
+        Ok(())
+    }
+
+    fn end(self) -> Result<Value, Self::Error> {
+        if self.key.is_some() {
+            return Err(json_error("serialize_map ended before its value"));
+        }
+        Ok(Value::Object(self.entries))
+    }
+}
+
+struct MapKey<'a, T: ?Sized>(&'a T);
+
+impl<T: ?Sized + Serialize> Serialize for MapKey<'_, T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(self.0, &())?;
+        map.end()
+    }
+}
+
+fn map_key<T: ?Sized + Serialize>(key: &T) -> Result<String, serde_json::Error> {
+    let Value::Object(entries) = serde_json::to_value(MapKey(key))? else {
+        unreachable!("a serialized map is always an object")
+    };
+    Ok(entries.into_iter().next().expect("a map key serializes").0)
+}
+
 /// Struct fields, which carry their own names.
-struct Fields(Map<String, Value>);
+struct Fields {
+    fields: Map<String, Value>,
+    variant: Option<&'static str>,
+}
+
+impl Fields {
+    fn new(variant: Option<&'static str>) -> Self {
+        Self {
+            fields: Map::new(),
+            variant,
+        }
+    }
+
+    fn finish(self) -> Value {
+        let value = Value::Object(self.fields);
+        match self.variant {
+            Some(variant) => object(variant, value),
+            None => value,
+        }
+    }
+}
 
 impl SerializeStruct for Fields {
     type Ok = Value;
@@ -576,12 +731,30 @@ impl SerializeStruct for Fields {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        self.0.insert(key.to_owned(), value.serialize(Encoder)?);
+        self.fields
+            .insert(key.to_owned(), value.serialize(Encoder)?);
         Ok(())
     }
 
     fn end(self) -> Result<Value, Self::Error> {
-        Ok(Value::Object(self.0))
+        Ok(self.finish())
+    }
+}
+
+impl SerializeStructVariant for Fields {
+    type Ok = Value;
+    type Error = serde_json::Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        SerializeStruct::serialize_field(self, key, value)
+    }
+
+    fn end(self) -> Result<Value, Self::Error> {
+        SerializeStruct::end(self)
     }
 }
 
@@ -779,18 +952,6 @@ mod out_and_back {
         assert!(
             error.to_string().contains("invalid type: string"),
             "the refusal did not name the type problem: {error}"
-        );
-    }
-
-    /// A shape no message uses is refused by name rather than handed to
-    /// `serde_json`, which would compile and quietly flatten a nested sign.
-    #[test]
-    fn a_shape_no_message_uses_is_refused_by_name() {
-        let error = super::to_value(&json!({ "a": 1 }))
-            .expect_err("a map was serialised, so a nested sign can be lost silently");
-        assert!(
-            error.to_string().contains("a map is not carried through"),
-            "the refusal did not say which shape to teach: {error}"
         );
     }
 

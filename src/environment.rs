@@ -1,3 +1,4 @@
+pub mod albedo;
 pub mod anise_planet_ephemeris;
 pub mod anise_sun_ephemeris;
 pub mod atmosphere;

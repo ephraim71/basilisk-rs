@@ -5,7 +5,7 @@ use crate::messages::{EclipseMsg, Input, SpacecraftStateMsg, SunEphemerisMsg};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
-const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1372.5398;
+const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1361.0;
 const SPEED_OF_LIGHT_MPS: f64 = 299_792_458.0;
 
 #[derive(Clone, Debug)]
@@ -156,7 +156,7 @@ mod tests {
     /// r_N = [-16937711153.5, -138435806556.0, -60051616256.6] m,
     /// sun = [507128401.716, 22652490.9092, -14854379.6232] m,
     /// area = 4 m², Cr = 1.2, illumination = 1.0.
-    /// truth = [-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06] N (1e-12 tol).
+    /// truth = [-2.4263722557462318e-06, -1.9257945167191118e-05, -8.3504083188649253e-06] N (1e-12 tol).
     #[test]
     fn force_cannonball_case() {
         let sc_pos = Vector3::new(-16937711153.5, -138435806556.0, -60051616256.6);
@@ -184,8 +184,11 @@ mod tests {
             / (SPEED_OF_LIGHT_MPS * d.powi(3));
         let expected = scale * sun_to_sc;
 
-        let expected_truth =
-            Vector3::new(-2.44694525395e-06, -1.94212316004e-05, -8.42121070088e-06);
+        let expected_truth = Vector3::new(
+            -2.4263722557462318e-06,
+            -1.9257945167191118e-05,
+            -8.3504083188649253e-06,
+        );
         assert!(
             (out.force_inertial_n - expected).norm() < 1e-12,
             "analytic mismatch: {:?} vs {:?}",

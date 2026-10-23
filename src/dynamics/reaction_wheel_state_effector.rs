@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 use crate::messages::{
     Input, MAX_EFF_COUNT, MotorTorqueMsg, Output, ReactionWheelStateMsg, RwSpeedMsg,
+    SpacecraftStateMsg,
 };
 use crate::spacecraft::{BackSubMatrices, EffectorOutput, StateEffector, StateEffectorMassProps};
 
@@ -749,11 +750,12 @@ impl StateEffector for ReactionWheelStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
         self.assert_state_length(effector_state);
+        let body_omega_radps = hub_state.omega_radps;
         for (wheel_index, wheel) in self.wheels.iter().enumerate() {
             let (omega_radps, theta_rad) = self.state_for_wheel(effector_state, wheel_index);
             if matches!(wheel.model(), ReactionWheelModel::JitterFullyCoupled) {
@@ -1337,7 +1339,7 @@ mod tests {
         let mut back_sub = BackSubMatrices::default();
         reaction_wheels.update_contributions(
             &state,
-            Vector3::zeros(),
+            &SpacecraftStateMsg::default(),
             Vector3::zeros(),
             &mut back_sub,
         );

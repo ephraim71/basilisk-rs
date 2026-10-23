@@ -3,7 +3,7 @@ use std::any::Any;
 use std::cell::RefCell;
 
 use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
-use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
+use crate::spacecraft::{BackSubMatrices, DynamicEffector, StateEffector, StateEffectorMassProps};
 
 #[derive(Clone, Debug)]
 pub struct HingedRigidBodyConfig {
@@ -40,7 +40,6 @@ impl HingedRigidBodyConfig {
     }
 }
 
-#[derive(Debug)]
 pub struct HingedRigidBodyStateEffector {
     pub config: HingedRigidBodyConfig,
     pub motor_torque_in: Input<ArrayMotorTorqueMsg>,
@@ -52,8 +51,22 @@ pub struct HingedRigidBodyStateEffector {
     pub motor_torque_nm: f64,
     pub theta_ref_rad: f64,
     pub theta_dot_ref_radps: f64,
+    /// Effectors attached to the panel. They see the panel frame with its origin at
+    /// the hinge, and return an inertial force and a torque about the hinge in panel axes.
+    pub dynamic_effectors: Vec<Box<dyn DynamicEffector>>,
     kinematic: HingedRigidBodyKinematics,
     back_sub: RefCell<HingedRigidBodyBackSubTerms>,
+}
+
+impl std::fmt::Debug for HingedRigidBodyStateEffector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HingedRigidBodyStateEffector")
+            .field("config", &self.config)
+            .field("theta_rad", &self.theta_rad)
+            .field("theta_dot_radps", &self.theta_dot_radps)
+            .field("dynamic_effectors", &self.dynamic_effectors.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl HingedRigidBodyStateEffector {
@@ -73,6 +86,7 @@ impl HingedRigidBodyStateEffector {
             motor_torque_nm: 0.0,
             theta_ref_rad,
             theta_dot_ref_radps,
+            dynamic_effectors: Vec::new(),
             kinematic: HingedRigidBodyKinematics::default(),
             back_sub: RefCell::new(HingedRigidBodyBackSubTerms::default()),
         };
@@ -80,26 +94,53 @@ impl HingedRigidBodyStateEffector {
         effector
     }
 
-    pub fn panel_inertial_state(&self, hub_state: &SpacecraftStateMsg) -> SpacecraftStateMsg {
-        let body_to_inertial = hub_state.body_to_inertial();
-        let panel_to_body = self.kinematic.dcm_panel_body.transpose();
-        let panel_to_inertial = body_to_inertial * UnitQuaternion::from_matrix(&panel_to_body);
-        let omega_sn_body =
-            hub_state.omega_radps + self.theta_dot_radps * self.kinematic.s_hat2_body;
-        let position_m = hub_state.position_m
-            + body_to_inertial.transform_vector(&self.kinematic.panel_com_position_body_m);
-        let velocity_body_mps = self.kinematic.panel_com_prime_body_mps
-            + hub_state
-                .omega_radps
-                .cross(&self.kinematic.panel_com_position_body_m);
+    /// Attaches an effector to the panel. Any effector is accepted, so it must make
+    /// sense for a body whose state is the panel's, not the spacecraft's.
+    pub fn add_dynamic_effector<E>(&mut self, effector: E)
+    where
+        E: DynamicEffector + 'static,
+    {
+        self.dynamic_effectors.push(Box::new(effector));
+    }
 
-        SpacecraftStateMsg {
-            position_m,
-            velocity_mps: hub_state.velocity_mps
-                + body_to_inertial.transform_vector(&velocity_body_mps),
-            sigma_bn: quaternion_to_mrp(panel_to_inertial),
-            omega_radps: self.kinematic.dcm_panel_body * omega_sn_body,
+    /// Panel state at its center of mass.
+    pub fn panel_inertial_state(&self, hub_state: &SpacecraftStateMsg) -> SpacecraftStateMsg {
+        let k = &self.kinematic;
+        panel_frame_state(
+            k,
+            hub_state,
+            k.panel_com_position_body_m,
+            k.panel_com_prime_body_mps,
+        )
+    }
+
+    /// Sum of attached effector loads, as force and torque about the hinge in body axes.
+    fn attached_loads(
+        &self,
+        kinematics: &HingedRigidBodyKinematics,
+        hub_state: &SpacecraftStateMsg,
+    ) -> (Vector3<f64>, Vector3<f64>) {
+        if self.dynamic_effectors.is_empty() {
+            return (Vector3::zeros(), Vector3::zeros());
         }
+        let hinge_state = panel_frame_state(
+            kinematics,
+            hub_state,
+            kinematics.hinge_position_body_m,
+            Vector3::zeros(),
+        );
+        let inertial_to_body = hub_state.inertial_to_body();
+        let panel_to_body = kinematics.dcm_panel_body.transpose();
+        self.dynamic_effectors.iter().fold(
+            (Vector3::zeros(), Vector3::zeros()),
+            |(force, torque), effector| {
+                let output = effector.compute_output(&hinge_state);
+                (
+                    force + inertial_to_body.transform_vector(&output.force_inertial_n),
+                    torque + panel_to_body * output.torque_body_nm,
+                )
+            },
+        )
     }
 
     fn update_kinematics(&mut self, theta_rad: f64, theta_dot_radps: f64) {
@@ -147,14 +188,17 @@ impl StateEffector for HingedRigidBodyStateEffector {
         });
     }
 
-    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {
+    fn pre_integration(&mut self, current_sim_nanos: u64, dt_seconds: f64) {
         self.update_commanded_values();
+        for effector in &mut self.dynamic_effectors {
+            effector.pre_integration(current_sim_nanos, dt_seconds);
+        }
     }
 
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
@@ -168,7 +212,14 @@ impl StateEffector for HingedRigidBodyStateEffector {
             effector_state[0],
             effector_state[1],
         );
-        let terms = self.back_sub_terms(&kinematics, body_omega_radps, gravity_body_mps2);
+        let (force_body, torque_about_hinge_body) = self.attached_loads(&kinematics, hub_state);
+        let terms = self.back_sub_terms(
+            &kinematics,
+            hub_state.omega_radps,
+            gravity_body_mps2,
+            force_body,
+            torque_about_hinge_body,
+        );
         back_sub.matrix_a += terms.matrix_a;
         back_sub.matrix_b += terms.matrix_b;
         back_sub.matrix_c += terms.matrix_c;
@@ -306,6 +357,8 @@ impl HingedRigidBodyStateEffector {
         kinematics: &HingedRigidBodyKinematics,
         body_omega_radps: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
+        force_body: Vector3<f64>,
+        torque_about_hinge_body: Vector3<f64>,
     ) -> HingedRigidBodyBackSubTerms {
         let mass = self.config.mass_kg;
         let d = self.config.center_of_mass_offset_m;
@@ -334,7 +387,9 @@ impl HingedRigidBodyStateEffector {
             - self.config.spring_constant_nm_per_rad * (kinematics.theta_rad - self.theta_ref_rad)
             - self.config.damping_nm_s_per_rad
                 * (kinematics.theta_dot_radps - self.theta_dot_ref_radps)
-            + kinematics.s_hat2_body.dot(&gravity_torque_about_hinge)
+            + kinematics
+                .s_hat2_body
+                .dot(&(gravity_torque_about_hinge + torque_about_hinge_body))
             + (panel_izz - panel_ixx + mass * d * d) * omega_panel.z * omega_panel.x
             - mass
                 * d
@@ -347,10 +402,13 @@ impl HingedRigidBodyStateEffector {
         let hinge_axis_inertia = panel_iyy * kinematics.s_hat2_body
             + mass * d * panel_com_tilde * kinematics.s_hat3_body;
         let vec_trans = -(mass * d * theta_dot * theta_dot * kinematics.s_hat1_body
-            + mass * d * c_theta * kinematics.s_hat3_body);
+            + mass * d * c_theta * kinematics.s_hat3_body)
+            + force_body;
         let identity = Matrix3::identity();
         let vec_rot = -((theta_dot * omega_tilde + c_theta * identity) * hinge_axis_inertia
-            + mass * d * theta_dot * theta_dot * panel_com_tilde * kinematics.s_hat1_body);
+            + mass * d * theta_dot * theta_dot * panel_com_tilde * kinematics.s_hat1_body)
+            + torque_about_hinge_body
+            + hinge_tilde * force_body;
 
         HingedRigidBodyBackSubTerms {
             matrix_a: mass * d * kinematics.s_hat3_body * a_theta.transpose(),
@@ -428,6 +486,28 @@ impl HingedRigidBodyKinematics {
     }
 }
 
+/// Panel-axes state of a point fixed in the panel, given its body position and body-frame rate.
+fn panel_frame_state(
+    kinematics: &HingedRigidBodyKinematics,
+    hub_state: &SpacecraftStateMsg,
+    point_body_m: Vector3<f64>,
+    point_prime_body_mps: Vector3<f64>,
+) -> SpacecraftStateMsg {
+    let body_to_inertial = hub_state.body_to_inertial();
+    let panel_to_body = kinematics.dcm_panel_body.transpose();
+    let panel_to_inertial = body_to_inertial * UnitQuaternion::from_matrix(&panel_to_body);
+    let omega_sn_body = hub_state.omega_radps + kinematics.theta_dot_radps * kinematics.s_hat2_body;
+    let velocity_body_mps = point_prime_body_mps + hub_state.omega_radps.cross(&point_body_m);
+
+    SpacecraftStateMsg {
+        position_m: hub_state.position_m + body_to_inertial.transform_vector(&point_body_m),
+        velocity_mps: hub_state.velocity_mps
+            + body_to_inertial.transform_vector(&velocity_body_mps),
+        sigma_bn: quaternion_to_mrp(panel_to_inertial),
+        omega_radps: kinematics.dcm_panel_body * omega_sn_body,
+    }
+}
+
 fn tilde(vector: Vector3<f64>) -> Matrix3<f64> {
     Matrix3::new(
         0.0, -vector.z, vector.y, vector.z, 0.0, -vector.x, -vector.y, vector.x, 0.0,
@@ -435,10 +515,10 @@ fn tilde(vector: Vector3<f64>) -> Matrix3<f64> {
 }
 
 fn quaternion_to_mrp(quaternion: UnitQuaternion<f64>) -> Vector3<f64> {
+    // Short rotation, |sigma| <= 1, as Basilisk's eigenC2MRP; 180 deg keeps +sigma.
     let q = quaternion.quaternion();
-    let denom = 1.0 + q.w;
-    if denom.abs() > 1.0e-12 {
-        Vector3::new(q.i, q.j, q.k) / denom
+    if q.w > -1.0e-12 {
+        Vector3::new(q.i, q.j, q.k) / (1.0 + q.w)
     } else {
         -Vector3::new(q.i, q.j, q.k) / (1.0 - q.w)
     }
@@ -447,7 +527,7 @@ fn quaternion_to_mrp(quaternion: UnitQuaternion<f64>) -> Vector3<f64> {
 #[cfg(test)]
 mod tests {
     use super::{HingedRigidBodyConfig, HingedRigidBodyStateEffector};
-    use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Output};
+    use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Output, SpacecraftStateMsg};
     use crate::spacecraft::{BackSubMatrices, StateEffector};
     use crate::{
         simulation::Simulation,
@@ -494,7 +574,7 @@ mod tests {
 
         panel.update_contributions(
             &[0.0, 0.0],
-            Vector3::zeros(),
+            &SpacecraftStateMsg::default(),
             Vector3::zeros(),
             &mut back_sub,
         );

@@ -37,12 +37,14 @@ scenario:
 just fetch-assets
 ```
 
-This is a convenience wrapper around two recipes:
+This is a convenience wrapper around three recipes:
 
 - `just fetch-anise-assets` — SPICE/ANISE kernels into `assets/anise/`
   (`de440s.bsp`, `earth_latest_high_prec.bpc`, `pck11.pca`).
 - `just fetch-gravity` — the GGM03S spherical-harmonic gravity model into
   `assets/gravity/GGM03S.txt`.
+- `just fetch-albedo` — Basilisk's albedo lookup tables (Earth CERES 2018
+  all-sky and clear-sky, Mars TES; 1x1, 5x5 and 10x10 deg) into `assets/albedo/`.
 
 The recipes only run `curl`, so if you don't have [`just`](https://github.com/casey/just)
 installed you can fetch each file by hand instead:
@@ -61,6 +63,11 @@ curl --fail --location --progress-bar --output assets/anise/pck11.pca \
 mkdir -p assets/gravity
 curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt \
   https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData/LocalGravData/GGM03S.txt
+
+# Albedo lookup tables (repeat for each file listed above)
+mkdir -p assets/albedo
+curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_All_5x5.csv \
+  https://raw.githubusercontent.com/AVSLab/basilisk/ea95ec4efe6d3e842a26546de653b7505dd054c3/supportData/AlbedoData/Earth_ALB_2018_CERES_All_5x5.csv
 ```
 
 If the `pck11.pca` download fails on a TLS certificate error, retry that one

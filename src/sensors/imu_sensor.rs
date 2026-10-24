@@ -26,17 +26,15 @@ pub struct ImuSensorConfig {
     /// [rad/s] rate bias in the sensor frame, added together with the error
     /// state, before the scale factor.
     pub sensor_rate_bias_radps: Vector3<f64>,
-    /// Gauss-Markov error model: matrix square root of the covariance, in
-    /// **3-sigma units** -- see [`crate::gauss_markov`]: a diagonal entry of
-    /// `x` yields error steps with standard deviation `x / 3`. A zero matrix
-    /// disables the noise.
+    /// Gauss-Markov error model: matrix square root of the covariance (see
+    /// [`crate::gauss_markov`]); a diagonal entry of `x` yields error steps
+    /// with standard deviation `x`. A zero matrix disables the noise.
     pub p_matrix_sqrt_radps: Matrix3<f64>,
     /// Error-state propagation matrix. Zero reduces the model to independent
     /// per-sample noise.
     pub a_matrix: Matrix3<f64>,
-    /// [rad/s] per-axis soft walk bounds; the error state is statistically
-    /// herded back rather than clamped. A non-positive bound leaves that
-    /// axis unbounded.
+    /// [rad/s] per-axis walk bounds; the error state is clamped to them. A
+    /// non-positive bound leaves that axis unbounded.
     pub walk_bounds_radps: Vector3<f64>,
     /// Per-axis scale factors, applied after the errors so bias and noise
     /// are scaled together with the truth.
@@ -367,8 +365,7 @@ mod tests {
     fn iid_noise_matches_configured_std() {
         let std = 1.0e-4;
         let mut config = clean_config("imu_noise");
-        // The P matrix is in 3-sigma units: pass 3x the desired sigma.
-        config.p_matrix_sqrt_radps = Matrix3::from_diagonal(&Vector3::repeat(3.0 * std));
+        config.p_matrix_sqrt_radps = Matrix3::from_diagonal(&Vector3::repeat(std));
         let mut imu = ImuSensor::new(config);
 
         let state_out = Output::new(SpacecraftStateMsg::default());
@@ -392,11 +389,9 @@ mod tests {
         );
     }
 
-    /// Positive walk bounds herd the accumulated error state: the walk stays
-    /// in the bound's neighbourhood (transient excursions are expected of a
-    /// soft bound) instead of running away.
+    /// Positive walk bounds clamp the accumulated error state.
     #[test]
-    fn walk_bounds_herd_the_error_state() {
+    fn walk_bounds_clamp_the_error_state() {
         let std = 1.0e-3;
         let bound = 5.0e-4;
         let mut config = clean_config("imu_walk");
@@ -414,8 +409,8 @@ mod tests {
             let out = imu.output_imu_msg.read().angular_rate_sensor_radps;
             for axis in 0..3 {
                 assert!(
-                    out[axis].abs() <= 4.0 * bound,
-                    "error escaped the soft walk bound: {out:?}"
+                    out[axis].abs() <= bound,
+                    "error passed the walk bound: {out:?}"
                 );
             }
         }

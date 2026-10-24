@@ -162,9 +162,10 @@ impl GravBodyData {
             .unwrap_or(&self.fallback_state);
         let cached_at = cached.map(|cached| cached.cached_at_sim_nanos).unwrap_or(0);
         let dt_seconds = signed_time_delta_seconds(current_sim_nanos, cached_at);
-        let inertial_to_fixed = state.orientation.as_ref().map(|orientation| {
-            orientation.inertial_to_fixed + orientation.inertial_to_fixed_dot * dt_seconds
-        });
+        let inertial_to_fixed = state
+            .orientation
+            .as_ref()
+            .map(|orientation| advance_inertial_to_fixed(orientation, dt_seconds));
         GravBodyStateAtTime {
             position_inertial_m: state.position_inertial_m
                 + state.velocity_inertial_mps * dt_seconds,
@@ -413,6 +414,38 @@ impl GravityEffector {
             (relative_position_m, relative_velocity_mps)
         }
     }
+}
+
+/// Rotates the orientation about the planet spin axis by `|omega| dt`, as
+/// Basilisk's `advanceDcm`, so it stays a rotation.
+pub(super) fn advance_inertial_to_fixed(
+    orientation: &PlanetOrientation,
+    dt_seconds: f64,
+) -> Matrix3<f64> {
+    let dcm_pn = orientation.inertial_to_fixed;
+    if dt_seconds == 0.0 || orientation.inertial_to_fixed_dot == Matrix3::zeros() {
+        return dcm_pn;
+    }
+    // [omega_N x] = dcm_NP_dot * dcm_NP^T
+    let w = orientation.inertial_to_fixed_dot.transpose() * dcm_pn;
+    let omega = 0.5
+        * Vector3::new(
+            w[(2, 1)] - w[(1, 2)],
+            w[(0, 2)] - w[(2, 0)],
+            w[(1, 0)] - w[(0, 1)],
+        );
+    let angle = omega.norm() * dt_seconds;
+    if angle == 0.0 {
+        return dcm_pn;
+    }
+    let axis = omega / omega.norm();
+    let axis_tilde = Matrix3::new(
+        0.0, -axis.z, axis.y, axis.z, 0.0, -axis.x, -axis.y, axis.x, 0.0,
+    );
+    let rotation = Matrix3::identity()
+        + angle.sin() * axis_tilde
+        + (1.0 - angle.cos()) * axis_tilde * axis_tilde;
+    (rotation * dcm_pn.transpose()).transpose()
 }
 
 fn signed_time_delta_seconds(current_sim_nanos: u64, baseline_sim_nanos: u64) -> f64 {

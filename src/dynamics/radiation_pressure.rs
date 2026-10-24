@@ -15,6 +15,26 @@ pub struct RadiationPressureConfig {
     pub coefficient_reflection: f64,
 }
 
+impl RadiationPressureConfig {
+    /// Check physical and numeric invariants. Returns a description of the first
+    /// violation, or `Ok(())` when the configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.area_m2.is_finite() || self.area_m2 < 0.0 {
+            return Err(format!(
+                "area_m2 must be finite and >= 0, got {}",
+                self.area_m2
+            ));
+        }
+        if !self.coefficient_reflection.is_finite() || self.coefficient_reflection < 0.0 {
+            return Err(format!(
+                "coefficient_reflection must be finite and >= 0, got {}",
+                self.coefficient_reflection
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RadiationPressure {
     pub config: RadiationPressureConfig,
@@ -24,6 +44,9 @@ pub struct RadiationPressure {
 
 impl RadiationPressure {
     pub fn new(config: RadiationPressureConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid RadiationPressureConfig: {msg}");
+        }
         Self {
             config,
             input_sun_msg: Input::default(),
@@ -232,5 +255,15 @@ mod tests {
             half,
             0.5 * full
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "area_m2")]
+    fn rejects_negative_area() {
+        RadiationPressure::new(RadiationPressureConfig {
+            name: "srp".to_string(),
+            area_m2: -1.0,
+            coefficient_reflection: 1.2,
+        });
     }
 }

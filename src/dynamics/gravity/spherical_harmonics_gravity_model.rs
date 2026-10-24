@@ -79,6 +79,8 @@ impl SphericalHarmonicsGravityModel {
 
         let mut c_bar = triangular_zeros(max_degree + 1);
         let mut s_bar = triangular_zeros(max_degree + 1);
+        let mut loaded = vec![vec![false; max_degree + 1]; max_degree + 1];
+        let mut previous_degree = 0;
         for line in lines {
             let line = line.map_err(|error| invalid_file(&path, error.to_string()))?;
             if line.trim().is_empty() {
@@ -99,8 +101,21 @@ impl SphericalHarmonicsGravityModel {
                     format!("coefficient order {order} exceeds degree {degree}"),
                 ));
             }
+            if degree < previous_degree {
+                return Err(invalid_file(
+                    &path,
+                    format!("coefficient degree {degree} follows degree {previous_degree}"),
+                ));
+            }
+            previous_degree = degree;
             if degree > max_degree {
                 continue;
+            }
+            if std::mem::replace(&mut loaded[degree][order], true) {
+                return Err(invalid_file(
+                    &path,
+                    format!("duplicate coefficient row for degree {degree}, order {order}"),
+                ));
             }
             c_bar[degree][order] = parse_f64(&path, fields[2], "C coefficient")?;
             s_bar[degree][order] = parse_f64(&path, fields[3], "S coefficient")?;

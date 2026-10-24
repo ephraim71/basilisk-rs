@@ -58,6 +58,39 @@ pub struct SpacecraftConfig {
     pub integrator: Option<Box<dyn Integrator<Spacecraft>>>,
 }
 
+impl SpacecraftConfig {
+    /// Check physical and numeric invariants, as Basilisk's hub validation.
+    /// Returns a description of the first violation, or `Ok(())` when the
+    /// configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.mass_kg.is_finite() || self.mass_kg <= 0.0 {
+            return Err(format!(
+                "mass_kg must be finite and > 0, got {}",
+                self.mass_kg
+            ));
+        }
+        let vectors = [
+            ("hub_center_of_mass_body_m", self.hub_center_of_mass_body_m),
+            ("initial_position_m", self.initial_position_m),
+            ("initial_velocity_mps", self.initial_velocity_mps),
+            ("initial_sigma_bn", self.initial_sigma_bn),
+            ("initial_omega_radps", self.initial_omega_radps),
+        ];
+        for (name, value) in vectors {
+            if !value.iter().all(|v| v.is_finite()) {
+                return Err(format!("{name} must be finite, got {value:?}"));
+            }
+        }
+        if !crate::kinematics::is_valid_inertia_matrix(&self.inertia_kg_m2) {
+            return Err(format!(
+                "inertia_kg_m2 must be a finite, symmetric, physically valid inertia, got {:?}",
+                self.inertia_kg_m2
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StateEffectorMassProps {
     pub mass_kg: f64,

@@ -1201,3 +1201,45 @@ fn integrator_accuracy_improves_with_order() {
     assert!(rk4 < heun, "rk4 {rk4:.3e} !< heun {heun:.3e}");
     assert!(dopri < 1e-6, "adaptive dopri45 radius error {dopri:.3e}");
 }
+
+fn valid_spacecraft_config() -> SpacecraftConfig {
+    SpacecraftConfig {
+        mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(1.0, 2.0, 2.5)),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+        integrator: None,
+    }
+}
+
+#[test]
+#[should_panic(expected = "mass_kg")]
+fn rejects_zero_hub_mass() {
+    Spacecraft::new(SpacecraftConfig {
+        mass_kg: 0.0,
+        ..valid_spacecraft_config()
+    });
+}
+
+/// Principal moments 1, 1, 3 break the triangle inequality: no rigid body has them.
+#[test]
+#[should_panic(expected = "inertia_kg_m2")]
+fn rejects_physically_impossible_hub_inertia() {
+    Spacecraft::new(SpacecraftConfig {
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, 3.0)),
+        ..valid_spacecraft_config()
+    });
+}
+
+#[test]
+#[should_panic(expected = "initial_omega_radps")]
+fn rejects_non_finite_initial_state() {
+    Spacecraft::new(SpacecraftConfig {
+        initial_omega_radps: Vector3::new(0.0, f64::NAN, 0.0),
+        ..valid_spacecraft_config()
+    });
+}

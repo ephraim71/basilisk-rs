@@ -348,3 +348,31 @@ f 2 3 4\n";
         assert_eq!(model.face_count(), 4);
     }
 }
+
+/// Duplicate (degree, order) rows and degrees that go down are rejected, as
+/// Basilisk's coefficient loader does since AVSLab/basilisk#1298.
+#[test]
+fn spherical_harmonics_loader_rejects_duplicate_and_unordered_rows() {
+    let header = "6378136.3, 3.986004415e14, 7.292115e-5, 2, 2, 1, 0.0, 0.0\n";
+    let rows = [
+        (
+            "duplicate",
+            "0, 0, 1.0, 0.0\n2, 0, -4.8e-4, 0.0\n2, 0, -4.8e-4, 0.0\n",
+        ),
+        (
+            "follows",
+            "0, 0, 1.0, 0.0\n2, 0, -4.8e-4, 0.0\n1, 0, 0.0, 0.0\n",
+        ),
+    ];
+    for (expected, body) in rows {
+        let path = std::env::temp_dir().join(format!(
+            "basilisk-rs-sh-{expected}-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, format!("{header}{body}")).expect("write fixture");
+        let result = SphericalHarmonicsGravityModel::from_file(&path, 2);
+        std::fs::remove_file(&path).expect("remove fixture");
+        let error = format!("{:?}", result.err().expect("loader must reject the file"));
+        assert!(error.contains(expected), "{error}");
+    }
+}

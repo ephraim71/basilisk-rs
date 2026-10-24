@@ -29,13 +29,11 @@ pub struct MagnetometerConfig {
     pub name: String,
     pub body_to_sensor_quaternion: nalgebra::UnitQuaternion<f64>,
     pub bias_t: Vector3<f64>,
-    /// Matrix square root of the noise covariance in **3-sigma units** (see
-    /// [`crate::gauss_markov`]): a diagonal entry of `x` yields error steps
-    /// with standard deviation `x / 3`.
+    /// Matrix square root of the noise covariance (see [`crate::gauss_markov`]):
+    /// a diagonal entry of `x` yields error steps with standard deviation `x`.
     pub p_matrix_sqrt_t: Matrix3<f64>,
     pub a_matrix: Matrix3<f64>,
-    /// Per-axis soft walk bounds; the error state is statistically herded
-    /// back rather than clamped.
+    /// Per-axis walk bounds; the error state is clamped to them.
     pub walk_bounds_t: Vector3<f64>,
     pub scale_factor: f64,
     pub min_output_t: f64,
@@ -352,8 +350,7 @@ mod tests {
     fn iid_noise_matches_configured_std() {
         let mut config = noiseless_config("tam_noise");
         let std = 3.0e-9;
-        // The P matrix is in 3-sigma units: pass 3x the desired sigma.
-        config.p_matrix_sqrt_t = Matrix3::from_diagonal(&Vector3::repeat(3.0 * std));
+        config.p_matrix_sqrt_t = Matrix3::from_diagonal(&Vector3::repeat(std));
         config.a_matrix = Matrix3::zeros(); // IID: no propagation of prior error
         config.min_output_t = -1.0;
         config.max_output_t = 1.0;

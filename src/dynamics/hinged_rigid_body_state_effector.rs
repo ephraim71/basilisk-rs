@@ -38,6 +38,63 @@ impl HingedRigidBodyConfig {
             theta_dot_ref_radps: 0.0,
         }
     }
+
+    /// Check physical and numeric invariants, as Basilisk's hinged-body
+    /// validation. Returns a description of the first violation, or `Ok(())`
+    /// when the configuration is usable.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.mass_kg.is_finite() || self.mass_kg < 0.0 {
+            return Err(format!(
+                "mass_kg must be finite and >= 0, got {}",
+                self.mass_kg
+            ));
+        }
+        let scalars = [
+            ("center_of_mass_offset_m", self.center_of_mass_offset_m),
+            (
+                "spring_constant_nm_per_rad",
+                self.spring_constant_nm_per_rad,
+            ),
+            ("damping_nm_s_per_rad", self.damping_nm_s_per_rad),
+            ("theta_init_rad", self.theta_init_rad),
+            ("theta_dot_init_radps", self.theta_dot_init_radps),
+            ("theta_ref_rad", self.theta_ref_rad),
+            ("theta_dot_ref_radps", self.theta_dot_ref_radps),
+        ];
+        for (name, value) in scalars {
+            if !value.is_finite() {
+                return Err(format!("{name} must be finite, got {value}"));
+            }
+        }
+        if !self.hinge_position_body_m.iter().all(|v| v.is_finite()) {
+            return Err(format!(
+                "hinge_position_body_m must be finite, got {:?}",
+                self.hinge_position_body_m
+            ));
+        }
+        if !self
+            .inertia_about_panel_com_panel_kg_m2
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return Err(format!(
+                "inertia_about_panel_com_panel_kg_m2 must be finite, got {:?}",
+                self.inertia_about_panel_com_panel_kg_m2
+            ));
+        }
+        let hinge_inertia = self.inertia_about_panel_com_panel_kg_m2[(1, 1)]
+            + self.mass_kg * self.center_of_mass_offset_m.powi(2);
+        if hinge_inertia <= 0.0 {
+            return Err(format!("Iyy + m*d^2 must be > 0, got {hinge_inertia}"));
+        }
+        if !crate::kinematics::is_rotation_matrix(&self.body_to_hinge_dcm) {
+            return Err(format!(
+                "body_to_hinge_dcm must be a finite, orthogonal, right-handed rotation, got {:?}",
+                self.body_to_hinge_dcm
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -58,6 +115,9 @@ pub struct HingedRigidBodyStateEffector {
 
 impl HingedRigidBodyStateEffector {
     pub fn new(config: HingedRigidBodyConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid HingedRigidBodyConfig: {msg}");
+        }
         let theta_rad = config.theta_init_rad;
         let theta_dot_radps = config.theta_dot_init_radps;
         let theta_ref_rad = config.theta_ref_rad;
@@ -683,5 +743,21 @@ mod tests {
             (actual - expected).norm() < tolerance,
             "expected matrix {expected:?}, got {actual:?}"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "mass_kg")]
+    fn rejects_negative_mass() {
+        let mut config = HingedRigidBodyConfig::new("panel");
+        config.mass_kg = -1.0;
+        HingedRigidBodyStateEffector::new(config);
+    }
+
+    #[test]
+    #[should_panic(expected = "body_to_hinge_dcm")]
+    fn rejects_hinge_frame_that_is_not_a_rotation() {
+        let mut config = HingedRigidBodyConfig::new("panel");
+        config.body_to_hinge_dcm = Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, -1.0));
+        HingedRigidBodyStateEffector::new(config);
     }
 }

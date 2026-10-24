@@ -40,6 +40,9 @@ pub struct Spacecraft {
 
 impl Spacecraft {
     pub fn new(config: SpacecraftConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid SpacecraftConfig: {msg}");
+        }
         let integration_step_seconds = config.integration_step_nanos as f64 * 1.0e-9;
         let integration_step_duration =
             Duration::from_total_nanoseconds(config.integration_step_nanos as i128);

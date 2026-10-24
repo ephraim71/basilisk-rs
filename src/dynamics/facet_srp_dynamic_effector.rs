@@ -33,6 +33,13 @@ impl SolarRadiationPressureFacet {
         diffuse_coeff: f64,
         specular_coeff: f64,
     ) -> Self {
+        assert_valid_facet(
+            area_m2,
+            normal_body,
+            location_body_m,
+            diffuse_coeff,
+            specular_coeff,
+        );
         Self {
             area_m2,
             dcm_facet0_body: Matrix3::identity(),
@@ -54,6 +61,21 @@ impl SolarRadiationPressureFacet {
         diffuse_coeff: f64,
         specular_coeff: f64,
     ) -> Self {
+        assert_valid_facet(
+            area_m2,
+            normal_facet,
+            location_body_m,
+            diffuse_coeff,
+            specular_coeff,
+        );
+        assert!(
+            crate::kinematics::is_rotation_matrix(&dcm_facet0_body),
+            "facet dcm_facet0_body must be a finite, orthogonal, right-handed rotation, got {dcm_facet0_body:?}"
+        );
+        assert!(
+            articulation_axis_facet.iter().all(|v| v.is_finite()),
+            "facet articulation_axis_facet must be finite, got {articulation_axis_facet:?}"
+        );
         Self {
             area_m2,
             dcm_facet0_body,
@@ -200,6 +222,35 @@ impl DynamicEffector for FacetSRPDynamicEffector {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+fn assert_valid_facet(
+    area_m2: f64,
+    normal: Vector3<f64>,
+    location_body_m: Vector3<f64>,
+    diffuse_coeff: f64,
+    specular_coeff: f64,
+) {
+    assert!(
+        area_m2.is_finite() && area_m2 >= 0.0,
+        "facet area_m2 must be finite and >= 0, got {area_m2}"
+    );
+    assert!(
+        normal.iter().all(|v| v.is_finite()) && normal.norm() > 0.0,
+        "facet normal must be finite and non-zero, got {normal:?}"
+    );
+    assert!(
+        location_body_m.iter().all(|v| v.is_finite()),
+        "facet location_body_m must be finite, got {location_body_m:?}"
+    );
+    assert!(
+        diffuse_coeff.is_finite() && diffuse_coeff >= 0.0,
+        "facet diffuse_coeff must be finite and >= 0, got {diffuse_coeff}"
+    );
+    assert!(
+        specular_coeff.is_finite() && specular_coeff >= 0.0,
+        "facet specular_coeff must be finite and >= 0, got {specular_coeff}"
+    );
 }
 
 pub fn prv_to_dcm(prv: Vector3<f64>) -> Matrix3<f64> {
@@ -845,5 +896,28 @@ mod tests {
                 expected_torque_body
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "area_m2")]
+    fn rejects_negative_facet_area() {
+        let (mut srp, _sun_out) = make_faceted_srp();
+        srp.add_panel(-1.0, Vector3::x(), Vector3::zeros(), 0.1, 0.2);
+    }
+
+    #[test]
+    #[should_panic(expected = "dcm_facet0_body")]
+    fn rejects_facet_frame_that_is_not_a_rotation() {
+        let (mut srp, _sun_out) = make_faceted_srp();
+        let reflection = Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, -1.0));
+        srp.add_facet(
+            1.0,
+            reflection,
+            Vector3::z(),
+            Vector3::x(),
+            Vector3::zeros(),
+            0.1,
+            0.2,
+        );
     }
 }

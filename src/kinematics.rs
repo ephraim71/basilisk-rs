@@ -1,4 +1,24 @@
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, SymmetricEigen, Vector3};
+
+/// Orthonormal and right-handed within `1e-9`, as Basilisk's `eigenIsRotationMatrix`.
+pub(crate) fn is_rotation_matrix(dcm: &Matrix3<f64>) -> bool {
+    dcm.iter().all(|v| v.is_finite())
+        && (dcm.transpose() * dcm - Matrix3::identity()).norm() <= 1.0e-9
+        && (dcm.determinant() - 1.0).abs() <= 1.0e-9
+}
+
+/// Finite, symmetric, at most one zero principal moment, and the principal
+/// moments satisfy the triangle inequality, as Basilisk's `eigenIsValidInertiaMatrix`.
+pub(crate) fn is_valid_inertia_matrix(inertia: &Matrix3<f64>) -> bool {
+    const TOLERANCE: f64 = 1.0e-9;
+    if !inertia.iter().all(|v| v.is_finite()) || (inertia - inertia.transpose()).norm() > TOLERANCE
+    {
+        return false;
+    }
+    let mut moments = SymmetricEigen::new(*inertia).eigenvalues;
+    moments.as_mut_slice().sort_by(f64::total_cmp);
+    moments[1] > TOLERANCE * moments[2] && moments[0] + moments[1] >= moments[2] * (1.0 - TOLERANCE)
+}
 
 /// Compose two successive modified Rodrigues parameter rotations, selecting
 /// the shadow set to avoid the parameter singularity.

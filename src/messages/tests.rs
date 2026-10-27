@@ -1060,3 +1060,725 @@ fn a_replace_leaves_an_untouched_infinity_alone() {
         "an untouched infinity lost its sign"
     );
 }
+
+/// The ports of upstream FSW message payloads: each one round-trips through
+/// JSON with every array at full length, defaults to upstream's zeroed
+/// payload, and flattens to exactly one telemetry column per value it holds.
+mod upstream_payloads {
+    use std::any::type_name;
+    use std::collections::HashSet;
+    use std::fmt::Debug;
+
+    use nalgebra::{Matrix3, Quaternion, SMatrix, UnitQuaternion, Vector2, Vector3};
+    use serde_json::{Value, json};
+
+    use crate::messages::{
+        AccelerometerDataMsg, AccelerometerPacket, AccessMsg, ArrayEffectorLockMsg,
+        AttitudeStateMsg, BodyForceCommandMsg, BodyHeadingMsg, CameraConfigMsg, CameraRenderMode,
+        CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, DeviceCommandMsg, DeviceState,
+        DeviceStatusMsg, DipoleRequestBodyMsg, DvBurnCommandMsg, DvExecutionDataMsg, EffectorLock,
+        EphemerisMsg, GroundStateMsg, HeadingFilterMsg, HillRelativeStateMsg, ImuMsg,
+        ImuSensorBodyMsg, InertialFilterMsg, InertialForceCommandMsg, InertialHeadingMsg,
+        MAX_ACC_BUF_PKT, MAX_EFF_COUNT, MAX_LIMB_PNTS, MAX_NUM_CSS_SENSORS,
+        NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg, OpNavLimbMsg, OpNavMsg,
+        PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg, ReconfigBurnArrayInfoMsg,
+        ReconfigBurnInfoMsg, ReconfigBurnStatus, RwConfigElementMsg, RwConstellationMsg,
+        SKF_N_STATES, SimulationMessage, SpacecraftStateMsg, StarTrackerAttitudeMsg,
+        StarTrackerMsg, StripStateMsg, SunlineFilterMsg, TdbVehicleClockCorrelationMsg,
+        ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg, ThrusterArrayOnTimeCommandMsg,
+        ThrusterConfigMsg, VizSetting,
+    };
+    use crate::telemetry::TelemetryMessage;
+
+    /// Runs `$check::<T>()` for every ported payload that has telemetry, which
+    /// is all of them except [`CameraConfigMsg`].
+    macro_rules! for_each_telemetry_message {
+        ($check:ident) => {
+            $check::<AccelerometerDataMsg>();
+            $check::<AccelerometerPacket>();
+            $check::<AccessMsg>();
+            $check::<ArrayEffectorLockMsg>();
+            $check::<AttitudeStateMsg>();
+            $check::<BodyForceCommandMsg>();
+            $check::<BodyHeadingMsg>();
+            $check::<CssArraySensorMsg>();
+            $check::<CssConfigMsg>();
+            $check::<CssUnitConfigMsg>();
+            $check::<DeviceCommandMsg>();
+            $check::<DeviceStatusMsg>();
+            $check::<DipoleRequestBodyMsg>();
+            $check::<DvBurnCommandMsg>();
+            $check::<DvExecutionDataMsg>();
+            $check::<EphemerisMsg>();
+            $check::<GroundStateMsg>();
+            $check::<HeadingFilterMsg>();
+            $check::<HillRelativeStateMsg>();
+            $check::<ImuMsg>();
+            $check::<ImuSensorBodyMsg>();
+            $check::<InertialFilterMsg>();
+            $check::<InertialForceCommandMsg>();
+            $check::<InertialHeadingMsg>();
+            $check::<NavigationTranslationMsg>();
+            $check::<OpNavCirclesMsg>();
+            $check::<OpNavFilterMsg>();
+            $check::<OpNavLimbMsg>();
+            $check::<OpNavMsg>();
+            $check::<PixelLineFilterMsg>();
+            $check::<PrescribedRotationMsg>();
+            $check::<RateCommandMsg>();
+            $check::<ReconfigBurnArrayInfoMsg>();
+            $check::<ReconfigBurnInfoMsg>();
+            $check::<RwConfigElementMsg>();
+            $check::<RwConstellationMsg>();
+            $check::<StarTrackerAttitudeMsg>();
+            $check::<StarTrackerMsg>();
+            $check::<StripStateMsg>();
+            $check::<SunlineFilterMsg>();
+            $check::<TdbVehicleClockCorrelationMsg>();
+            $check::<ThrusterArrayConfigMsg>();
+            $check::<ThrusterArrayForceCommandMsg>();
+            $check::<ThrusterArrayOnTimeCommandMsg>();
+            $check::<ThrusterConfigMsg>();
+        };
+    }
+
+    /// Every unit enum the payloads hold, as `(zeroed default, non-default
+    /// variant, that variant's upstream code)`. The variant names are unique
+    /// across the enums, so a serialised name identifies its enum.
+    const VARIANTS: [(&str, &str, f64); 5] = [
+        ("Off", "On", 1.0),
+        ("Unlocked", "Locked", 1.0),
+        ("NotScheduled", "Burned", 2.0),
+        ("Visual", "DepthMap", 1.0),
+        ("UseVizDefault", "Enabled", 1.0),
+    ];
+
+    /// Gives every number in `value` a distinct non-zero value — fractional
+    /// where the field is a float, integral where it is an integer — sets every
+    /// flag, names every empty string, and moves every enum off its default.
+    fn fill(value: &mut Value, counter: &mut u64) {
+        match value {
+            Value::Number(number) => {
+                *counter += 1;
+                let filled = if number.is_f64() {
+                    json!(*counter as f64 + 0.25)
+                } else {
+                    json!(*counter)
+                };
+                *value = filled;
+            }
+            Value::Bool(flag) => *flag = true,
+            Value::String(text) if text.is_empty() => *text = format!("text {counter}"),
+            Value::String(variant) => {
+                let (_, other, _) = VARIANTS
+                    .iter()
+                    .find(|(default, _, _)| default == variant)
+                    .unwrap_or_else(|| panic!("add the enum holding {variant:?} to VARIANTS"));
+                *variant = (*other).to_owned();
+            }
+            Value::Null => {}
+            Value::Array(items) => items.iter_mut().for_each(|item| fill(item, counter)),
+            Value::Object(fields) => fields.values_mut().for_each(|field| fill(field, counter)),
+        }
+    }
+
+    fn filled_json<T: SimulationMessage>() -> Value {
+        let mut value = serde_json::to_value(T::default()).unwrap();
+        fill(&mut value, &mut 0);
+        value
+    }
+
+    fn filled<T: SimulationMessage>() -> T {
+        serde_json::from_value(filled_json::<T>())
+            .unwrap_or_else(|error| panic!("{} rejected its own shape: {error}", type_name::<T>()))
+    }
+
+    /// Every leaf of `value`, as the number its telemetry column holds: a
+    /// flag is 1 or 0, and an enum variant its upstream code.
+    fn leaf_values(value: &Value, leaves: &mut Vec<f64>) {
+        match value {
+            Value::Number(number) => leaves.push(number.as_f64().unwrap()),
+            Value::Bool(flag) => leaves.push(if *flag { 1.0 } else { 0.0 }),
+            Value::String(variant) => leaves.push(
+                VARIANTS
+                    .iter()
+                    .find_map(|(default, other, code)| {
+                        (default == variant)
+                            .then_some(0.0)
+                            .or((other == variant).then_some(*code))
+                    })
+                    .unwrap_or_else(|| panic!("{variant:?} is not a known enum variant")),
+            ),
+            Value::Null => panic!("a payload serialised a null"),
+            Value::Array(items) => items.iter().for_each(|item| leaf_values(item, leaves)),
+            Value::Object(fields) => fields.values().for_each(|field| leaf_values(field, leaves)),
+        }
+    }
+
+    fn round_trips_at_full_size<T: SimulationMessage + PartialEq + Debug>() {
+        let json = filled_json::<T>();
+        let message = filled::<T>();
+
+        assert_ne!(
+            message,
+            T::default(),
+            "{} kept its default",
+            type_name::<T>()
+        );
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            json,
+            "{} did not serialise back to what it was read from",
+            type_name::<T>()
+        );
+        let back: T = serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
+        assert_eq!(
+            back,
+            message,
+            "{} changed in a round trip",
+            type_name::<T>()
+        );
+    }
+
+    #[test]
+    fn every_payload_round_trips_with_full_length_arrays() {
+        for_each_telemetry_message!(round_trips_at_full_size);
+        round_trips_at_full_size::<CameraConfigMsg>();
+    }
+
+    fn assert_zeroed(value: &Value, path: &str, message: &str) {
+        match value {
+            Value::Number(number) => {
+                assert_eq!(number.as_f64(), Some(0.0), "{message}{path} is not zero");
+            }
+            Value::Bool(flag) => assert!(!flag, "{message}{path} is set"),
+            Value::String(text) => assert!(
+                text.is_empty() || VARIANTS.iter().any(|(default, _, _)| default == text),
+                "{message}{path} is {text:?}"
+            ),
+            Value::Null => panic!("{message}{path} is null"),
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    assert_zeroed(item, &format!("{path}/{index}"), message);
+                }
+            }
+            Value::Object(fields) => {
+                for (name, field) in fields {
+                    assert_zeroed(field, &format!("{path}/{name}"), message);
+                }
+            }
+        }
+    }
+
+    fn defaults_to_the_zeroed_payload<T: SimulationMessage + TelemetryMessage>() {
+        let default = T::default();
+        assert_zeroed(
+            &serde_json::to_value(&default).unwrap(),
+            "",
+            type_name::<T>(),
+        );
+        for field in default.flatten() {
+            assert_eq!(
+                field.value,
+                0.0,
+                "{}.{} is not zero",
+                type_name::<T>(),
+                field.path
+            );
+        }
+    }
+
+    /// Upstream zero-initialises every payload, and an unconnected `Input`
+    /// reads `T::default()`, so the two must agree for a port to behave like
+    /// an unlinked upstream message.
+    #[test]
+    fn every_payload_defaults_to_upstreams_zeroed_payload() {
+        // `StarTrackerMsg` documents an identity attitude instead.
+        let star_tracker = StarTrackerMsg::default();
+        assert_eq!(star_tracker.time_tag_nanos, 0);
+        assert_eq!(
+            star_tracker.attitude_inertial_to_sensor,
+            UnitQuaternion::identity()
+        );
+
+        macro_rules! zeroed {
+            ($($message:ty),+ $(,)?) => {
+                $(defaults_to_the_zeroed_payload::<$message>();)+
+            };
+        }
+        zeroed!(
+            AccelerometerDataMsg,
+            AccelerometerPacket,
+            AccessMsg,
+            ArrayEffectorLockMsg,
+            AttitudeStateMsg,
+            BodyForceCommandMsg,
+            BodyHeadingMsg,
+            CssArraySensorMsg,
+            CssConfigMsg,
+            CssUnitConfigMsg,
+            DeviceCommandMsg,
+            DeviceStatusMsg,
+            DipoleRequestBodyMsg,
+            DvBurnCommandMsg,
+            DvExecutionDataMsg,
+            EphemerisMsg,
+            GroundStateMsg,
+            HeadingFilterMsg,
+            HillRelativeStateMsg,
+            ImuMsg,
+            ImuSensorBodyMsg,
+            InertialFilterMsg,
+            InertialForceCommandMsg,
+            InertialHeadingMsg,
+            NavigationTranslationMsg,
+            OpNavCirclesMsg,
+            OpNavFilterMsg,
+            OpNavLimbMsg,
+            OpNavMsg,
+            PixelLineFilterMsg,
+            PrescribedRotationMsg,
+            RateCommandMsg,
+            ReconfigBurnArrayInfoMsg,
+            ReconfigBurnInfoMsg,
+            RwConfigElementMsg,
+            RwConstellationMsg,
+            StarTrackerAttitudeMsg,
+            StripStateMsg,
+            SunlineFilterMsg,
+            TdbVehicleClockCorrelationMsg,
+            ThrusterArrayConfigMsg,
+            ThrusterArrayForceCommandMsg,
+            ThrusterArrayOnTimeCommandMsg,
+            ThrusterConfigMsg,
+        );
+
+        let camera = CameraConfigMsg::default();
+        assert_zeroed(
+            &serde_json::to_value(&camera).unwrap(),
+            "",
+            "CameraConfigMsg",
+        );
+        assert_eq!(camera.render_mode as u8, 0);
+        assert_eq!(camera.post_processing_on as i8, 0);
+        assert_eq!(camera.show_hud_elements_in_image as i8, 0);
+    }
+
+    /// Every value a message holds appears in exactly one uniquely named
+    /// column — a field left out of `impl_telemetry!` would be missing here.
+    fn flattens_one_column_per_value<T: SimulationMessage + TelemetryMessage>() {
+        let message = filled::<T>();
+        let fields = message.flatten();
+
+        let mut paths = HashSet::new();
+        for field in &fields {
+            assert!(
+                paths.insert(field.path.as_str()),
+                "{} repeats the column {}",
+                type_name::<T>(),
+                field.path
+            );
+        }
+
+        let mut expected = Vec::new();
+        leaf_values(&serde_json::to_value(&message).unwrap(), &mut expected);
+        let mut actual: Vec<f64> = fields.iter().map(|field| field.value).collect();
+        expected.sort_by(f64::total_cmp);
+        actual.sort_by(f64::total_cmp);
+        assert_eq!(
+            actual,
+            expected,
+            "{} telemetry does not hold exactly its values",
+            type_name::<T>()
+        );
+    }
+
+    #[test]
+    fn telemetry_holds_every_value_once() {
+        for_each_telemetry_message!(flattens_one_column_per_value);
+    }
+
+    fn paths<T: TelemetryMessage>(message: &T) -> Vec<String> {
+        message
+            .flatten()
+            .into_iter()
+            .map(|field| field.path)
+            .collect()
+    }
+
+    #[test]
+    fn telemetry_paths_follow_the_existing_conventions() {
+        assert_eq!(
+            paths(&NavigationTranslationMsg::default()),
+            [
+                "time_tag_s",
+                "position_bn_n_m.x",
+                "position_bn_n_m.y",
+                "position_bn_n_m.z",
+                "velocity_bn_n_mps.x",
+                "velocity_bn_n_mps.y",
+                "velocity_bn_n_mps.z",
+                "accumulated_dv_b_mps.x",
+                "accumulated_dv_b_mps.y",
+                "accumulated_dv_b_mps.z",
+            ]
+        );
+
+        let sunline = paths(&SunlineFilterMsg::default());
+        for path in [
+            "covar.m11",
+            "covar.m66",
+            "state.0",
+            "state.5",
+            "state_error.5",
+            "post_fit_res.31",
+            "num_obs",
+        ] {
+            assert!(sunline.iter().any(|p| p == path), "missing {path}");
+        }
+        assert_eq!(
+            sunline[1..7],
+            [
+                "covar.m11",
+                "covar.m12",
+                "covar.m13",
+                "covar.m14",
+                "covar.m15",
+                "covar.m16"
+            ]
+        );
+
+        let thrusters = paths(&ThrusterArrayConfigMsg::default());
+        assert_eq!(thrusters[0], "num_thrusters");
+        assert_eq!(thrusters[1], "thrusters.0.position_thrust_b_m.x");
+        assert_eq!(
+            thrusters.last().map(String::as_str),
+            Some("thrusters.35.swirl_torque_nm")
+        );
+
+        let limb = paths(&OpNavLimbMsg::default());
+        assert_eq!(
+            limb.last().map(String::as_str),
+            Some("limb_points_px.1999.y")
+        );
+
+        // The columns the hand-written telemetry used keep their names.
+        let imu = paths(&ImuMsg::default());
+        assert_eq!(
+            imu[9..],
+            [
+                "angular_rate_sensor_radps.x",
+                "angular_rate_sensor_radps.y",
+                "angular_rate_sensor_radps.z"
+            ]
+        );
+        assert_eq!(
+            paths(&StarTrackerMsg::default()),
+            [
+                "time_tag_nanos",
+                "attitude_inertial_to_sensor.x",
+                "attitude_inertial_to_sensor.y",
+                "attitude_inertial_to_sensor.z",
+                "attitude_inertial_to_sensor.w",
+            ]
+        );
+    }
+
+    #[test]
+    fn matrix_telemetry_is_row_major_and_enums_report_their_upstream_code() {
+        let op_nav = OpNavMsg {
+            covar_n_m2: Matrix3::from_row_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            ..OpNavMsg::default()
+        };
+        let value = |path: &str| {
+            op_nav
+                .flatten()
+                .into_iter()
+                .find(|field| field.path == path)
+                .map(|field| field.value)
+        };
+        assert_eq!(value("covar_n_m2.m12"), Some(2.0));
+        assert_eq!(value("covar_n_m2.m21"), Some(4.0));
+        assert_eq!(value("covar_n_m2.m33"), Some(9.0));
+
+        let mut lock = ArrayEffectorLockMsg::default();
+        lock.effector_lock[1] = EffectorLock::Locked;
+        let fields = lock.flatten();
+        assert_eq!(fields[0].value, 0.0);
+        assert_eq!(fields[1].path, "effector_lock.1");
+        assert_eq!(fields[1].value, 1.0);
+
+        let mut burns = ReconfigBurnArrayInfoMsg::default();
+        burns.burn_array[2].status = ReconfigBurnStatus::Skipped;
+        let skipped = burns
+            .flatten()
+            .into_iter()
+            .find(|field| field.path == "burn_array.2.status")
+            .expect("the burn status has a column");
+        assert_eq!(skipped.value, 3.0);
+    }
+
+    #[test]
+    fn discrete_states_keep_their_upstream_codes_and_round_trip() {
+        assert_eq!(DeviceState::Off as u8, 0);
+        assert_eq!(DeviceState::On as u8, 1);
+        assert!(DeviceState::On.is_on() && !DeviceState::Off.is_on());
+        assert_eq!(EffectorLock::Unlocked as u8, 0);
+        assert_eq!(EffectorLock::Locked as u8, 1);
+        assert_eq!(ReconfigBurnStatus::NotScheduled as u8, 0);
+        assert_eq!(ReconfigBurnStatus::Pending as u8, 1);
+        assert_eq!(ReconfigBurnStatus::Burned as u8, 2);
+        assert_eq!(ReconfigBurnStatus::Skipped as u8, 3);
+        assert_eq!(CameraRenderMode::Visual as u8, 0);
+        assert_eq!(CameraRenderMode::DepthMap as u8, 1);
+        assert_eq!(VizSetting::UseVizDefault as i8, 0);
+        assert_eq!(VizSetting::Disabled as i8, -1);
+        assert_eq!(VizSetting::Enabled as i8, 1);
+
+        let status = DeviceStatusMsg {
+            device_status: DeviceState::On,
+        };
+        let back: DeviceStatusMsg =
+            serde_json::from_value(serde_json::to_value(&status).unwrap()).unwrap();
+        assert_eq!(back, status);
+
+        let mut lock = ArrayEffectorLockMsg::default();
+        lock.effector_lock[MAX_EFF_COUNT - 1] = EffectorLock::Locked;
+        let back: ArrayEffectorLockMsg =
+            serde_json::from_value(serde_json::to_value(&lock).unwrap()).unwrap();
+        assert_eq!(back, lock);
+
+        let mut burns = ReconfigBurnArrayInfoMsg::default();
+        for (burn, status) in burns.burn_array.iter_mut().zip([
+            ReconfigBurnStatus::Pending,
+            ReconfigBurnStatus::Burned,
+            ReconfigBurnStatus::Skipped,
+        ]) {
+            burn.status = status;
+        }
+        let back: ReconfigBurnArrayInfoMsg =
+            serde_json::from_value(serde_json::to_value(&burns).unwrap()).unwrap();
+        assert_eq!(back, burns);
+
+        let camera = CameraConfigMsg {
+            render_mode: CameraRenderMode::DepthMap,
+            post_processing_on: VizSetting::Disabled,
+            show_hud_elements_in_image: VizSetting::Enabled,
+            ..CameraConfigMsg::default()
+        };
+        let back: CameraConfigMsg =
+            serde_json::from_value(serde_json::to_value(&camera).unwrap()).unwrap();
+        assert_eq!(back, camera);
+    }
+
+    #[test]
+    fn long_arrays_reject_a_wrong_length() {
+        let mut limb = serde_json::to_value(OpNavLimbMsg::default()).unwrap();
+        limb["limb_points_px"] = json!(vec![[0.0, 0.0]; MAX_LIMB_PNTS - 1]);
+        let error = serde_json::from_value::<OpNavLimbMsg>(limb)
+            .expect_err("a short limb-point array was accepted")
+            .to_string();
+        assert!(
+            error.contains(&format!("an array of length {MAX_LIMB_PNTS}")),
+            "{error}"
+        );
+
+        let mut packets = serde_json::to_value(AccelerometerDataMsg::default()).unwrap();
+        let extra = packets["accel_packets"][0].clone();
+        packets["accel_packets"].as_array_mut().unwrap().push(extra);
+        assert_eq!(
+            packets["accel_packets"].as_array().unwrap().len(),
+            MAX_ACC_BUF_PKT + 1
+        );
+        assert!(serde_json::from_value::<AccelerometerDataMsg>(packets).is_err());
+    }
+
+    fn thruster(index: usize) -> ThrusterConfigMsg {
+        let offset = index as f64;
+        ThrusterConfigMsg {
+            position_thrust_b_m: Vector3::new(offset, 1.0, 2.0),
+            t_hat_thrust_b: Vector3::x(),
+            max_thrust_n: 1.0 + offset,
+            swirl_torque_nm: 0.1 * offset,
+        }
+    }
+
+    #[test]
+    fn from_active_fills_the_leading_entries_and_zeroes_the_rest() {
+        let on_times = ThrusterArrayOnTimeCommandMsg::from_active(&[0.5, 0.25]);
+        assert_eq!(on_times.on_time_request_s[..2], [0.5, 0.25]);
+        assert!(on_times.on_time_request_s[2..].iter().all(|&t| t == 0.0));
+
+        let forces = ThrusterArrayForceCommandMsg::from_active(&[1.0; MAX_EFF_COUNT]);
+        assert!(forces.thrust_force_n.iter().all(|&f| f == 1.0));
+
+        let readings = CssArraySensorMsg::from_active(&[0.1, 0.2, 0.3]);
+        assert_eq!(readings.time_tag_s, 0.0);
+        assert_eq!(readings.cos_values[..3], [0.1, 0.2, 0.3]);
+        assert!(readings.cos_values[3..].iter().all(|&c| c == 0.0));
+
+        let thrusters: Vec<_> = (0..3).map(thruster).collect();
+        let config = ThrusterArrayConfigMsg::from_active(&thrusters);
+        assert_eq!(config.num_thrusters, 3);
+        assert_eq!(config.active_thrusters(), thrusters.as_slice());
+        assert_eq!(config.thrusters[3], ThrusterConfigMsg::default());
+
+        let units = [
+            CssUnitConfigMsg {
+                n_hat_b: Vector3::x(),
+                c_bias: 1.0,
+            },
+            CssUnitConfigMsg {
+                n_hat_b: Vector3::y(),
+                c_bias: 1.1,
+            },
+        ];
+        let css = CssConfigMsg::from_active(&units);
+        assert_eq!(css.num_css, 2);
+        assert_eq!(css.active_units(), units.as_slice());
+        assert_eq!(css.css_units[2], CssUnitConfigMsg::default());
+
+        let wheels = [RwConfigElementMsg {
+            gs_hat_b: Vector3::z(),
+            spin_axis_inertia_kg_m2: 0.1,
+            max_motor_torque_nm: 0.2,
+        }];
+        let constellation = RwConstellationMsg::from_active(&wheels);
+        assert_eq!(constellation.num_rw, 1);
+        assert_eq!(constellation.active_wheels(), wheels.as_slice());
+    }
+
+    #[test]
+    fn active_entries_never_read_past_the_array() {
+        let config = ThrusterArrayConfigMsg {
+            num_thrusters: MAX_EFF_COUNT + 5,
+            ..ThrusterArrayConfigMsg::default()
+        };
+        assert_eq!(config.active_thrusters().len(), MAX_EFF_COUNT);
+
+        let css = CssConfigMsg {
+            num_css: MAX_NUM_CSS_SENSORS + 1,
+            ..CssConfigMsg::default()
+        };
+        assert_eq!(css.active_units().len(), MAX_NUM_CSS_SENSORS);
+
+        let limb = OpNavLimbMsg {
+            num_limb_points: 2,
+            ..OpNavLimbMsg::default()
+        };
+        assert_eq!(limb.active_limb_points(), [Vector2::zeros(); 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "at most 32 CSS readings are supported")]
+    fn from_active_refuses_more_entries_than_upstream_holds() {
+        let _ = CssArraySensorMsg::from_active(&[0.0; MAX_NUM_CSS_SENSORS + 1]);
+    }
+
+    /// Upstream `EP2C`, written out independently of nalgebra.
+    fn ep2c(q: [f64; 4]) -> Matrix3<f64> {
+        let [q0, q1, q2, q3] = q;
+        Matrix3::new(
+            q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3,
+            2.0 * (q1 * q2 + q0 * q3),
+            2.0 * (q1 * q3 - q0 * q2),
+            2.0 * (q1 * q2 - q0 * q3),
+            q0 * q0 - q1 * q1 + q2 * q2 - q3 * q3,
+            2.0 * (q2 * q3 + q0 * q1),
+            2.0 * (q1 * q3 + q0 * q2),
+            2.0 * (q2 * q3 - q0 * q1),
+            q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3,
+        )
+    }
+
+    /// Upstream `MRP2C`, written out independently of nalgebra.
+    fn mrp2c(sigma: Vector3<f64>) -> Matrix3<f64> {
+        let s2 = sigma.norm_squared();
+        let tilde = sigma.cross_matrix();
+        Matrix3::identity()
+            + (8.0 * tilde * tilde - 4.0 * (1.0 - s2) * tilde) / ((1.0 + s2) * (1.0 + s2))
+    }
+
+    #[test]
+    fn star_tracker_quaternion_matches_upstream_q_inrtl2case() {
+        let norm = (0.5_f64.powi(2) + 0.1_f64.powi(2) + 0.2_f64.powi(2) + 0.3_f64.powi(2)).sqrt();
+        let beta_cn = [0.5 / norm, 0.1 / norm, -0.2 / norm, 0.3 / norm];
+        let message = StarTrackerMsg::from_q_inrtl2case(42, beta_cn);
+
+        assert_eq!(message.time_tag_nanos, 42);
+        assert!((message.dcm_cn() - ep2c(beta_cn)).abs().max() < 1e-15);
+        let back = message.q_inrtl2case();
+        for (actual, expected) in back.iter().zip(beta_cn) {
+            assert!((actual - expected).abs() < 1e-15, "{back:?} vs {beta_cn:?}");
+        }
+
+        // The same attitude stored with the opposite sign reads back with β0 >= 0.
+        let flipped = StarTrackerMsg {
+            attitude_inertial_to_sensor: UnitQuaternion::new_unchecked(
+                -message.attitude_inertial_to_sensor.into_inner(),
+            ),
+            ..message.clone()
+        };
+        assert!(flipped.q_inrtl2case()[0] > 0.0);
+        assert!((flipped.dcm_cn() - message.dcm_cn()).abs().max() < 1e-15);
+    }
+
+    /// The Rust star tracker composes `body_to_sensor * inertial_to_body`; the
+    /// documented mapping holds only if that product's matrix is `[CB][BN]`.
+    #[test]
+    fn star_tracker_attitude_is_the_inertial_to_case_dcm() {
+        let state = SpacecraftStateMsg {
+            sigma_bn: Vector3::new(0.1, -0.2, 0.3),
+            ..SpacecraftStateMsg::default()
+        };
+        let dcm_bn = mrp2c(state.sigma_bn);
+        assert!(
+            (state.inertial_to_body().to_rotation_matrix().into_inner() - dcm_bn)
+                .abs()
+                .max()
+                < 1e-15
+        );
+
+        let body_to_sensor = UnitQuaternion::from_quaternion(Quaternion::new(0.9, 0.1, 0.3, -0.2));
+        let dcm_cb = body_to_sensor.to_rotation_matrix().into_inner();
+        let message = StarTrackerMsg {
+            time_tag_nanos: 0,
+            attitude_inertial_to_sensor: body_to_sensor * state.inertial_to_body(),
+        };
+        assert!((message.dcm_cn() - dcm_cb * dcm_bn).abs().max() < 1e-15);
+        assert!((ep2c(message.q_inrtl2case()) - dcm_cb * dcm_bn).abs().max() < 1e-15);
+    }
+
+    #[test]
+    fn a_reduced_covariance_packs_into_the_front_of_the_flat_array() {
+        let small = SMatrix::<f64, 3, 3>::from_fn(|row, column| (10 * row + column) as f64 + 1.0);
+        let mut message = SunlineFilterMsg::default();
+        message.set_packed_covariance(&small);
+
+        // Upstream `memmove`s the nine row-major entries into flat slots 0..9
+        // of the 6x6 row-major array.
+        let mut flat = [0.0; SKF_N_STATES * SKF_N_STATES];
+        for (index, value) in flat.iter_mut().enumerate() {
+            *value = message.covar[(index / SKF_N_STATES, index % SKF_N_STATES)];
+        }
+        assert_eq!(
+            flat[..9],
+            [1.0, 2.0, 3.0, 11.0, 12.0, 13.0, 21.0, 22.0, 23.0]
+        );
+        assert!(flat[9..].iter().all(|&value| value == 0.0));
+        assert_eq!(message.packed_covariance::<3>(), small);
+
+        let full = SMatrix::<f64, SKF_N_STATES, SKF_N_STATES>::from_fn(|row, column| {
+            (row * SKF_N_STATES + column) as f64
+        });
+        message.set_packed_covariance(&full);
+        assert_eq!(message.covar, full);
+        assert_eq!(message.packed_covariance::<SKF_N_STATES>(), full);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not fit")]
+    fn a_covariance_larger_than_the_payload_is_refused() {
+        SunlineFilterMsg::default().set_packed_covariance(&SMatrix::<f64, 7, 7>::zeros());
+    }
+}

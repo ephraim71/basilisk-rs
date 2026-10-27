@@ -12,9 +12,11 @@ use crate::{Module, SimulationContext};
 /// Rate-gyro measurement model.
 ///
 /// The error chain, in order: rotate (with body bias) -> Gauss-Markov errors
-/// + sensor bias -> per-axis scale -> LSB discretization -> saturation. Only
-/// the rotational states are modelled; `ImuMsg` carries no accelerometer
-/// output.
+/// plus sensor bias -> per-axis scale -> LSB discretization -> saturation.
+///
+/// Only the rotational states are modelled: the output fills
+/// `ImuMsg::angular_rate_sensor_radps` and leaves the delta-velocity,
+/// acceleration and delta-angle fields at zero.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImuSensorConfig {
     pub name: String,
@@ -140,8 +142,10 @@ impl Module for ImuSensor {
         let limit = config.max_rate_radps.abs();
         let saturated = quantized.map(|value| value.clamp(-limit, limit));
 
+        // Only the gyro is modelled; the accelerometer fields stay zero.
         self.output_imu_msg.write(ImuMsg {
             angular_rate_sensor_radps: saturated,
+            ..ImuMsg::default()
         });
     }
 }

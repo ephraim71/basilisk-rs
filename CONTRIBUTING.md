@@ -38,5 +38,5 @@ Good places to start, all with a clear reference implementation to work from: `e
 
 Unit tests go in `mod tests` in the same file. The usual pattern is to reimplement
 the reference algorithm in the test and assert the module agrees across a sweep of
-inputs. `upstream_truth` in `src/fsw_algorithms/mrp_feedback.rs` shows the idea. The
-duplication is deliberate.
+inputs. `upstream_truth` in `src/fsw_algorithms/att_control/mrp_feedback.rs` shows the
+idea. The duplication is deliberate.

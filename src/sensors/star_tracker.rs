@@ -33,12 +33,12 @@ impl Module for StarTracker {
             .write(StarTrackerMsg::default());
     }
 
-    fn update(&mut self, _context: &SimulationContext) {
+    fn update(&mut self, context: &SimulationContext) {
         let state = self.read_input_message();
         let true_attitude = self.compute_true_output(&state);
         let sensed_attitude = self.apply_sensor_errors(true_attitude);
 
-        self.write_output_message(sensed_attitude);
+        self.write_output_message(context.current_sim_nanos, sensed_attitude);
     }
 }
 
@@ -82,8 +82,17 @@ impl StarTracker {
         UnitQuaternion::from_scaled_axis(self.error_state_prv_rad) * true_attitude
     }
 
-    fn write_output_message(&mut self, attitude_inertial_to_sensor: UnitQuaternion<f64>) {
+    /// Upstream tags the sample with the time its spacecraft-state input was
+    /// written. The Rust state message carries no write time, so the current
+    /// simulation time stands in — the same instant whenever the spacecraft is
+    /// stepped before the tracker in a tick.
+    fn write_output_message(
+        &mut self,
+        time_tag_nanos: u64,
+        attitude_inertial_to_sensor: UnitQuaternion<f64>,
+    ) {
         self.output_star_tracker_msg.write(StarTrackerMsg {
+            time_tag_nanos,
             attitude_inertial_to_sensor,
         });
     }

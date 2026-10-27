@@ -24,6 +24,7 @@ pub mod simulation;
 pub mod spacecraft;
 pub mod telemetry;
 mod time;
+pub mod utilities;
 
 #[cfg(test)]
 mod test_utils;

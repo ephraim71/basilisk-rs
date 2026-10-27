@@ -144,6 +144,7 @@ mod tests {
         });
         let imu_out = Output::new(ImuMsg {
             angular_rate_sensor_radps: Vector3::zeros(),
+            ..ImuMsg::default()
         });
         module.sun_direction_in_msg.connect(sun_out.slot());
         module.imu_in_msg.connect(imu_out.slot());

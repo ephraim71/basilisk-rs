@@ -1,4 +1,5 @@
-const NANOSECONDS_TO_SECONDS: f64 = 1.0e-9;
+/// Upstream `NANO2SEC`: simulation nanoseconds to seconds.
+pub(crate) const NANO2SEC: f64 = 1.0e-9;
 const MAX_SAFE_NANOSECOND_DELTA: u64 = 1_u64 << f64::MANTISSA_DIGITS;
 
 /// Signed time difference in seconds: preserve the sign of the difference
@@ -15,7 +16,7 @@ pub(crate) fn diff_nanos_to_seconds(first_nanos: u64, second_nanos: u64) -> f64 
         return f64::NAN;
     }
 
-    sign * magnitude_nanos as f64 * NANOSECONDS_TO_SECONDS
+    sign * magnitude_nanos as f64 * NANO2SEC
 }
 
 #[cfg(test)]

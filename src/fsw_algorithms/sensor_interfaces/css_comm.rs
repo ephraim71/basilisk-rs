@@ -4,10 +4,12 @@
 //! Each update scales the raw reading of every configured sensor by
 //! `max_sensor_value`, adds a Chebyshev-series residual correction (Kelly
 //! calibration) evaluated at the scaled value, clips the result to `[0, 1]` and
-//! publishes the corrected cosines as a new [`CssArraySensorMsg`]. Entries past
-//! `num_sensors` and the time tag stay zero, as upstream.
+//! publishes it. Upstream reads and writes one `CSSArraySensorMsg` for the
+//! whole constellation; here every sensor has its own [`SunSensorMsg`] input
+//! and output, and an output is its input message with `sensed_value` replaced
+//! by the corrected cosine (`true_value` and `valid` pass through).
 
-use crate::messages::{CssArraySensorMsg, Input, MAX_NUM_CSS_SENSORS, Output};
+use crate::messages::{Input, MAX_NUM_CSS_SENSORS, Output, SunSensorMsg};
 use crate::{Module, SimulationContext};
 
 /// User-settable parameters of [`CssComm`]. `Default` is upstream's
@@ -16,8 +18,9 @@ use crate::{Module, SimulationContext};
 pub struct CssCommConfig {
     /// Instance name (upstream `ModelTag`).
     pub name: String,
-    /// Upstream `numSensors`: number of leading sensors to process. A reset
-    /// clamps it to [`MAX_NUM_CSS_SENSORS`] with a warning, as upstream.
+    /// Upstream `numSensors`: number of sensors, each with one input and one
+    /// output. [`CssComm::new`] sizes the ports from it, first clamping it to
+    /// [`MAX_NUM_CSS_SENSORS`] with a warning, as upstream's reset does.
     pub num_sensors: usize,
     /// Upstream `maxSensorValue`: raw reading that corresponds to a cosine of
     /// one; readings are divided by it.
@@ -46,30 +49,18 @@ impl Default for CssCommConfig {
 pub struct CssComm {
     /// User-settable parameters.
     pub config: CssCommConfig,
-    /// Upstream `sensorListInMsg`: raw CSS readings.
-    pub sensor_list_in_msg: Input<CssArraySensorMsg>,
-    /// Upstream `cssArrayOutMsg`: corrected cosine values.
-    pub css_array_out_msg: Output<CssArraySensorMsg>,
+    /// Upstream `sensorListInMsg`, one input per sensor: the raw reading is
+    /// `sensed_value`.
+    pub sensor_in_msgs: Vec<Input<SunSensorMsg>>,
+    /// Upstream `cssArrayOutMsg`, one output per sensor: the corrected cosine
+    /// is `sensed_value`.
+    pub css_out_msgs: Vec<Output<SunSensorMsg>>,
 }
 
 impl CssComm {
-    /// Creates the module with `config` and unconnected ports.
-    pub fn new(config: CssCommConfig) -> Self {
-        Self {
-            config,
-            sensor_list_in_msg: Input::default(),
-            css_array_out_msg: Output::default(),
-        }
-    }
-
-    /// Upstream `Reset_cssProcessTelem`. Upstream also zeroes its
-    /// `inputValues` buffer here, which nothing reads, so it is not ported.
-    fn check_configuration(&mut self) {
-        if !self.sensor_list_in_msg.is_connected() {
-            log::error!("cssComm.sensor_list_in_msg is not connected");
-        }
-
-        let config = &mut self.config;
+    /// Creates the module with `config` and one unconnected input and output
+    /// per sensor.
+    pub fn new(mut config: CssCommConfig) -> Self {
         if config.num_sensors > MAX_NUM_CSS_SENSORS {
             log::warn!(
                 "cssComm: the configured number of CSS sensors exceeds the maximum, {} > \
@@ -77,11 +68,40 @@ impl CssComm {
                 config.num_sensors
             );
             config.num_sensors = MAX_NUM_CSS_SENSORS;
-        } else if config.num_sensors == 0 {
-            log::warn!("cssComm: there are zero CSS configured");
+        }
+        Self {
+            // Not `vec![_; n]`: cloning a port aliases it, so every sensor
+            // would share one connection and one override stack.
+            sensor_in_msgs: (0..config.num_sensors).map(|_| Input::default()).collect(),
+            css_out_msgs: (0..config.num_sensors).map(|_| Output::default()).collect(),
+            config,
+        }
+    }
+
+    /// Upstream `Reset_cssProcessTelem`, except for its clamp of the sensor
+    /// count, which [`CssComm::new`] applies when it sizes the ports. Upstream
+    /// also zeroes its `inputValues` buffer here, which nothing reads, so it is
+    /// not ported.
+    ///
+    /// # Panics
+    ///
+    /// If `num_sensors` no longer matches the ports made by `new`.
+    fn check_configuration(&self) {
+        assert_eq!(
+            self.sensor_in_msgs.len(),
+            self.config.num_sensors,
+            "cssComm port count must match num_sensors, which is fixed by new",
+        );
+        for (index, input) in self.sensor_in_msgs.iter().enumerate() {
+            if !input.is_connected() {
+                log::error!("cssComm.sensor_in_msgs[{index}] is not connected");
+            }
         }
 
-        if config.max_sensor_value == 0.0 {
+        if self.config.num_sensors == 0 {
+            log::warn!("cssComm: there are zero CSS configured");
+        }
+        if self.config.max_sensor_value == 0.0 {
             log::warn!(
                 "cssComm: max_sensor_value is zero, so CSS values are normalized by zero, \
                  inducing faux saturation"
@@ -89,22 +109,12 @@ impl CssComm {
         }
     }
 
-    fn corrected_readings(&self, raw: &CssArraySensorMsg) -> CssArraySensorMsg {
+    /// The calibrated cosine of one raw reading, clipped to `[0, 1]`.
+    fn corrected_reading(&self, reading: f64) -> f64 {
         let config = &self.config;
-        let mut output = CssArraySensorMsg::default();
-        // The zip stops at the array length, so a count raised past the
-        // maximum after a reset (upstream reads out of bounds) is harmless.
-        for (corrected, reading) in output
-            .cos_values
-            .iter_mut()
-            .zip(raw.cos_values)
-            .take(config.num_sensors)
-        {
-            let scaled = reading / config.max_sensor_value;
-            // NaN passes through `clamp`, as through upstream's comparisons.
-            *corrected = (scaled + chebyshev_residual(scaled, &config.kelly_cheby)).clamp(0.0, 1.0);
-        }
-        output
+        let scaled = reading / config.max_sensor_value;
+        // NaN passes through `clamp`, as through upstream's comparisons.
+        (scaled + chebyshev_residual(scaled, &config.kelly_cheby)).clamp(0.0, 1.0)
     }
 }
 
@@ -126,7 +136,9 @@ fn chebyshev_residual(x: f64, coefficients: &[f64]) -> f64 {
 
 impl Module for CssComm {
     fn init(&mut self) {
-        self.css_array_out_msg.write(CssArraySensorMsg::default());
+        for output in &self.css_out_msgs {
+            output.write(SunSensorMsg::default());
+        }
         self.check_configuration();
     }
 
@@ -135,8 +147,13 @@ impl Module for CssComm {
     }
 
     fn update(&mut self, _context: &SimulationContext) {
-        let raw = self.sensor_list_in_msg.read();
-        self.css_array_out_msg.write(self.corrected_readings(&raw));
+        for (input, output) in self.sensor_in_msgs.iter().zip(&self.css_out_msgs) {
+            let raw = input.read();
+            output.write(SunSensorMsg {
+                sensed_value: self.corrected_reading(raw.sensed_value),
+                ..raw
+            });
+        }
     }
 }
 
@@ -145,7 +162,7 @@ mod tests {
     use hifitime::Epoch;
 
     use super::{CssComm, CssCommConfig, chebyshev_residual};
-    use crate::messages::{CssArraySensorMsg, MAX_NUM_CSS_SENSORS, Output};
+    use crate::messages::{MAX_NUM_CSS_SENSORS, Output, SunSensorMsg};
     use crate::simulation::Simulation;
     use crate::test_utils::MessageRecorder;
     use crate::{Module, SimulationContext};
@@ -187,10 +204,44 @@ mod tests {
         }
     }
 
+    /// One raw sensor message per reading.
+    fn sensor_outputs(readings: &[f64]) -> Vec<Output<SunSensorMsg>> {
+        readings
+            .iter()
+            .map(|&sensed_value| {
+                Output::new(SunSensorMsg {
+                    sensed_value,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    /// `module` with each input connected to the matching message of
+    /// `sensor_outputs` (extra messages stay unread), then initialized.
+    fn connected(mut module: CssComm, sensor_outputs: &[Output<SunSensorMsg>]) -> CssComm {
+        for (output, input) in sensor_outputs.iter().zip(&mut module.sensor_in_msgs) {
+            output.connect_to(input);
+        }
+        module.init();
+        module
+    }
+
+    /// The `sensed_value` of every output.
+    fn corrected_values(module: &CssComm) -> Vec<f64> {
+        module
+            .css_out_msgs
+            .iter()
+            .map(|output| output.read().sensed_value)
+            .collect()
+    }
+
     /// `test_cssComm`, all three parametrizations, with upstream's hard-coded
-    /// truth and `accuracy = 1e-6` on all 32 entries. Upstream runs a 0.5 s
-    /// task to t = 0.5 s, so two samples are recorded. The second case has
-    /// zero sensors and the third asks for 33, which reset clamps to 32.
+    /// truth and `accuracy = 1e-6` on every sensor. Upstream runs a 0.5 s task
+    /// to t = 0.5 s, so two samples are recorded. The second case has zero
+    /// sensors and the third asks for 33, which `new` clamps to 32. Upstream
+    /// also checks that the entries past `numSensors` of its array output stay
+    /// zero; with one output per sensor there are none.
     #[test]
     fn matches_upstream_css_comm_unit_test() {
         let accuracy = 1e-6;
@@ -200,36 +251,41 @@ mod tests {
             (MAX_NUM_CSS_SENSORS + 1, vec![200e-6; MAX_NUM_CSS_SENSORS]),
         ];
         for (num_sensors, sensor_data) in cases {
-            let mut truth = [0.0; MAX_NUM_CSS_SENSORS];
-            if num_sensors == 4 {
-                truth[..4].copy_from_slice(&[0.0, 0.45791653042, 1.0, 0.615444781018]);
-            }
-            if num_sensors == MAX_NUM_CSS_SENSORS + 1 {
-                truth = [0.45791653042; MAX_NUM_CSS_SENSORS];
-            }
+            let truth = match num_sensors {
+                4 => vec![0.0, 0.45791653042, 1.0, 0.615444781018],
+                0 => Vec::new(),
+                _ => vec![0.45791653042; MAX_NUM_CSS_SENSORS],
+            };
 
-            let sensor_output = Output::new(CssArraySensorMsg::from_active(&sensor_data));
+            let sensor_outputs = sensor_outputs(&sensor_data);
             let mut module = CssComm::new(upstream_config(num_sensors));
-            let mut recorder = MessageRecorder::default();
+            assert_eq!(module.css_out_msgs.len(), truth.len());
+            let mut recorders: Vec<MessageRecorder<SunSensorMsg>> =
+                truth.iter().map(|_| MessageRecorder::default()).collect();
             let mut simulation =
                 Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
-            simulation.connect(&sensor_output, &mut module.sensor_list_in_msg);
-            simulation.connect(&module.css_array_out_msg, &mut recorder.input_msg);
+            for (output, input) in sensor_outputs.iter().zip(&mut module.sensor_in_msgs) {
+                simulation.connect(output, input);
+            }
+            for (output, recorder) in module.css_out_msgs.iter().zip(&mut recorders) {
+                simulation.connect(output, &mut recorder.input_msg);
+            }
             simulation.add_module("cssComm", &mut module, TASK_RATE_NANOS, 0);
-            simulation.add_module("recorder", &mut recorder, TASK_RATE_NANOS, 0);
+            for recorder in &mut recorders {
+                simulation.add_module("recorder", recorder, TASK_RATE_NANOS, 0);
+            }
             simulation.run_for(TASK_RATE_NANOS);
             drop(simulation);
 
-            assert_eq!(recorder.samples.len(), 2, "numSensors = {num_sensors}");
-            for sample in &recorder.samples {
-                for (index, (value, expected)) in sample.cos_values.iter().zip(truth).enumerate() {
+            for (index, (recorder, expected)) in recorders.iter().zip(&truth).enumerate() {
+                assert_eq!(recorder.samples.len(), 2, "numSensors = {num_sensors}");
+                for sample in &recorder.samples {
+                    let value = sample.sensed_value;
                     assert!(
                         (value - expected).abs() <= accuracy,
-                        "numSensors = {num_sensors}, cosValues[{index}] = {value}, truth \
-                         {expected}"
+                        "numSensors = {num_sensors}, sensor {index} = {value}, truth {expected}"
                     );
                 }
-                assert_eq!(sample.time_tag_s, 0.0);
             }
             assert_eq!(
                 module.config.num_sensors,
@@ -256,18 +312,10 @@ mod tests {
             0.5937680246323473,
             0.636175201890182,
         ];
-        let sensor_output = Output::new(CssArraySensorMsg::from_active(&raw));
-        let mut module = CssComm::new(upstream_config(raw.len()));
-        sensor_output.connect_to(&mut module.sensor_list_in_msg);
-        module.init();
+        let sensor_outputs = sensor_outputs(&raw);
+        let mut module = connected(CssComm::new(upstream_config(raw.len())), &sensor_outputs);
         module.update(&context(0));
-        let output = module.css_array_out_msg.read();
-        assert_eq!(output.cos_values[..raw.len()], upstream_c);
-        assert!(
-            output.cos_values[raw.len()..]
-                .iter()
-                .all(|&value| value == 0.0)
-        );
+        assert_eq!(corrected_values(&module), upstream_c);
     }
 
     /// Not upstream: the residual against the closed form
@@ -293,51 +341,58 @@ mod tests {
     }
 
     /// Not upstream: without a Chebyshev fit the module only scales and clips,
-    /// and the configuration is read at update time, not in `new`.
+    /// and the scale is read at update time, not in `new`.
     #[test]
-    fn scales_and_clips_without_a_fit_using_config_set_after_new() {
-        let sensor_output =
-            Output::new(CssArraySensorMsg::from_active(&[1.0, 2.0, 3.0, -1.0, 2.0]));
-        let mut module = CssComm::new(CssCommConfig::default());
-        module.config.num_sensors = 4;
+    fn scales_and_clips_without_a_fit_using_a_scale_set_after_new() {
+        let sensor_outputs = sensor_outputs(&[1.0, 2.0, 3.0, -1.0, 2.0]);
+        let mut module = CssComm::new(CssCommConfig {
+            num_sensors: 4,
+            ..Default::default()
+        });
         module.config.max_sensor_value = 4.0;
-        sensor_output.connect_to(&mut module.sensor_list_in_msg);
-        module.init();
+        let mut module = connected(module, &sensor_outputs);
         module.update(&context(0));
-
-        let output = module.css_array_out_msg.read();
-        assert_eq!(output.cos_values[..5], [0.25, 0.5, 0.75, 0.0, 0.0]);
+        assert_eq!(corrected_values(&module), [0.25, 0.5, 0.75, 0.0]);
 
         // Readings above the maximum saturate at one.
         module.config.max_sensor_value = 1.5;
         module.update(&context(TASK_RATE_NANOS));
-        let output = module.css_array_out_msg.read();
-        assert_eq!(output.cos_values[..4], [1.0 / 1.5, 1.0, 1.0, 0.0]);
+        assert_eq!(corrected_values(&module), [1.0 / 1.5, 1.0, 1.0, 0.0]);
     }
 
     /// Not upstream: a single constant coefficient biases every reading, and
-    /// the input time tag is not propagated (upstream writes a zeroed payload).
+    /// the rest of the raw message passes through.
     #[test]
     fn a_constant_residual_biases_every_reading() {
-        let mut readings = CssArraySensorMsg::from_active(&[0.25, 0.5]);
-        readings.time_tag_s = 12.5;
-        let sensor_output = Output::new(readings);
-        let mut module = CssComm::new(CssCommConfig {
+        let sensor_outputs = [
+            Output::new(SunSensorMsg {
+                sensed_value: 0.25,
+                true_value: 0.2,
+                valid: true,
+            }),
+            Output::new(SunSensorMsg {
+                sensed_value: 0.5,
+                true_value: 0.75,
+                valid: false,
+            }),
+        ];
+        let config = CssCommConfig {
             num_sensors: 2,
             max_sensor_value: 1.0,
             kelly_cheby: vec![0.125],
             ..Default::default()
-        });
-        sensor_output.connect_to(&mut module.sensor_list_in_msg);
-        module.init();
+        };
+        let mut module = connected(CssComm::new(config), &sensor_outputs);
         module.update(&context(0));
 
-        let output = module.css_array_out_msg.read();
-        assert_eq!(output.cos_values[..3], [0.375, 0.625, 0.0]);
-        assert_eq!(output.time_tag_s, 0.0);
+        assert_eq!(corrected_values(&module), [0.375, 0.625]);
+        let first = module.css_out_msgs[0].read();
+        assert_eq!((first.true_value, first.valid), (0.2, true));
+        let second = module.css_out_msgs[1].read();
+        assert_eq!((second.true_value, second.valid), (0.75, false));
     }
 
-    /// Not upstream: an unconnected input reads zeros, which a nonzero
+    /// Not upstream: an unconnected input reads zero, which a nonzero
     /// constant residual still lifts, as upstream.
     #[test]
     fn unconnected_input_reads_zero_readings() {
@@ -349,9 +404,19 @@ mod tests {
         });
         module.init();
         module.update(&context(0));
-        assert_eq!(
-            module.css_array_out_msg.read().cos_values[..4],
-            [0.5, 0.5, 0.5, 0.0]
-        );
+        assert_eq!(corrected_values(&module), [0.5, 0.5, 0.5]);
+    }
+
+    /// Not upstream: the ports are sized in `new`, so a sensor count changed
+    /// afterwards is a configuration error.
+    #[test]
+    #[should_panic(expected = "num_sensors")]
+    fn init_rejects_a_sensor_count_changed_after_new() {
+        let mut module = CssComm::new(CssCommConfig {
+            num_sensors: 2,
+            ..Default::default()
+        });
+        module.config.num_sensors = 3;
+        module.init();
     }
 }

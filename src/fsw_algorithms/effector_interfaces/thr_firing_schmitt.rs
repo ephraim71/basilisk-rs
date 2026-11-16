@@ -11,10 +11,12 @@
 //! is handled by adding each thruster's maximum thrust to the negative force
 //! request.
 
-use super::thr_firing_remainder::{BaseThrustState, ControlPeriodClock, requested_on_time_s};
+use super::thr_firing_remainder::{
+    BaseThrustState, ControlPeriodClock, padded_on_times, requested_on_time_s,
+};
 use crate::messages::{
-    Input, Output, ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg,
-    ThrusterArrayOnTimeCommandMsg,
+    Input, MAX_EFF_COUNT, Output, ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg,
+    ThrusterCommandMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -57,8 +59,10 @@ pub struct ThrFiringSchmitt {
     pub thr_force_in_msg: Input<ThrusterArrayForceCommandMsg>,
     /// Upstream `thrConfInMsg`: thruster cluster configuration, read at reset.
     pub thr_conf_in_msg: Input<ThrusterArrayConfigMsg>,
-    /// Upstream `onTimeOutMsg`: commanded thruster on-times.
-    pub on_time_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// Upstream `onTimeOutMsg`: commanded on-time of each thruster, one
+    /// output per thruster in cluster order, registered with
+    /// [`ThrFiringSchmitt::add_thruster_command_output`].
+    pub on_time_out_msgs: Vec<Output<ThrusterCommandMsg>>,
     /// Upstream `maxThrust` \[N\], one entry per installed thruster.
     max_thrust_n: Vec<f64>,
     /// Upstream `lastThrustState`: whether each thruster was left on.
@@ -74,11 +78,25 @@ impl ThrFiringSchmitt {
             config,
             thr_force_in_msg: Input::default(),
             thr_conf_in_msg: Input::default(),
-            on_time_out_msg: Output::default(),
+            on_time_out_msgs: Vec::new(),
             max_thrust_n: Vec::new(),
             last_thrust_on: Vec::new(),
             clock: ControlPeriodClock::default(),
         }
+    }
+
+    /// Registers one independently connectable thruster command output. The
+    /// outputs follow the cluster order: the first one registered carries the
+    /// on-time of the first thruster.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.on_time_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.on_time_out_msgs.push(Output::default());
+        self.on_time_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
     }
 
     /// Upstream `Reset_thrFiringSchmitt`: reads the thruster configuration,
@@ -104,11 +122,12 @@ impl ThrFiringSchmitt {
             .collect();
         self.last_thrust_on = vec![false; self.max_thrust_n.len()];
 
-        self.on_time_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.on_time_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
     }
 
-    fn compute_on_times(&mut self, call_time_nanos: u64) -> ThrusterArrayOnTimeCommandMsg {
+    fn compute_on_times(&mut self, call_time_nanos: u64) -> [f64; MAX_EFF_COUNT] {
         let base_thrust_state = self.config.base_thrust_state;
         let Some(control_period_s) = self.clock.tick(call_time_nanos) else {
             return base_thrust_state.first_call_on_times(self.max_thrust_n.len());
@@ -127,7 +146,7 @@ impl ThrFiringSchmitt {
                     .schmitt_trigger(on_time_s, control_period_s, last_on)
             })
             .collect();
-        ThrusterArrayOnTimeCommandMsg::from_active(&on_times)
+        padded_on_times(&on_times)
     }
 }
 
@@ -157,8 +176,9 @@ impl ThrFiringSchmittConfig {
 
 impl Module for ThrFiringSchmitt {
     fn init(&mut self) {
-        self.on_time_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.on_time_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.reset(0);
     }
 
@@ -168,7 +188,11 @@ impl Module for ThrFiringSchmitt {
 
     fn update(&mut self, context: &SimulationContext) {
         let on_times = self.compute_on_times(context.current_sim_nanos);
-        self.on_time_out_msg.write(on_times);
+        for (index, output) in self.on_time_out_msgs.iter().enumerate() {
+            output.write(ThrusterCommandMsg {
+                on_time_s: on_times[index],
+            });
+        }
     }
 }
 
@@ -177,9 +201,11 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::Vector3;
 
+    use crate::dynamics::thruster_dynamic_effector::{
+        ThrusterDynamicEffector, ThrusterDynamicEffectorConfig,
+    };
     use crate::messages::{
-        MAX_EFF_COUNT, Output, ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg,
-        ThrusterConfigMsg,
+        Output, ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg, ThrusterConfigMsg,
     };
     use crate::{Module, SimulationContext};
 
@@ -234,11 +260,27 @@ mod tests {
         (start_nanos..=stop_nanos).step_by(TASK_PERIOD_NANOS as usize)
     }
 
+    /// Registers `count` thruster command outputs.
+    fn add_outputs(module: &mut ThrFiringSchmitt, count: usize) {
+        for _ in 0..count {
+            module.add_thruster_command_output();
+        }
+    }
+
+    /// The on-times on every registered output, in thruster order.
+    fn on_times(module: &ThrFiringSchmitt) -> Vec<f64> {
+        module
+            .on_time_out_msgs
+            .iter()
+            .map(|output| output.read().on_time_s)
+            .collect()
+    }
+
     /// Updates at `nanos` and returns the on-times of the eight thrusters, as
     /// the pytest's recorder logs them.
     fn record(module: &mut ThrFiringSchmitt, nanos: u64) -> [f64; 8] {
         module.update(&context(nanos));
-        let output = module.on_time_out_msg.read().on_time_request_s;
+        let output = on_times(module);
         std::array::from_fn(|index| output[index])
     }
 
@@ -309,7 +351,8 @@ mod tests {
     /// 3 s (and, with `resetCheck`, a Reset at 3 s and a run to 5.5 s), then a
     /// re-initialization with a nonzero request and a final Reset that must
     /// zero the output. Upstream's `compareArray` only checks the first three
-    /// thrusters of each sample; all eight are checked here.
+    /// thrusters of each sample; all eight are checked here, one command
+    /// output per thruster.
     #[test]
     fn matches_upstream_thr_firing_schmitt_unit_test() {
         for (reset_check, dv_on) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -367,6 +410,7 @@ mod tests {
             module.config.level_off = 0.25;
             cluster.connect_to(&mut module.thr_conf_in_msg);
             force_cmd.connect_to(&mut module.thr_force_in_msg);
+            add_outputs(&mut module, 8);
             module.init();
 
             let mut samples = Vec::new();
@@ -402,8 +446,8 @@ mod tests {
             ticks(0, stop_nanos).for_each(|nanos| module.update(&context(nanos)));
             module.reset(0);
             // `compareVector`: the norm of the difference.
-            let output = module.on_time_out_msg.read().on_time_request_s;
-            assert_eq!(output.len(), MAX_EFF_COUNT);
+            let output = on_times(&module);
+            assert_eq!(output.len(), 8);
             assert!(output.iter().map(|t| t * t).sum::<f64>().sqrt() <= 1e-3);
         }
     }
@@ -423,6 +467,7 @@ mod tests {
         });
         cluster.connect_to(&mut module.thr_conf_in_msg);
         force_cmd.connect_to(&mut module.thr_force_in_msg);
+        add_outputs(&mut module, 1);
         module.init();
         module.update(&context(1_000_000_000));
 
@@ -433,7 +478,7 @@ mod tests {
             .map(|(&force_n, seconds)| {
                 force_cmd.write(ThrusterArrayForceCommandMsg::from_active(&[force_n]));
                 module.update(&context(seconds * 1_000_000_000));
-                module.on_time_out_msg.read().on_time_request_s[0]
+                module.on_time_out_msgs[0].read().on_time_s
             })
             .collect();
         // Level 0.5 starting off stays off; 0.8 turns on; 0.2 turns off; 0.5
@@ -444,13 +489,86 @@ mod tests {
         // following in-between level keeps firing.
         force_cmd.write(ThrusterArrayForceCommandMsg::from_active(&[0.6]));
         module.update(&context(7_000_000_000));
-        assert_eq!(module.on_time_out_msg.read().on_time_request_s[0], 0.6);
+        assert_eq!(module.on_time_out_msgs[0].read().on_time_s, 0.6);
         force_cmd.write(ThrusterArrayForceCommandMsg::from_active(&[0.25]));
         module.update(&context(8_000_000_000));
-        assert_eq!(module.on_time_out_msg.read().on_time_request_s[0], 0.5);
+        assert_eq!(module.on_time_out_msgs[0].read().on_time_s, 0.5);
         assert!(module.last_thrust_on[0]);
 
         module.reset(8_000_000_000);
         assert!(!module.last_thrust_on[0]);
+    }
+
+    /// Each per-thruster output drives its own thruster effector, which fires
+    /// for the commanded on-time and then shuts down.
+    ///
+    /// The effector starts a firing only when its command changes, so every
+    /// control period here requests on-times that differ from the previous
+    /// ones.
+    #[test]
+    fn per_thruster_outputs_fire_thruster_effectors_for_the_commanded_on_time() {
+        let cluster = Output::new(ThrusterArrayConfigMsg::from_active(
+            &[ThrusterConfigMsg {
+                max_thrust_n: 1.0,
+                ..Default::default()
+            }; 2],
+        ));
+        let force_cmd = Output::new(ThrusterArrayForceCommandMsg::default());
+        let mut module = ThrFiringSchmitt::new(ThrFiringSchmittConfig {
+            level_on: 0.75,
+            level_off: 0.25,
+            thr_min_fire_time_s: 0.2,
+            ..Default::default()
+        });
+        cluster.connect_to(&mut module.thr_conf_in_msg);
+        force_cmd.connect_to(&mut module.thr_force_in_msg);
+        let mut thrusters: Vec<ThrusterDynamicEffector> = [Vector3::x(), -Vector3::x()]
+            .into_iter()
+            .map(|direction| {
+                let mut thruster = ThrusterDynamicEffector::new(
+                    ThrusterDynamicEffectorConfig::simple("thr", Vector3::zeros(), direction, 1.0),
+                );
+                module
+                    .add_thruster_command_output()
+                    .connect_to(&mut thruster.command_in);
+                thruster
+            })
+            .collect();
+        module.init();
+
+        // Forces [N] requested from each control-period update on; with 1 N
+        // thrusters and a 1 s period they are on-times in seconds. The update
+        // at 1 s only starts the control-period clock.
+        let requests = [
+            (1_000_000_000, [0.0, 0.0]),
+            (2_000_000_000, [0.25, 0.0]),
+            (3_000_000_000, [0.65, 0.45]),
+            (4_000_000_000, [0.0, 0.0]),
+        ];
+        // Expected firings per thruster: (start, on-time) [s].
+        let firings: [&[(f64, f64)]; 2] = [&[(2.0, 0.25), (3.0, 0.65)], &[(3.0, 0.45)]];
+
+        // The FSW task runs every 1 s, ahead of the dynamics stepped every
+        // 0.1 s; no step falls on the end of a firing.
+        for step in 10..50_u64 {
+            let nanos = step * 100_000_000;
+            if let Some((_, forces_n)) = requests.iter().find(|(time, _)| *time == nanos) {
+                force_cmd.write(ThrusterArrayForceCommandMsg::from_active(forces_n));
+                module.update(&context(nanos));
+            }
+            let time_s = nanos as f64 * 1e-9;
+            for (index, thruster) in thrusters.iter_mut().enumerate() {
+                thruster.pre_integration(nanos);
+                let fires = firings[index]
+                    .iter()
+                    .any(|&(start_s, on_time_s)| (start_s..start_s + on_time_s).contains(&time_s));
+                let thrust_factor = thruster.operation.thrust_factor;
+                assert_eq!(
+                    thrust_factor > 0.0,
+                    fires,
+                    "thruster {index} at {time_s} s: thrust factor {thrust_factor}"
+                );
+            }
+        }
     }
 }

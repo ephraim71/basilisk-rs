@@ -6,9 +6,9 @@
 //! [`super::dv_att_effect`] (upstream `computeSingleThrustBlock`).
 //!
 //! Upstream quirk kept: unlike `dvAttEffect`, Reset only checks the input and
-//! leaves the last on-time command on the output message.
+//! leaves the last on-time command on the outputs.
 
-use crate::messages::{BodyTorqueCommandMsg, Input, Output, ThrusterArrayOnTimeCommandMsg};
+use crate::messages::{BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output, ThrusterCommandMsg};
 use crate::{Module, SimulationContext};
 
 use super::dv_att_effect::ThrustGroupConfig;
@@ -38,8 +38,10 @@ pub struct SunSafeAcs {
     pub config: SunSafeAcsConfig,
     /// Upstream `cmdTorqueBodyInMsg`.
     pub cmd_torque_body_in_msg: Input<BodyTorqueCommandMsg>,
-    /// Upstream `thrData.thrOnTimeOutMsg`.
-    pub thr_on_time_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// Upstream `thrData.thrOnTimeOutMsg`: commanded on-time of each thruster
+    /// of the group, one output per thruster in `thr_on_map` order, registered
+    /// with [`SunSafeAcs::add_thruster_command_output`].
+    pub thr_on_time_out_msgs: Vec<Output<ThrusterCommandMsg>>,
 }
 
 impl SunSafeAcs {
@@ -48,8 +50,22 @@ impl SunSafeAcs {
         Self {
             config,
             cmd_torque_body_in_msg: Input::default(),
-            thr_on_time_out_msg: Output::default(),
+            thr_on_time_out_msgs: Vec::new(),
         }
+    }
+
+    /// Registers one independently connectable thruster command output. The
+    /// outputs follow the group's `thr_on_map` order: the first one registered
+    /// carries the on-time of the first effector.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.thr_on_time_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.thr_on_time_out_msgs.push(Output::default());
+        self.thr_on_time_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
     }
 
     /// Upstream `Reset_sunSafeACS`: only checks the input.
@@ -63,8 +79,9 @@ impl SunSafeAcs {
 
 impl Module for SunSafeAcs {
     fn init(&mut self) {
-        self.thr_on_time_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.thr_on_time_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.reset(0);
     }
 
@@ -74,8 +91,12 @@ impl Module for SunSafeAcs {
 
     fn update(&mut self, _context: &SimulationContext) {
         let torque_request_body_nm = self.cmd_torque_body_in_msg.read().torque_request_body_nm;
-        self.thr_on_time_out_msg
-            .write(self.config.thr_data.on_time_command(torque_request_body_nm));
+        let on_times = self.config.thr_data.on_time_command(torque_request_body_nm);
+        for (index, output) in self.thr_on_time_out_msgs.iter().enumerate() {
+            output.write(ThrusterCommandMsg {
+                on_time_s: on_times[index],
+            });
+        }
     }
 }
 
@@ -88,7 +109,7 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::Vector3;
 
-    use crate::messages::{BodyTorqueCommandMsg, MAX_EFF_COUNT, Output};
+    use crate::messages::{BodyTorqueCommandMsg, Output, ThrusterCommandMsg};
     use crate::simulation::Simulation;
     use crate::test_utils::MessageRecorder;
     use crate::{Module, SimulationContext};
@@ -100,6 +121,22 @@ mod tests {
         SimulationContext {
             current_sim_nanos,
             current_epoch: Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
+        }
+    }
+
+    /// The on-times on every registered output, in thruster order.
+    fn on_times(module: &SunSafeAcs) -> Vec<f64> {
+        module
+            .thr_on_time_out_msgs
+            .iter()
+            .map(|output| output.read().on_time_s)
+            .collect()
+    }
+
+    /// Registers one command output per effector of the group.
+    fn add_outputs(module: &mut SunSafeAcs) {
+        for _ in 0..module.config.thr_data.thr_on_map.len() {
+            module.add_thruster_command_output();
         }
     }
 
@@ -126,23 +163,32 @@ mod tests {
             thr_data: six_thruster_group(),
             ..Default::default()
         });
-        let mut recorder = MessageRecorder::default();
+        // One recorder per thruster output.
+        let mut recorders: Vec<MessageRecorder<ThrusterCommandMsg>> =
+            (0..6).map(|_| MessageRecorder::default()).collect();
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
         simulation.connect(&command, &mut module.cmd_torque_body_in_msg);
-        simulation.connect(&module.thr_on_time_out_msg, &mut recorder.input_msg);
+        for recorder in &mut recorders {
+            simulation.connect(
+                module.add_thruster_command_output(),
+                &mut recorder.input_msg,
+            );
+        }
         simulation.add_module("sunSafeACS", &mut module, 500_000_000, 0);
-        simulation.add_module("recorder", &mut recorder, 500_000_000, 0);
+        for recorder in &mut recorders {
+            simulation.add_module("recorder", recorder, 500_000_000, 0);
+        }
         simulation.run_for(1_000_000_000);
 
         // On-times 0.1, -0.1 -> 0, -0.3 -> 0, 0.3, 0.005 -> 0 (below the
         // 0.01 minimum), -0.005 -> 0; the two longest are thrusters 3 and 0.
-        let mut expected = [0.0; MAX_EFF_COUNT];
-        expected[0] = 0.1;
-        expected[3] = 0.3;
-        assert!(!recorder.samples.is_empty());
-        for sample in &recorder.samples {
-            assert_eq!(sample.on_time_request_s, expected);
+        let expected = [0.1, 0.0, 0.0, 0.3, 0.0, 0.0];
+        for (recorder, expected) in recorders.iter().zip(expected) {
+            assert!(!recorder.samples.is_empty());
+            for sample in &recorder.samples {
+                assert_eq!(sample.on_time_s, expected);
+            }
         }
     }
 
@@ -160,14 +206,16 @@ mod tests {
             ..Default::default()
         });
         command.connect_to(&mut module.cmd_torque_body_in_msg);
+        add_outputs(&mut module);
         module.init();
         module.update(&context(0));
 
         // 0.008 alone is below 0.01; only thruster 4 (0.005 + 0.008) passes.
-        let on_times = module.thr_on_time_out_msg.read().on_time_request_s;
-        assert!((on_times[4] - 0.013).abs() <= 1e-15);
+        let output = on_times(&module);
+        assert_eq!(output.len(), 6);
+        assert!((output[4] - 0.013).abs() <= 1e-15);
         assert!(
-            on_times
+            output
                 .iter()
                 .enumerate()
                 .all(|(index, on_time)| index == 4 || *on_time == 0.0)
@@ -184,10 +232,12 @@ mod tests {
             ..Default::default()
         });
         command.connect_to(&mut module.cmd_torque_body_in_msg);
+        add_outputs(&mut module);
         module.init();
         module.update(&context(0));
-        let before = module.thr_on_time_out_msg.read();
+        let before = on_times(&module);
+        assert!(before.iter().any(|on_time| *on_time != 0.0));
         module.reset(500_000_000);
-        assert_eq!(module.thr_on_time_out_msg.read(), before);
+        assert_eq!(on_times(&module), before);
     }
 }

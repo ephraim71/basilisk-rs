@@ -52,9 +52,6 @@ mod body_force_command;
 mod body_heading;
 mod body_torque_command;
 mod camera_config;
-mod css_array_sensor;
-mod css_config;
-mod css_unit_config;
 mod device_command;
 mod device_status;
 mod dipole_request_body;
@@ -96,8 +93,6 @@ mod reconfig_burn_array_info;
 mod reconfig_burn_info;
 mod rw_array_config;
 mod rw_availability;
-mod rw_config_element;
-mod rw_constellation;
 mod rw_speed;
 mod solar_flux;
 mod spacecraft_diagnostics;
@@ -115,7 +110,6 @@ mod tam_sensor_body;
 mod tdb_vehicle_clock_correlation;
 mod thruster_array_config;
 mod thruster_array_force_command;
-mod thruster_array_on_time_command;
 mod thruster_command;
 mod thruster_config;
 mod translation_reference;
@@ -135,9 +129,6 @@ pub use body_force_command::BodyForceCommandMsg;
 pub use body_heading::BodyHeadingMsg;
 pub use body_torque_command::BodyTorqueCommandMsg;
 pub use camera_config::{CameraConfigMsg, CameraRenderMode, VizSetting};
-pub use css_array_sensor::CssArraySensorMsg;
-pub use css_config::CssConfigMsg;
-pub use css_unit_config::CssUnitConfigMsg;
 pub use device_command::DeviceCommandMsg;
 pub use device_status::{DeviceState, DeviceStatusMsg};
 pub use dipole_request_body::DipoleRequestBodyMsg;
@@ -178,8 +169,6 @@ pub use reconfig_burn_array_info::ReconfigBurnArrayInfoMsg;
 pub use reconfig_burn_info::{ReconfigBurnInfoMsg, ReconfigBurnStatus};
 pub use rw_array_config::RwArrayConfigMsg;
 pub use rw_availability::{RwAvailability, RwAvailabilityMsg};
-pub use rw_config_element::RwConfigElementMsg;
-pub use rw_constellation::RwConstellationMsg;
 pub use rw_speed::RwSpeedMsg;
 pub use solar_flux::SolarFluxMsg;
 pub use spacecraft_diagnostics::SpacecraftDiagnosticsMsg;
@@ -197,7 +186,6 @@ pub use tam_sensor_body::TamSensorBodyMsg;
 pub use tdb_vehicle_clock_correlation::TdbVehicleClockCorrelationMsg;
 pub use thruster_array_config::ThrusterArrayConfigMsg;
 pub use thruster_array_force_command::ThrusterArrayForceCommandMsg;
-pub use thruster_array_on_time_command::ThrusterArrayOnTimeCommandMsg;
 pub use thruster_command::ThrusterCommandMsg;
 pub use thruster_config::ThrusterConfigMsg;
 pub use translation_reference::TranslationReferenceMsg;
@@ -213,7 +201,8 @@ pub use vehicle_config::VehicleConfigMsg;
 /// Upstream `MAX_EFF_CNT`: capacity of every per-effector array (thrusters,
 /// reaction wheels, torque bars, motors).
 pub const MAX_EFF_COUNT: usize = 36;
-/// Upstream `MAX_NUM_CSS_SENSORS`: capacity of the CSS constellation arrays.
+/// Upstream `MAX_NUM_CSS_SENSORS`: most coarse sun sensors `cssComm` processes
+/// and `sunlineSuKF` holds Kelly fits for.
 pub const MAX_NUM_CSS_SENSORS: usize = 32;
 /// Upstream `MAX_CIRCLE_NUM`: capacity of [`OpNavCirclesMsg`].
 pub const MAX_CIRCLE_NUM: usize = 10;

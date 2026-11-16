@@ -15,16 +15,14 @@
 //!
 //! Upstream decides whether a CSS reading is new from the message header: it
 //! is processed when it has been written (`isWritten`) no earlier than the
-//! filter time (`timeWritten`). Rust ports carry no write metadata, so a
-//! connected `css_data_in_msg` counts as written and its `time_tag_s` stands
-//! for the write time. Upstream's CSS constellation stamps `timeTag` with the
-//! write time (`CurrentSimNanos * NANO2SEC`), so the two agree for that
-//! producer, and an unconnected input behaves like upstream's never-written
-//! message. Two cases differ from upstream: a producer that leaves
-//! `time_tag_s` at zero (upstream `cssComm` does) is never processed once the
-//! filter time has passed zero, and a connected producer that has not written
-//! yet still holds a message stamped 0 s, which a filter reset at 0 s
-//! processes as a reading (upstream skips it).
+//! filter time (`timeWritten`). The per-sensor [`SunSensorMsg`] inputs carry
+//! no header and no time tag, so the readings count as written at the current
+//! update when every one of `css_data_in_msgs` is connected — what upstream
+//! sees when the CSS producers run before the filter on every tick — and an
+//! unconnected input behaves like upstream's never-written message. The
+//! header-driven logic itself is unchanged, with the write time as an
+//! explicit argument, and the tests drive it with upstream's exact header
+//! values.
 //!
 //! The measurement-model, gain and update helpers are shared with
 //! [`super::okeefe_ekf`], whose upstream code is the same algorithm on three
@@ -34,9 +32,13 @@ use nalgebra::{
     Const, DMatrix, DVector, Dyn, Matrix3, Matrix6, OMatrix, SMatrix, SVector, Vector3, Vector6,
 };
 
+use super::CssUnit;
+use super::css_inputs::{
+    check_css_inputs, configured_css_units, css_inputs, css_readings, css_written_nanos,
+};
 use crate::messages::{
-    CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, Input, MAX_N_CSS_MEAS,
-    NavigationAttitudeMsg, Output, SKF_N_STATES, SunlineFilterMsg,
+    Input, MAX_N_CSS_MEAS, NavigationAttitudeMsg, Output, SKF_N_STATES, SunSensorMsg,
+    SunlineFilterMsg,
 };
 use crate::time::NANO2SEC;
 use crate::utilities::linear_algebra::{m_inverse, normalize_or_zero, sequential_product};
@@ -62,6 +64,11 @@ pub struct SunlineEkfConfig {
     /// carried into a step (before its propagation) exceeds it, measurement
     /// updates use the classical instead of the extended form.
     pub ekf_switch: f64,
+    /// Upstream `cssConfigInMsg`: the CSS normals and biases, read at Reset,
+    /// one entry per input of [`SunlineEkf::css_data_in_msgs`] (which
+    /// [`SunlineEkf::new`] creates from it). Upstream uses at most
+    /// `MAX_N_CSS_MEAS` sensors.
+    pub css_units: Vec<CssUnit>,
 }
 
 impl Default for SunlineEkfConfig {
@@ -72,6 +79,7 @@ impl Default for SunlineEkfConfig {
             q_proc_val: 0.0,
             sensor_use_thresh: 0.0,
             ekf_switch: 0.0,
+            css_units: Vec::new(),
         }
     }
 }
@@ -84,10 +92,9 @@ impl Default for SunlineEkfConfig {
 pub struct SunlineEkf {
     /// User-settable parameters.
     pub config: SunlineEkfConfig,
-    /// Upstream `cssDataInMsg`: the CSS cosine readings.
-    pub css_data_in_msg: Input<CssArraySensorMsg>,
-    /// Upstream `cssConfigInMsg`: the CSS normals and biases, read at Reset.
-    pub css_config_in_msg: Input<CssConfigMsg>,
+    /// Upstream `cssDataInMsg`, one input per sensor of `config.css_units`:
+    /// its cosine reading is `sensed_value`.
+    pub css_data_in_msgs: Vec<Input<SunSensorMsg>>,
     /// Upstream `navStateOutMsg`: the unit sun heading and the filter time.
     pub nav_state_out_msg: Output<NavigationAttitudeMsg>,
     /// Upstream `filtDataOutMsg`: state, state error, covariance and post-fit
@@ -105,19 +112,18 @@ pub struct SunlineEkf {
     state_transition: Matrix6<f64>,
     dyn_mat: Matrix6<f64>,
     proc_noise: Matrix3<f64>,
-    css_units: Vec<CssUnitConfigMsg>,
+    css_units: Vec<CssUnit>,
     observations: CssObservations<SKF_N_STATES>,
     post_fits: SVector<f64, MAX_N_CSS_MEAS>,
 }
 
 impl SunlineEkf {
-    /// A filter with unconnected inputs and a zero estimate; seed `state`,
-    /// `state_error` and `covar` before `init`.
+    /// A filter with one unconnected CSS input per configured sensor and a
+    /// zero estimate; seed `state`, `state_error` and `covar` before `init`.
     pub fn new(config: SunlineEkfConfig) -> Self {
         Self {
+            css_data_in_msgs: css_inputs(&config.css_units),
             config,
-            css_data_in_msg: Input::default(),
-            css_config_in_msg: Input::default(),
             nav_state_out_msg: Output::default(),
             filt_data_out_msg: Output::default(),
             state: Vector6::zeros(),
@@ -138,14 +144,13 @@ impl SunlineEkf {
     /// Upstream `Reset_sunlineEKF`: caches the CSS configuration and restarts
     /// the filter bookkeeping at `call_time_nanos`. The estimate (`state`,
     /// `state_error`, `covar`) and the post-fit residuals are kept, as upstream.
+    ///
+    /// # Panics
+    ///
+    /// If `config.css_units` no longer has one entry per CSS input.
     pub fn reset(&mut self, call_time_nanos: u64) {
-        if !self.css_config_in_msg.is_connected() {
-            log::error!("sunlineEKF.css_config_in_msg is not connected");
-        }
-        if !self.css_data_in_msg.is_connected() {
-            log::error!("sunlineEKF.css_data_in_msg is not connected");
-        }
-        self.css_units = configured_css_units(&self.css_config_in_msg.read(), "sunlineEKF");
+        check_css_inputs(&self.css_data_in_msgs, &self.config.css_units, "sunlineEKF");
+        self.css_units = configured_css_units(&self.config.css_units, "sunlineEKF");
 
         self.time_tag_s = call_time_nanos as f64 * NANO2SEC;
         self.observations = CssObservations::unprocessed();
@@ -156,13 +161,17 @@ impl SunlineEkf {
         self.proc_noise = self.config.q_proc_val * Matrix3::identity();
     }
 
-    fn update_filter(&mut self, call_time_nanos: u64) {
-        let css_data = self.css_data_in_msg.read();
-        // Upstream: `timeWritten * NANO2SEC >= timeTag && isWritten` (see the
-        // module docs for the Rust stand-ins).
-        if self.css_data_in_msg.is_connected() && css_data.time_tag_s >= self.time_tag_s {
-            self.time_update(css_data.time_tag_s);
-            self.measurement_update(&css_data.cos_values);
+    /// Upstream `Update_sunlineEKF`, with the CSS message header explicit:
+    /// `readings` holds one value per sensor, and `written_nanos` is upstream
+    /// `timeWritten` when the message `isWritten`.
+    fn step(&mut self, call_time_nanos: u64, readings: &[f64], written_nanos: Option<u64>) {
+        // Upstream: `timeWritten * NANO2SEC >= timeTag && isWritten`.
+        let measurement_time_s = written_nanos.map(|nanos| nanos as f64 * NANO2SEC);
+        if let Some(measurement_time_s) = measurement_time_s
+            && measurement_time_s >= self.time_tag_s
+        {
+            self.time_update(measurement_time_s);
+            self.measurement_update(readings);
         }
 
         let call_time_s = call_time_nanos as f64 * NANO2SEC;
@@ -174,6 +183,8 @@ impl SunlineEkf {
 
         self.observations
             .write_post_fit_residuals(&self.state_error, &mut self.post_fits);
+        self.nav_state_out_msg.write(self.nav_state());
+        self.filt_data_out_msg.write(self.filter_data());
     }
 
     /// Upstream `sunlineTimeUpdate`: propagates the reference state, the
@@ -261,9 +272,9 @@ impl Module for SunlineEkf {
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        self.update_filter(context.current_sim_nanos);
-        self.nav_state_out_msg.write(self.nav_state());
-        self.filt_data_out_msg.write(self.filter_data());
+        let readings = css_readings(&self.css_data_in_msgs);
+        let written_nanos = css_written_nanos(&self.css_data_in_msgs, context);
+        self.step(context.current_sim_nanos, &readings, written_nanos);
     }
 }
 
@@ -367,7 +378,7 @@ impl<const N: usize> CssObservations<N> {
     pub(crate) fn select(
         sun_heading: &Vector3<f64>,
         cos_values: &[f64],
-        css_units: &[CssUnitConfigMsg],
+        css_units: &[CssUnit],
         sensor_use_thresh: f64,
     ) -> Self {
         let (readings, normals): (Vec<f64>, Vec<Vector3<f64>>) = css_units
@@ -407,22 +418,6 @@ impl<const N: usize> CssObservations<N> {
         let residuals = &self.y_meas - sequential_product(&self.meas_mat, state_error);
         post_fits.rows_mut(0, self.count()).copy_from(&residuals);
     }
-}
-
-/// Upstream Reset's CSS-configuration handling: the sensors in use.
-///
-/// More than `MAX_N_CSS_MEAS` logs upstream's error; upstream then reads past
-/// its arrays, whereas this keeps the first `MAX_N_CSS_MEAS`.
-pub(crate) fn configured_css_units(
-    css_config: &CssConfigMsg,
-    module_name: &str,
-) -> Vec<CssUnitConfigMsg> {
-    if css_config.num_css > MAX_N_CSS_MEAS {
-        log::error!(
-            "{module_name}.css_config_in_msg.num_css must not be greater than MAX_N_CSS_MEAS ({MAX_N_CSS_MEAS})"
-        );
-    }
-    css_config.active_units().to_vec()
 }
 
 /// Upstream's switch to the classical update, `vMaxAbs(covar) > eKFSwitch`.
@@ -530,31 +525,33 @@ pub(crate) mod tests {
     //! Two deviations, both from the test environment rather than the filter:
     //!
     //! * Upstream writes the CSS message with `write(payload, CurrentNanos)`
-    //!   from step 21 on and leaves the payload `timeTag` at zero, the filter
-    //!   reading the header's write time. Here the payload `time_tag_s` carries
-    //!   that write time (see the module docs). Before the first write the input
-    //!   holds a message stamped before the filter started, which the filter
-    //!   skips exactly as upstream skips an unwritten message.
+    //!   from step 21 on, the filter reading the header's write time. The
+    //!   ports carry no header (see the module docs), so [`UpstreamTimeline`]
+    //!   replays that timeline through the private `step`, with the write time
+    //!   upstream reads.
     //! * The measurement noise comes from a seeded `StdRng`, not NumPy's
     //!   `default_rng(42)`: the same distribution, different samples, so the
     //!   noisy cases check the same statistical tolerances on another draw.
 
-    use std::f64::consts::{FRAC_1_SQRT_2, SQRT_2};
+    use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2};
 
     use hifitime::Epoch;
-    use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Vector3, Vector6};
+    use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3, Vector6};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
     use rand_distr::{Distribution, Normal};
 
     use super::{
-        CssObservations, KalmanGain, MeasurementMatrix, NANO2SEC, SunlineEkf, SunlineEkfConfig,
-        ckf_update, ekf_update, kalman_gain, needs_classical_update, propagate_state,
-        update_dynamics_matrix,
+        CssObservations, KalmanGain, MeasurementMatrix, SunlineEkf, SunlineEkfConfig, ckf_update,
+        ekf_update, kalman_gain, needs_classical_update, propagate_state, update_dynamics_matrix,
     };
+    use crate::fsw_algorithms::att_determination::CssUnit;
+    use crate::fsw_algorithms::att_determination::css_inputs::test_support::UpstreamTimeline;
     use crate::messages::{
-        CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, Output, SunlineFilterMsg,
+        Output, SpacecraftStateMsg, SunEphemerisMsg, SunSensorMsg, SunlineFilterMsg,
     };
+    use crate::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
+    use crate::simulation::Simulation;
     use crate::{Module, SimulationContext};
 
     /// Upstream `testProcessRate`: 0.5 s.
@@ -571,7 +568,7 @@ pub(crate) mod tests {
     /// Upstream's eight-sensor test constellation (`CSSOrientationList`).
     /// Its `0.70710678118654746` is one ulp below `1/√2` and equals
     /// `1 / SQRT_2`; its `0.70710678118654757` is `FRAC_1_SQRT_2`.
-    pub(crate) fn css_constellation() -> Vec<CssUnitConfigMsg> {
+    pub(crate) fn css_constellation() -> Vec<CssUnit> {
         let a = 1.0 / SQRT_2;
         let b = FRAC_1_SQRT_2;
         [
@@ -585,31 +582,20 @@ pub(crate) mod tests {
             [-a, -b, 0.0],
         ]
         .into_iter()
-        .map(|n_hat_b| CssUnitConfigMsg {
+        .map(|n_hat_b| CssUnit {
             n_hat_b: Vector3::from(n_hat_b),
             c_bias: 1.0,
         })
         .collect()
     }
 
-    /// Stand-in for upstream's subscribed but not yet written CSS message:
-    /// stamped before the filter starts, so the filter skips it.
-    pub(crate) fn unwritten_css_data() -> Output<CssArraySensorMsg> {
-        Output::new(CssArraySensorMsg {
-            time_tag_s: -1.0,
-            ..Default::default()
-        })
-    }
-
-    /// One constellation reading of `sun_heading`, written at `now_nanos`
-    /// (upstream `cssDataInMsg.write(inputData, CurrentNanos)`), with
-    /// `N(0, √qObsVal)` noise per sensor when `noise` is given.
+    /// One constellation reading of `sun_heading` (upstream's `dotList`),
+    /// with `N(0, √qObsVal)` noise per sensor when `noise` is given.
     pub(crate) fn css_reading(
-        css_units: &[CssUnitConfigMsg],
+        css_units: &[CssUnit],
         sun_heading: &Vector3<f64>,
         noise: Option<(&Normal<f64>, &mut StdRng)>,
-        now_nanos: u64,
-    ) -> CssArraySensorMsg {
+    ) -> Vec<f64> {
         let mut cos_values: Vec<f64> = css_units
             .iter()
             .map(|unit| unit.n_hat_b.dot(sun_heading))
@@ -619,15 +605,25 @@ pub(crate) mod tests {
                 *cos_value += normal.sample(rng);
             }
         }
-        CssArraySensorMsg {
-            time_tag_s: now_nanos as f64 * NANO2SEC,
-            ..CssArraySensorMsg::from_active(&cos_values)
-        }
+        cos_values
+    }
+
+    /// One CSS message per reading.
+    pub(crate) fn css_outputs(readings: &[f64]) -> Vec<Output<SunSensorMsg>> {
+        readings
+            .iter()
+            .map(|&sensed_value| {
+                Output::new(SunSensorMsg {
+                    sensed_value,
+                    ..Default::default()
+                })
+            })
+            .collect()
     }
 
     /// The sensors and readings of `sunline_individual_test`'s measurement
     /// checks (`numCSS = 4`, unit biases).
-    pub(crate) fn individual_test_css() -> (Vec<CssUnitConfigMsg>, [f64; 4]) {
+    pub(crate) fn individual_test_css() -> (Vec<CssUnit>, [f64; 4]) {
         let normals = [
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
@@ -636,7 +632,7 @@ pub(crate) mod tests {
         ];
         let units = normals
             .into_iter()
-            .map(|n_hat_b| CssUnitConfigMsg {
+            .map(|n_hat_b| CssUnit {
                 n_hat_b: Vector3::from(n_hat_b),
                 c_bias: 1.0,
             })
@@ -645,8 +641,9 @@ pub(crate) mod tests {
         (units, cos_values)
     }
 
-    /// Upstream `setupFilterData`.
-    fn setup_filter_data() -> SunlineEkf {
+    /// Upstream `setupFilterData`, with the sensors `css_units` (upstream
+    /// subscribes the filter to their configuration message separately).
+    fn setup_filter_data(css_units: Vec<CssUnit>) -> SunlineEkf {
         let mut module = SunlineEkf::new(SunlineEkfConfig {
             name: "SunlineEKF".to_string(),
             sensor_use_thresh: 0.0,
@@ -654,6 +651,7 @@ pub(crate) mod tests {
             q_proc_val: 0.1 * 0.1,
             q_obs_val: 0.001,
             ekf_switch: 5.0,
+            css_units,
         });
         module.state = Vector6::new(1.0, 1.0, 1.0, 0.0, 0.0, 0.0);
         module.state_error = Vector6::new(1.0, 0.0, 1.0, 0.0, 0.1, 0.0);
@@ -911,11 +909,8 @@ pub(crate) mod tests {
 
     #[test]
     fn matches_upstream_state_prop_static() {
-        let mut module = setup_filter_data();
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::default());
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
+        // Neither input message is ever written: no sensors, no readings.
+        let mut module = setup_filter_data(Vec::new());
         module.init();
 
         // Upstream logs every 5 s over 8000 s; its first and last samples are
@@ -932,16 +927,13 @@ pub(crate) mod tests {
 
     #[test]
     fn matches_upstream_state_prop_variable() {
-        let mut module = setup_filter_data();
+        // As in the static case, no CSS message is ever written.
+        let mut module = setup_filter_data(Vec::new());
         module.state += Vector6::new(0.0, 0.0, 0.0, 0.0001, 0.002, 0.001);
         let initial_state = module.state;
         let initial_x = module.state_error;
         let initial_covar = module.covar;
         let q_proc_val = module.config.q_proc_val;
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::default());
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
 
         let mut log = Vec::new();
@@ -1063,12 +1055,8 @@ pub(crate) mod tests {
         // Upstream: loose under measurement noise, tight without it.
         let state_conv_tol = if case.add_meas_noise { 1.0e-1 } else { 1.0e-2 };
 
-        let mut module = setup_filter_data();
         let css_units = css_constellation();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-        let css_data = unwritten_css_data();
-        css_config.connect_to(&mut module.css_config_in_msg);
-        css_data.connect_to(&mut module.css_data_in_msg);
+        let mut module = setup_filter_data(css_units.clone());
 
         let target =
             |vector: [f64; 3]| Vector6::new(vector[0], vector[1], vector[2], 0.0, 0.0, 0.0);
@@ -1080,23 +1068,20 @@ pub(crate) mod tests {
         let noise = Normal::new(0.0, module.config.q_obs_val.sqrt())
             .expect("the noise standard deviation is finite and positive");
 
+        let mut timeline = UpstreamTimeline::new(css_units.len());
         let mut data_log: Vec<SunlineFilterMsg> = Vec::new();
-        let mut now = 0;
         for (half, sun_heading) in [case.test_vector1, case.test_vector2].iter().enumerate() {
             let sun_heading = Vector3::from(*sun_heading);
             for i in 0..case.sim_half_length {
                 if i > 20 {
                     let draw = case.add_meas_noise.then_some((&noise, &mut rng));
-                    css_data.write(css_reading(&css_units, &sun_heading, draw, now));
+                    timeline.write(css_reading(&css_units, &sun_heading, draw));
                 }
-                // Upstream's first `ExecuteSimulation` also runs the t = 0 step.
-                if half == 0 && i == 0 {
-                    module.update(&context(0));
+                let stop_nanos = (half * case.sim_half_length + i + 1) as u64 * TASK_RATE_NANOS;
+                timeline.execute_until(stop_nanos, |call_nanos, readings, written_nanos| {
+                    module.step(call_nanos, readings, written_nanos);
                     data_log.push(module.filt_data_out_msg.read());
-                }
-                now = (half * case.sim_half_length + i + 1) as u64 * TASK_RATE_NANOS;
-                module.update(&context(now));
-                data_log.push(module.filt_data_out_msg.read());
+                });
             }
 
             let state_target = if half == 0 {
@@ -1127,13 +1112,10 @@ pub(crate) mod tests {
 
     #[test]
     fn reports_upstreams_reset_observation_count_until_the_first_measurement() {
-        let mut module = setup_filter_data();
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_constellation()));
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
+        let mut module = setup_filter_data(css_constellation());
         module.init();
-        module.update(&context(TASK_RATE_NANOS));
+        // Upstream's subscribed but never written CSS message.
+        module.step(TASK_RATE_NANOS, &[0.0; 8], None);
 
         let filter_data = module.filt_data_out_msg.read();
         assert_eq!(filter_data.num_obs, crate::messages::MAX_N_CSS_MEAS);
@@ -1144,22 +1126,16 @@ pub(crate) mod tests {
         assert!((nav.vehicle_sun_point_body.norm() - 1.0).abs() <= 1.0e-15);
     }
 
+    /// A clean constellation reading of `(-0.7, 0.7, 0)`.
+    fn clean_reading() -> Vec<f64> {
+        css_reading(&css_constellation(), &Vector3::new(-0.7, 0.7, 0.0), None)
+    }
+
     #[test]
     fn reset_restarts_the_filter_clock_and_keeps_the_estimate() {
-        let mut module = setup_filter_data();
-        let css_units = css_constellation();
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
+        let mut module = setup_filter_data(css_constellation());
         module.init();
-        css_data.write(css_reading(
-            &css_units,
-            &Vector3::new(-0.7, 0.7, 0.0),
-            None,
-            0,
-        ));
-        module.update(&context(TASK_RATE_NANOS));
+        module.step(TASK_RATE_NANOS, &clean_reading(), Some(0));
         let estimate = (module.state, module.state_error, module.covar);
         let post_fits = module.post_fits;
 
@@ -1172,28 +1148,13 @@ pub(crate) mod tests {
     }
 
     /// `setup_filter_data` with `ekf_switch` and `sensor_use_thresh`, after
-    /// one update that processes a clean reading of `(-0.7, 0.7, 0)` written
-    /// at 0 s.
-    fn filter_after_first_reading(
-        css_data: &Output<CssArraySensorMsg>,
-        ekf_switch: f64,
-        sensor_use_thresh: f64,
-    ) -> SunlineEkf {
-        let mut module = setup_filter_data();
+    /// one update at 0.5 s that processes [`clean_reading`] written at 0 s.
+    fn filter_after_first_reading(ekf_switch: f64, sensor_use_thresh: f64) -> SunlineEkf {
+        let mut module = setup_filter_data(css_constellation());
         module.config.ekf_switch = ekf_switch;
         module.config.sensor_use_thresh = sensor_use_thresh;
-        let css_units = css_constellation();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
-        css_data.write(css_reading(
-            &css_units,
-            &Vector3::new(-0.7, 0.7, 0.0),
-            None,
-            0,
-        ));
-        module.update(&context(TASK_RATE_NANOS));
+        module.step(TASK_RATE_NANOS, &clean_reading(), Some(0));
         module
     }
 
@@ -1202,93 +1163,215 @@ pub(crate) mod tests {
         let estimate = |module: &SunlineEkf| (module.state, module.state_error, module.covar);
 
         // The 0 s reading is stale once the filter has moved on to 0.5 s.
-        let stale_data = unwritten_css_data();
-        let mut stale = filter_after_first_reading(&stale_data, 5.0, 0.0);
+        let mut stale = filter_after_first_reading(5.0, 0.0);
         // Processed: three sensors face that sun heading.
         assert_eq!(stale.observations.count(), 3);
-        stale.update(&context(2 * TASK_RATE_NANOS));
+        stale.step(2 * TASK_RATE_NANOS, &clean_reading(), Some(0));
 
-        let silent_data = unwritten_css_data();
-        let mut silent = filter_after_first_reading(&silent_data, 5.0, 0.0);
-        silent_data.write(unwritten_css_data().read());
-        silent.update(&context(2 * TASK_RATE_NANOS));
+        let mut silent = filter_after_first_reading(5.0, 0.0);
+        silent.step(2 * TASK_RATE_NANOS, &[0.0; 8], None);
         assert_eq!(estimate(&stale), estimate(&silent));
 
         // The same reading written at the filter time is processed again.
-        let fresh_data = unwritten_css_data();
-        let mut fresh = filter_after_first_reading(&fresh_data, 5.0, 0.0);
-        fresh_data.write(css_reading(
-            &css_constellation(),
-            &Vector3::new(-0.7, 0.7, 0.0),
-            None,
-            TASK_RATE_NANOS,
-        ));
-        fresh.update(&context(2 * TASK_RATE_NANOS));
+        let mut fresh = filter_after_first_reading(5.0, 0.0);
+        fresh.step(2 * TASK_RATE_NANOS, &clean_reading(), Some(TASK_RATE_NANOS));
         assert_ne!(fresh.state, stale.state);
+    }
+
+    #[test]
+    fn update_reads_connected_css_inputs_as_written_at_the_call_time() {
+        let readings = clean_reading();
+        let css_data = css_outputs(&readings);
+        let mut through_update = setup_filter_data(css_constellation());
+        // Sensor 5 faces the sun, but its input is left unconnected.
+        let mut partly_connected = setup_filter_data(css_constellation());
+        for (index, output) in css_data.iter().enumerate() {
+            output.connect_to(&mut through_update.css_data_in_msgs[index]);
+            if index != 5 {
+                output.connect_to(&mut partly_connected.css_data_in_msgs[index]);
+            }
+        }
+        let mut through_step = setup_filter_data(css_constellation());
+        let mut unwritten_step = setup_filter_data(css_constellation());
+        for module in [
+            &mut through_update,
+            &mut partly_connected,
+            &mut through_step,
+            &mut unwritten_step,
+        ] {
+            module.init();
+        }
+        let mut partial_readings = readings.clone();
+        partial_readings[5] = 0.0;
+
+        for tick in 0..20 {
+            let now = tick * TASK_RATE_NANOS;
+            through_update.update(&context(now));
+            through_step.step(now, &readings, Some(now));
+            assert_eq!(
+                through_update.filt_data_out_msg.read(),
+                through_step.filt_data_out_msg.read()
+            );
+
+            // One unconnected input: the readings count as never written.
+            partly_connected.update(&context(now));
+            unwritten_step.step(now, &partial_readings, None);
+            assert_eq!(
+                partly_connected.filt_data_out_msg.read(),
+                unwritten_step.filt_data_out_msg.read()
+            );
+        }
+        // Sensors 4, 5 and 6 face this sun direction.
+        assert_eq!(through_update.filt_data_out_msg.read().num_obs, 3);
     }
 
     #[test]
     fn config_set_after_new_takes_effect_at_init() {
         let run = |mut module: SunlineEkf| {
-            let css_units = css_constellation();
-            let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-            let css_data = unwritten_css_data();
-            css_config.connect_to(&mut module.css_config_in_msg);
-            css_data.connect_to(&mut module.css_data_in_msg);
             module.init();
             for step in 0..4 {
-                let sun_heading = Vector3::new(-0.7, 0.7, 0.0);
-                let reading = css_reading(&css_units, &sun_heading, None, step * TASK_RATE_NANOS);
-                css_data.write(reading);
-                module.update(&context((step + 1) * TASK_RATE_NANOS));
+                module.step(
+                    (step + 1) * TASK_RATE_NANOS,
+                    &clean_reading(),
+                    Some(step * TASK_RATE_NANOS),
+                );
             }
             module.filt_data_out_msg.read()
         };
+        // `new` fixes the sensors, as it makes one input per sensor; the
+        // other parameters may change until `init`.
         let tuned = SunlineEkfConfig {
             q_obs_val: 0.01,
             q_proc_val: 0.5,
             sensor_use_thresh: 0.3,
             ekf_switch: 0.0,
-            ..setup_filter_data().config
+            ..setup_filter_data(css_constellation()).config
         };
 
-        let seeded = setup_filter_data();
+        let seeded = setup_filter_data(css_constellation());
         let mut configured_in_new = SunlineEkf::new(tuned.clone());
         configured_in_new.state = seeded.state;
         configured_in_new.state_error = seeded.state_error;
         configured_in_new.covar = seeded.covar;
-        let mut configured_later = setup_filter_data();
+        let mut configured_later = setup_filter_data(css_constellation());
         configured_later.config = tuned;
 
         let expected = run(configured_in_new);
         assert_eq!(run(configured_later), expected);
-        assert_ne!(run(setup_filter_data()), expected);
+        assert_ne!(run(setup_filter_data(css_constellation())), expected);
     }
 
     #[test]
     fn a_classical_update_leaves_the_reference_state_uncorrected() {
         // Upstream quirk: in CKF mode only the state error absorbs the
         // measurement, so the reference and the published heading stay put.
-        let guess = setup_filter_data().state;
-        let classical = filter_after_first_reading(&unwritten_css_data(), 0.0, 0.0);
-        assert_eq!(classical.state, guess);
-        assert_ne!(classical.state_error, setup_filter_data().state_error);
+        let seeded = setup_filter_data(Vec::new());
+        let classical = filter_after_first_reading(0.0, 0.0);
+        assert_eq!(classical.state, seeded.state);
+        assert_ne!(classical.state_error, seeded.state_error);
         assert_eq!(
             classical.nav_state_out_msg.read().vehicle_sun_point_body,
             Vector3::repeat(1.0 / 3.0_f64.sqrt())
         );
 
-        let extended = filter_after_first_reading(&unwritten_css_data(), 5.0, 0.0);
-        assert_ne!(extended.state, guess);
+        let extended = filter_after_first_reading(5.0, 0.0);
+        assert_ne!(extended.state, seeded.state);
     }
 
     #[test]
     fn an_extended_update_without_observations_zeroes_the_state_error() {
         // Upstream quirk: with no reading above the threshold the gain is
         // empty, so the extended update sets `x = K y` to zero.
-        let module = filter_after_first_reading(&unwritten_css_data(), 5.0, 2.0);
+        let module = filter_after_first_reading(5.0, 2.0);
         assert_eq!(module.observations.count(), 0);
         assert_eq!(module.state_error, Vector6::zeros());
         assert_eq!(module.filt_data_out_msg.read().num_obs, 0);
+    }
+
+    /// Not upstream: one [`CoarseSunSensor`] per normal of upstream's
+    /// constellation, scheduled before the filter and wired to its inputs.
+    /// From upstream's tuning and initial guess, the estimate converges on
+    /// the sun direction in the body frame of a spacecraft at rest.
+    #[test]
+    fn converges_on_the_sun_heading_measured_by_coarse_sun_sensors() {
+        const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_700.0;
+        let css_units = css_constellation();
+        let mut sensors: Vec<CoarseSunSensor> = css_units
+            .iter()
+            .enumerate()
+            .map(|(index, unit)| {
+                CoarseSunSensor::new(CoarseSunSensorConfig {
+                    name: format!("css{index}"),
+                    position_m: Vector3::zeros(),
+                    body_to_sensor_quaternion: UnitQuaternion::rotation_between(
+                        &unit.n_hat_b,
+                        &Vector3::z(),
+                    )
+                    .expect("no normal points along -z"),
+                    fov_half_angle_rad: FRAC_PI_2,
+                    scale_factor: 1.0,
+                    kelly_factor: 0.0,
+                    k_power: 1.0,
+                    bias: 0.0,
+                    noise_std: 0.0,
+                    noise_prop: 0.0,
+                    walk_bounds: 0.0,
+                    min_output: 0.0,
+                    max_output: 2.0,
+                })
+            })
+            .collect();
+        let spacecraft_state = SpacecraftStateMsg {
+            position_m: Vector3::zeros(),
+            velocity_mps: Vector3::zeros(),
+            sigma_bn: Vector3::new(0.1, 0.2, -0.3),
+            omega_radps: Vector3::zeros(),
+        };
+        let sun_direction_n = Vector3::new(0.3, -0.5, 0.8).normalize();
+        let sun_direction_b = spacecraft_state
+            .inertial_to_body()
+            .transform_vector(&sun_direction_n);
+        let state = Output::new(spacecraft_state);
+        let sun = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: sun_direction_n * ASTRONOMICAL_UNIT_M,
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+
+        let mut module = setup_filter_data(css_units.clone());
+        let mut simulation =
+            Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+        for (sensor, css_input) in sensors.iter_mut().zip(&mut module.css_data_in_msgs) {
+            simulation.connect(&state, &mut sensor.input_state_msg);
+            simulation.connect(&sun, &mut sensor.input_sun_msg);
+            simulation.connect(&sensor.output_sun_sensor_msg, css_input);
+        }
+        for (index, sensor) in sensors.iter_mut().enumerate() {
+            simulation.add_module(format!("css{index}"), sensor, TASK_RATE_NANOS, 10);
+        }
+        simulation.add_module("sunlineEKF", &mut module, TASK_RATE_NANOS, 0);
+        simulation.run_for(200 * TASK_RATE_NANOS);
+        drop(simulation);
+
+        let lit_sensors = css_units
+            .iter()
+            .filter(|unit| unit.n_hat_b.dot(&sun_direction_b) > 0.0)
+            .count();
+        let filter_data = module.filt_data_out_msg.read();
+        assert_eq!(filter_data.num_obs, lit_sensors);
+        assert_eq!(filter_data.time_tag_s, 100.0);
+        // Noise-free readings pin the direction down to rounding.
+        let heading = module.nav_state_out_msg.read().vehicle_sun_point_body;
+        let direction_error = (heading - sun_direction_b).norm();
+        assert!(
+            direction_error <= 1.0e-12,
+            "sun heading off by {direction_error:e}"
+        );
+        // At 1 AU the readings are the cosines themselves, so the heading
+        // state converges on the unit sun vector.
+        let heading_error = (module.state.fixed_rows::<3>(0) - sun_direction_b).norm();
+        assert!(
+            heading_error <= 1.0e-9,
+            "heading state off by {heading_error:e}"
+        );
     }
 }

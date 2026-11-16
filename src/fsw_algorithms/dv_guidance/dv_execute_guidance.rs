@@ -5,7 +5,7 @@
 //! accumulated Δv the navigation reports at that moment, and declares it
 //! complete once the Δv accumulated since then is larger than the commanded
 //! one. It publishes both flags every update and, once the burn is complete,
-//! a zero thruster on-time command every update to stop the thrusters.
+//! a zero on-time command to every thruster every update to stop them.
 //!
 //! Upstream's documentation lists the ports of `dvGuidance`; the ports here
 //! are those its code uses.
@@ -13,8 +13,8 @@
 use nalgebra::Vector3;
 
 use crate::messages::{
-    DvBurnCommandMsg, DvExecutionDataMsg, Input, NavigationTranslationMsg, Output,
-    ThrusterArrayOnTimeCommandMsg,
+    DvBurnCommandMsg, DvExecutionDataMsg, Input, MAX_EFF_COUNT, NavigationTranslationMsg, Output,
+    ThrusterCommandMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::{Module, SimulationContext};
@@ -59,8 +59,9 @@ pub struct DvExecuteGuidance {
     /// Upstream `burnExecOutMsg`: burn executing and complete flags.
     pub burn_exec_out_msg: Output<DvExecutionDataMsg>,
     /// Upstream `thrCmdOutMsg`: zero on-time command, written only once the
-    /// burn is complete.
-    pub thr_cmd_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// burn is complete; one output per thruster, registered with
+    /// [`DvExecuteGuidance::add_thruster_command_output`].
+    pub thr_cmd_out_msgs: Vec<Output<ThrusterCommandMsg>>,
     /// Upstream `burnExecuting`/`burnComplete`. Neither init nor reset
     /// changes it, as upstream; set it back to [`BurnState::Pending`] to arm
     /// another burn.
@@ -78,10 +79,22 @@ impl DvExecuteGuidance {
             nav_data_in_msg: Input::default(),
             burn_data_in_msg: Input::default(),
             burn_exec_out_msg: Output::default(),
-            thr_cmd_out_msg: Output::default(),
+            thr_cmd_out_msgs: Vec::new(),
             burn_state: BurnState::Pending,
             dv_init_mps: Vector3::zeros(),
         }
+    }
+
+    /// Registers one independently connectable thruster command output.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.thr_cmd_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.thr_cmd_out_msgs.push(Output::default());
+        self.thr_cmd_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
     }
 
     /// Upstream `Reset_dvExecuteGuidance`: it only checks the inputs and
@@ -121,8 +134,9 @@ impl DvExecuteGuidance {
 impl Module for DvExecuteGuidance {
     fn init(&mut self) {
         self.burn_exec_out_msg.write(DvExecutionDataMsg::default());
-        self.thr_cmd_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.thr_cmd_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.check_connections();
     }
 
@@ -136,8 +150,9 @@ impl Module for DvExecuteGuidance {
         self.advance_burn_state(&nav, &burn, context.current_sim_nanos);
 
         if self.burn_state == BurnState::Complete {
-            self.thr_cmd_out_msg
-                .write(ThrusterArrayOnTimeCommandMsg::default());
+            for output in &self.thr_cmd_out_msgs {
+                output.write(ThrusterCommandMsg::default());
+            }
         }
         self.burn_exec_out_msg.write(DvExecutionDataMsg {
             burn_executing: self.burn_state == BurnState::Executing,
@@ -156,12 +171,12 @@ mod tests {
 
     use super::{BurnState, DvExecuteGuidance, DvExecuteGuidanceConfig};
     use crate::messages::{
-        DvBurnCommandMsg, DvExecutionDataMsg, MAX_EFF_COUNT, NavigationTranslationMsg, Output,
-        ThrusterArrayOnTimeCommandMsg,
+        DvBurnCommandMsg, DvExecutionDataMsg, NavigationTranslationMsg, Output, ThrusterCommandMsg,
     };
     use crate::{Module, SimulationContext};
 
     const SECOND_NANOS: u64 = 1_000_000_000;
+    const NUM_THRUSTERS: usize = 8;
 
     fn context(current_sim_nanos: u64) -> SimulationContext {
         SimulationContext {
@@ -184,7 +199,7 @@ mod tests {
     }
 
     /// A 2 m/s burn (norm of `(0, 1.2, 1.6)`) starting at 2 s, with 10 m/s
-    /// already accumulated along x, and a nonzero sentinel in the thruster
+    /// already accumulated along x, and a nonzero sentinel in every thruster
     /// command so that a write is visible.
     fn fixture() -> Fixture {
         let nav_output = Output::new(navigation(Vector3::new(10.0, 0.0, 0.0)));
@@ -196,12 +211,13 @@ mod tests {
         let mut module = DvExecuteGuidance::new(DvExecuteGuidanceConfig::default());
         nav_output.connect_to(&mut module.nav_data_in_msg);
         burn_output.connect_to(&mut module.burn_data_in_msg);
+        for _ in 0..NUM_THRUSTERS {
+            module.add_thruster_command_output();
+        }
         module.init();
-        module
-            .thr_cmd_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::from_active(
-                &[0.5; MAX_EFF_COUNT],
-            ));
+        for output in &module.thr_cmd_out_msgs {
+            output.write(ThrusterCommandMsg { on_time_s: 0.5 });
+        }
         Fixture {
             module,
             nav_output,
@@ -219,11 +235,9 @@ mod tests {
 
     fn thruster_command_is_zero(module: &DvExecuteGuidance) -> bool {
         module
-            .thr_cmd_out_msg
-            .read()
-            .on_time_request_s
+            .thr_cmd_out_msgs
             .iter()
-            .all(|&on_time| on_time == 0.0)
+            .all(|output| output.read().on_time_s == 0.0)
     }
 
     #[test]

@@ -19,10 +19,7 @@ use nalgebra::{
     DMatrix, DVector, Matrix, Matrix6, RawStorage, SMatrix, SVector, U1, U6, Vector3, Vector6,
 };
 
-use crate::SimulationContext;
-use crate::messages::{
-    CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, Input, MAX_N_CSS_MEAS, SKF_N_STATES,
-};
+use crate::messages::SKF_N_STATES;
 use crate::utilities::linear_algebra::sequential_product;
 use crate::utilities::ukf_utilities::{
     UkfResultExt, ukf_chol_decomp, ukf_chol_down_date, ukf_l_inv, ukf_qrd_just_r, ukf_u_inv,
@@ -242,30 +239,6 @@ pub(crate) fn heading<S: RawStorage<f64, U6>>(point: &Matrix<f64, U6, U1, S>) ->
     point.fixed_rows::<3>(0).into_owned()
 }
 
-/// The sensors of a CSS configuration message (upstream `numCSSTotal`,
-/// `cssNHat_B`, `CBias`). Upstream logs an error for more than
-/// `MAX_N_CSS_MEAS` sensors and then overruns its arrays; the port keeps the
-/// first `MAX_N_CSS_MEAS`.
-pub(crate) fn configured_css_units(config: &CssConfigMsg, module: &str) -> Vec<CssUnitConfigMsg> {
-    if config.num_css > MAX_N_CSS_MEAS {
-        log::error!(
-            "{module}.css_config_in_msg.num_css must not be greater than MAX_N_CSS_MEAS ({MAX_N_CSS_MEAS})"
-        );
-    }
-    config.active_units().to_vec()
-}
-
-/// Upstream's CSS message header (`isWritten`, `timeWritten`) as far as a port
-/// can tell: Rust ports carry no header, so a connected input counts as
-/// written at the current update, as upstream sees a CSS producer that runs
-/// before the filter on every tick.
-pub(crate) fn css_written_nanos(
-    input: &Input<CssArraySensorMsg>,
-    context: &SimulationContext,
-) -> Option<u64> {
-    input.is_connected().then_some(context.current_sim_nanos)
-}
-
 /// Upstream's `AT` matrix: the rows `sqrt(wC[i]) (column_i - mean)^T` of the
 /// non-central sigma points, followed by the rows of `noise_root`.
 fn stacked_deviations(
@@ -296,61 +269,6 @@ fn to_dynamic<const R: usize, const C: usize>(m: &SMatrix<f64, R, C>) -> DMatrix
 /// A 6×6 `ukf_utilities` result as a state matrix.
 fn to_state_matrix(m: &DMatrix<f64>) -> Matrix6<f64> {
     Matrix6::from_column_slice(m.as_slice())
-}
-
-#[cfg(test)]
-pub(crate) mod test_support {
-    //! Replays the message timeline of the upstream sunline-filter pytests.
-
-    use crate::messages::CssArraySensorMsg;
-
-    /// Upstream's 0.5 s task rate (`macros.sec2nano(0.5)`).
-    pub(crate) const TASK_RATE_NANOS: u64 = 500_000_000;
-
-    /// The pytests' CSS message between `ExecuteSimulation` calls:
-    /// `cssDataInMsg.write(data, CurrentNanos)` stamps it with the time of the
-    /// last executed tick, and the next call runs every tick up to its stop
-    /// time. (The first call after initialization runs both t = 0 and the
-    /// first tick.)
-    pub(crate) struct UpstreamTimeline {
-        current_nanos: u64,
-        next_tick_nanos: u64,
-        written: Option<(u64, CssArraySensorMsg)>,
-    }
-
-    impl UpstreamTimeline {
-        pub(crate) fn new() -> Self {
-            Self {
-                current_nanos: 0,
-                next_tick_nanos: 0,
-                written: None,
-            }
-        }
-
-        /// `cssDataInMsg.write(readings, unitTestSim.TotalSim.CurrentNanos)`.
-        pub(crate) fn write(&mut self, readings: CssArraySensorMsg) {
-            self.written = Some((self.current_nanos, readings));
-        }
-
-        /// `ConfigureStopTime(stop_nanos)` and `ExecuteSimulation()`: calls
-        /// `step(call_nanos, readings, written_nanos)` for every tick up to the
-        /// stop time, with the message contents and header upstream reads.
-        pub(crate) fn execute_until(
-            &mut self,
-            stop_nanos: u64,
-            mut step: impl FnMut(u64, CssArraySensorMsg, Option<u64>),
-        ) {
-            while self.next_tick_nanos <= stop_nanos {
-                self.current_nanos = self.next_tick_nanos;
-                let (written_nanos, readings) = match &self.written {
-                    Some((nanos, readings)) => (Some(*nanos), readings.clone()),
-                    None => (None, CssArraySensorMsg::default()),
-                };
-                step(self.current_nanos, readings, written_nanos);
-                self.next_tick_nanos += TASK_RATE_NANOS;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

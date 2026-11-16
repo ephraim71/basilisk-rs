@@ -1075,18 +1075,16 @@ mod upstream_payloads {
     use crate::messages::{
         AccelerometerDataMsg, AccelerometerPacket, AccessMsg, ArrayEffectorLockMsg,
         AttitudeStateMsg, BodyForceCommandMsg, BodyHeadingMsg, CameraConfigMsg, CameraRenderMode,
-        CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, DeviceCommandMsg, DeviceState,
-        DeviceStatusMsg, DipoleRequestBodyMsg, DvBurnCommandMsg, DvExecutionDataMsg, EffectorLock,
-        EphemerisMsg, GroundStateMsg, HeadingFilterMsg, HillRelativeStateMsg, ImuMsg,
-        ImuSensorBodyMsg, InertialFilterMsg, InertialForceCommandMsg, InertialHeadingMsg,
-        MAX_ACC_BUF_PKT, MAX_EFF_COUNT, MAX_LIMB_PNTS, MAX_NUM_CSS_SENSORS,
+        DeviceCommandMsg, DeviceState, DeviceStatusMsg, DipoleRequestBodyMsg, DvBurnCommandMsg,
+        DvExecutionDataMsg, EffectorLock, EphemerisMsg, GroundStateMsg, HeadingFilterMsg,
+        HillRelativeStateMsg, ImuMsg, ImuSensorBodyMsg, InertialFilterMsg, InertialForceCommandMsg,
+        InertialHeadingMsg, MAX_ACC_BUF_PKT, MAX_EFF_COUNT, MAX_LIMB_PNTS,
         NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg, OpNavLimbMsg, OpNavMsg,
         PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg, ReconfigBurnArrayInfoMsg,
-        ReconfigBurnInfoMsg, ReconfigBurnStatus, RwConfigElementMsg, RwConstellationMsg,
-        SKF_N_STATES, SimulationMessage, SpacecraftStateMsg, StarTrackerAttitudeMsg,
-        StarTrackerMsg, StripStateMsg, SunlineFilterMsg, TdbVehicleClockCorrelationMsg,
-        ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg, ThrusterArrayOnTimeCommandMsg,
-        ThrusterConfigMsg, VizSetting,
+        ReconfigBurnInfoMsg, ReconfigBurnStatus, SKF_N_STATES, SimulationMessage,
+        SpacecraftStateMsg, StarTrackerAttitudeMsg, StarTrackerMsg, StripStateMsg,
+        SunlineFilterMsg, TdbVehicleClockCorrelationMsg, ThrusterArrayConfigMsg,
+        ThrusterArrayForceCommandMsg, ThrusterConfigMsg, VizSetting,
     };
     use crate::telemetry::TelemetryMessage;
 
@@ -1101,9 +1099,6 @@ mod upstream_payloads {
             $check::<AttitudeStateMsg>();
             $check::<BodyForceCommandMsg>();
             $check::<BodyHeadingMsg>();
-            $check::<CssArraySensorMsg>();
-            $check::<CssConfigMsg>();
-            $check::<CssUnitConfigMsg>();
             $check::<DeviceCommandMsg>();
             $check::<DeviceStatusMsg>();
             $check::<DipoleRequestBodyMsg>();
@@ -1128,8 +1123,6 @@ mod upstream_payloads {
             $check::<RateCommandMsg>();
             $check::<ReconfigBurnArrayInfoMsg>();
             $check::<ReconfigBurnInfoMsg>();
-            $check::<RwConfigElementMsg>();
-            $check::<RwConstellationMsg>();
             $check::<StarTrackerAttitudeMsg>();
             $check::<StarTrackerMsg>();
             $check::<StripStateMsg>();
@@ -1137,7 +1130,6 @@ mod upstream_payloads {
             $check::<TdbVehicleClockCorrelationMsg>();
             $check::<ThrusterArrayConfigMsg>();
             $check::<ThrusterArrayForceCommandMsg>();
-            $check::<ThrusterArrayOnTimeCommandMsg>();
             $check::<ThrusterConfigMsg>();
         };
     }
@@ -1314,9 +1306,6 @@ mod upstream_payloads {
             AttitudeStateMsg,
             BodyForceCommandMsg,
             BodyHeadingMsg,
-            CssArraySensorMsg,
-            CssConfigMsg,
-            CssUnitConfigMsg,
             DeviceCommandMsg,
             DeviceStatusMsg,
             DipoleRequestBodyMsg,
@@ -1341,15 +1330,12 @@ mod upstream_payloads {
             RateCommandMsg,
             ReconfigBurnArrayInfoMsg,
             ReconfigBurnInfoMsg,
-            RwConfigElementMsg,
-            RwConstellationMsg,
             StarTrackerAttitudeMsg,
             StripStateMsg,
             SunlineFilterMsg,
             TdbVehicleClockCorrelationMsg,
             ThrusterArrayConfigMsg,
             ThrusterArrayForceCommandMsg,
-            ThrusterArrayOnTimeCommandMsg,
             ThrusterConfigMsg,
         );
 
@@ -1605,47 +1591,14 @@ mod upstream_payloads {
 
     #[test]
     fn from_active_fills_the_leading_entries_and_zeroes_the_rest() {
-        let on_times = ThrusterArrayOnTimeCommandMsg::from_active(&[0.5, 0.25]);
-        assert_eq!(on_times.on_time_request_s[..2], [0.5, 0.25]);
-        assert!(on_times.on_time_request_s[2..].iter().all(|&t| t == 0.0));
-
         let forces = ThrusterArrayForceCommandMsg::from_active(&[1.0; MAX_EFF_COUNT]);
         assert!(forces.thrust_force_n.iter().all(|&f| f == 1.0));
-
-        let readings = CssArraySensorMsg::from_active(&[0.1, 0.2, 0.3]);
-        assert_eq!(readings.time_tag_s, 0.0);
-        assert_eq!(readings.cos_values[..3], [0.1, 0.2, 0.3]);
-        assert!(readings.cos_values[3..].iter().all(|&c| c == 0.0));
 
         let thrusters: Vec<_> = (0..3).map(thruster).collect();
         let config = ThrusterArrayConfigMsg::from_active(&thrusters);
         assert_eq!(config.num_thrusters, 3);
         assert_eq!(config.active_thrusters(), thrusters.as_slice());
         assert_eq!(config.thrusters[3], ThrusterConfigMsg::default());
-
-        let units = [
-            CssUnitConfigMsg {
-                n_hat_b: Vector3::x(),
-                c_bias: 1.0,
-            },
-            CssUnitConfigMsg {
-                n_hat_b: Vector3::y(),
-                c_bias: 1.1,
-            },
-        ];
-        let css = CssConfigMsg::from_active(&units);
-        assert_eq!(css.num_css, 2);
-        assert_eq!(css.active_units(), units.as_slice());
-        assert_eq!(css.css_units[2], CssUnitConfigMsg::default());
-
-        let wheels = [RwConfigElementMsg {
-            gs_hat_b: Vector3::z(),
-            spin_axis_inertia_kg_m2: 0.1,
-            max_motor_torque_nm: 0.2,
-        }];
-        let constellation = RwConstellationMsg::from_active(&wheels);
-        assert_eq!(constellation.num_rw, 1);
-        assert_eq!(constellation.active_wheels(), wheels.as_slice());
     }
 
     #[test]
@@ -1656,12 +1609,6 @@ mod upstream_payloads {
         };
         assert_eq!(config.active_thrusters().len(), MAX_EFF_COUNT);
 
-        let css = CssConfigMsg {
-            num_css: MAX_NUM_CSS_SENSORS + 1,
-            ..CssConfigMsg::default()
-        };
-        assert_eq!(css.active_units().len(), MAX_NUM_CSS_SENSORS);
-
         let limb = OpNavLimbMsg {
             num_limb_points: 2,
             ..OpNavLimbMsg::default()
@@ -1670,9 +1617,9 @@ mod upstream_payloads {
     }
 
     #[test]
-    #[should_panic(expected = "at most 32 CSS readings are supported")]
+    #[should_panic(expected = "at most 36 thruster force commands are supported")]
     fn from_active_refuses_more_entries_than_upstream_holds() {
-        let _ = CssArraySensorMsg::from_active(&[0.0; MAX_NUM_CSS_SENSORS + 1]);
+        let _ = ThrusterArrayForceCommandMsg::from_active(&[0.0; MAX_EFF_COUNT + 1]);
     }
 
     /// Upstream `EP2C`, written out independently of nalgebra.

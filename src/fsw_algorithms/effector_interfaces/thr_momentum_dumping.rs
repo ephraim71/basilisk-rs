@@ -31,7 +31,7 @@ use nalgebra::Vector3;
 
 use crate::messages::{
     BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output, ThrusterArrayConfigMsg,
-    ThrusterArrayForceCommandMsg, ThrusterArrayOnTimeCommandMsg,
+    ThrusterArrayForceCommandMsg, ThrusterCommandMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::{Module, SimulationContext};
@@ -73,8 +73,10 @@ pub struct ThrMomentumDumping {
     /// Upstream `deltaHInMsg`: momentum-change request whose (re)writing starts
     /// a dumping cycle; its torque is not used otherwise.
     pub delta_h_in_msg: Input<BodyTorqueCommandMsg>,
-    /// Upstream `thrusterOnTimeOutMsg`.
-    pub thruster_on_time_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// Upstream `thrusterOnTimeOutMsg`: commanded on-time of each thruster,
+    /// one output per thruster in cluster order, registered with
+    /// [`ThrMomentumDumping::add_thruster_command_output`].
+    pub thruster_on_time_out_msgs: Vec<Output<ThrusterCommandMsg>>,
     thrusters: Vec<DumpingThruster>,
     /// Upstream `thrDumpingCounter`: control periods left to rest.
     thr_dumping_counter: i32,
@@ -125,13 +127,27 @@ impl ThrMomentumDumping {
             thruster_impulse_in_msg: Input::default(),
             thruster_conf_in_msg: Input::default(),
             delta_h_in_msg: Input::default(),
-            thruster_on_time_out_msg: Output::default(),
+            thruster_on_time_out_msgs: Vec::new(),
             thrusters: Vec::new(),
             thr_dumping_counter: 0,
             last_delta_h_in_msg_nanos: 0,
             delta_h_write_time: WriteTime::default(),
             prior_time_nanos: 0,
         }
+    }
+
+    /// Registers one independently connectable thruster command output. The
+    /// outputs follow the cluster order: the first one registered carries the
+    /// on-time of the first thruster.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.thruster_on_time_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.thruster_on_time_out_msgs.push(Output::default());
+        self.thruster_on_time_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
     }
 
     /// Upstream `Reset_thrMomentumDumping`: cache the thruster limits and
@@ -175,11 +191,11 @@ impl ThrMomentumDumping {
         }
     }
 
-    fn compute_on_times(&mut self, call_time_nanos: u64) -> ThrusterArrayOnTimeCommandMsg {
+    fn compute_on_times(&mut self, call_time_nanos: u64) -> [f64; MAX_EFF_COUNT] {
         let delta_h_written_nanos = self
             .delta_h_write_time
             .observe(&self.delta_h_in_msg.read(), call_time_nanos);
-        let mut output = ThrusterArrayOnTimeCommandMsg::default();
+        let mut output = [0.0; MAX_EFF_COUNT];
 
         // Preserve upstream's zero-time sentinel: the first call after a reset
         // only records the time, and so does every call at t = 0.
@@ -189,7 +205,7 @@ impl ThrMomentumDumping {
                 dt_s = 0.0;
             }
             let impulses = self.thruster_impulse_in_msg.read();
-            let on_times = &mut output.on_time_request_s[..self.thrusters.len()];
+            let on_times = &mut output[..self.thrusters.len()];
 
             if self.last_delta_h_in_msg_nanos == delta_h_written_nanos {
                 self.continue_cycle(on_times, dt_s);
@@ -253,8 +269,9 @@ impl ThrMomentumDumping {
 
 impl Module for ThrMomentumDumping {
     fn init(&mut self) {
-        self.thruster_on_time_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.thruster_on_time_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.reset(0);
     }
 
@@ -263,8 +280,12 @@ impl Module for ThrMomentumDumping {
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        let output = self.compute_on_times(context.current_sim_nanos);
-        self.thruster_on_time_out_msg.write(output);
+        let on_times = self.compute_on_times(context.current_sim_nanos);
+        for (index, output) in self.thruster_on_time_out_msgs.iter().enumerate() {
+            output.write(ThrusterCommandMsg {
+                on_time_s: on_times[index],
+            });
+        }
     }
 }
 
@@ -282,8 +303,8 @@ mod tests {
     use nalgebra::Vector3;
 
     use crate::messages::{
-        BodyTorqueCommandMsg, MAX_EFF_COUNT, Output, ThrusterArrayConfigMsg,
-        ThrusterArrayForceCommandMsg, ThrusterConfigMsg,
+        BodyTorqueCommandMsg, Output, ThrusterArrayConfigMsg, ThrusterArrayForceCommandMsg,
+        ThrusterConfigMsg,
     };
     use crate::{Module, SimulationContext};
 
@@ -379,7 +400,8 @@ mod tests {
     }
 
     /// A module wired to the upstream thruster cluster and impulse request,
-    /// initialized, with the output driving its `deltaHInMsg`.
+    /// with one command output per thruster, initialized, with the output
+    /// driving its `deltaHInMsg`.
     fn wired_module(
         config: ThrMomentumDumpingConfig,
         initial_request: BodyTorqueCommandMsg,
@@ -390,17 +412,24 @@ mod tests {
         Output::new(ThrusterArrayForceCommandMsg::from_active(&IMPULSES_NS))
             .connect_to(&mut module.thruster_impulse_in_msg);
         delta_h_out.connect_to(&mut module.delta_h_in_msg);
+        for _ in 0..NUM_THRUSTERS {
+            module.add_thruster_command_output();
+        }
         module.init();
         (module, delta_h_out)
     }
 
-    fn fires_nothing(module: &ThrMomentumDumping) -> bool {
+    /// The on-times on every registered output, in thruster order.
+    fn on_times(module: &ThrMomentumDumping) -> Vec<f64> {
         module
-            .thruster_on_time_out_msg
-            .read()
-            .on_time_request_s
+            .thruster_on_time_out_msgs
             .iter()
-            .all(|on_time| *on_time == 0.0)
+            .map(|output| output.read().on_time_s)
+            .collect()
+    }
+
+    fn fires_nothing(module: &ThrMomentumDumping) -> bool {
+        on_times(module).iter().all(|on_time| *on_time == 0.0)
     }
 
     /// The upstream test sequence; returns the on-times recorded every 0.5 s.
@@ -418,9 +447,8 @@ mod tests {
         let mut run = |module: &mut ThrMomentumDumping, times_s: &[f64]| {
             for &time_s in times_s {
                 module.update(&context(seconds(time_s)));
-                let output = module.thruster_on_time_out_msg.read();
                 let mut row = [0.0; NUM_THRUSTERS];
-                row.copy_from_slice(&output.on_time_request_s[..NUM_THRUSTERS]);
+                row.copy_from_slice(&on_times(module));
                 samples.push(row);
             }
         };
@@ -487,13 +515,13 @@ mod tests {
 
         for (time_s, expected_s) in [(1.0, 0.5), (1.5, 0.5), (2.0, 0.2), (2.5, 0.0), (3.0, 0.0)] {
             module.update(&context(seconds(time_s)));
-            let on_times = module.thruster_on_time_out_msg.read().on_time_request_s;
+            let output = on_times(&module);
             assert!(
-                (on_times[0] - expected_s).abs() <= ACCURACY,
+                (output[0] - expected_s).abs() <= ACCURACY,
                 "{time_s} s: expected {expected_s}, got {}",
-                on_times[0]
+                output[0]
             );
-            assert!(on_times[1..].iter().all(|on_time| *on_time == 0.0));
+            assert!(output[1..].iter().all(|on_time| *on_time == 0.0));
         }
     }
 
@@ -536,8 +564,7 @@ mod tests {
         // A later write does start a cycle.
         delta_h_out.write(request(2.0));
         module.update(&context(seconds(2.5)));
-        let on_times = module.thruster_on_time_out_msg.read().on_time_request_s;
-        assert_eq!(on_times[..4], [0.5, 0.1, 0.0, 0.5]);
+        assert_eq!(on_times(&module)[..4], [0.5, 0.1, 0.0, 0.5]);
     }
 
     #[test]
@@ -553,9 +580,6 @@ mod tests {
         delta_h_out.write(request(1.0));
         // dt is negative and clamped to zero, so every on-time is capped at 0.
         module.update(&context(seconds(0.5)));
-        assert_eq!(
-            module.thruster_on_time_out_msg.read().on_time_request_s,
-            [0.0; MAX_EFF_COUNT]
-        );
+        assert_eq!(on_times(&module), [0.0; NUM_THRUSTERS]);
     }
 }

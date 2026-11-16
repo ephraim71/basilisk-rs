@@ -31,9 +31,9 @@ use nalgebra::{Matrix3, Vector3, Vector4, Vector6};
 
 use super::mean_oe_feedback::adjust_range;
 use crate::messages::{
-    AttitudeReferenceMsg, Input, MAX_BURN_CNT, NavigationTranslationMsg, Output,
+    AttitudeReferenceMsg, Input, MAX_BURN_CNT, MAX_EFF_COUNT, NavigationTranslationMsg, Output,
     ReconfigBurnArrayInfoMsg, ReconfigBurnInfoMsg, ReconfigBurnStatus, ThrusterArrayConfigMsg,
-    ThrusterArrayOnTimeCommandMsg, VehicleConfigMsg,
+    ThrusterCommandMsg, VehicleConfigMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::utilities::linear_algebra::{normalize_or_zero, safe_acos};
@@ -95,8 +95,9 @@ pub struct SpacecraftReconfig {
     /// Upstream `attRefOutMsg`: reference attitude for the deputy.
     pub att_ref_out_msg: Output<AttitudeReferenceMsg>,
     /// Upstream `onTimeOutMsg`: thruster on-times, written only at the update
-    /// where a burn starts.
-    pub on_time_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// where a burn starts; one output per thruster in cluster order,
+    /// registered with [`SpacecraftReconfig::add_thruster_command_output`].
+    pub on_time_out_msgs: Vec<Output<ThrusterCommandMsg>>,
     /// Upstream `burnArrayInfoOutMsg`: the current burn plan.
     pub burn_array_info_out_msg: Output<ReconfigBurnArrayInfoMsg>,
     /// Upstream `resetPeriod` \[s\]; see [`Self::reset_period_s`].
@@ -116,8 +117,8 @@ pub struct SpacecraftReconfig {
 /// What one update commands.
 struct ManeuverCommand {
     attitude: AttitudeReferenceMsg,
-    /// Thruster on-times when a burn starts at this update.
-    on_time: Option<ThrusterArrayOnTimeCommandMsg>,
+    /// Thruster on-times \[s\] when a burn starts at this update.
+    on_time: Option<[f64; MAX_EFF_COUNT]>,
 }
 
 impl SpacecraftReconfig {
@@ -131,7 +132,7 @@ impl SpacecraftReconfig {
             att_ref_in_msg: Input::default(),
             vehicle_config_in_msg: Input::default(),
             att_ref_out_msg: Output::default(),
-            on_time_out_msg: Output::default(),
+            on_time_out_msgs: Vec::new(),
             burn_array_info_out_msg: Output::default(),
             reset_period_s: 0.0,
             t_current_s: 0.0,
@@ -139,6 +140,20 @@ impl SpacecraftReconfig {
             att_ref_in_is_linked: false,
             burns: ReconfigBurnArrayInfoMsg::default(),
         }
+    }
+
+    /// Registers one independently connectable thruster command output. The
+    /// outputs follow the cluster order: the first one registered carries the
+    /// on-time of the first thruster.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.on_time_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.on_time_out_msgs.push(Output::default());
+        self.on_time_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
     }
 
     /// Upstream `resetPeriod` \[s\]: one orbital period of the chief, set when
@@ -310,8 +325,9 @@ impl SpacecraftReconfig {
 impl Module for SpacecraftReconfig {
     fn init(&mut self) {
         self.att_ref_out_msg.write(AttitudeReferenceMsg::default());
-        self.on_time_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.on_time_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.burn_array_info_out_msg
             .write(ReconfigBurnArrayInfoMsg::default());
         self.reset_state();
@@ -337,8 +353,12 @@ impl Module for SpacecraftReconfig {
 
         self.att_ref_out_msg.write(command.attitude);
         self.burn_array_info_out_msg.write(self.burns.clone());
-        if let Some(on_time) = command.on_time {
-            self.on_time_out_msg.write(on_time);
+        if let Some(on_times) = command.on_time {
+            for (index, output) in self.on_time_out_msgs.iter().enumerate() {
+                output.write(ThrusterCommandMsg {
+                    on_time_s: on_times[index],
+                });
+            }
         }
     }
 }
@@ -368,11 +388,10 @@ fn truncated_half_on_time_s(on_time_s: f64, num_thrusters: usize) -> Option<f64>
 }
 
 /// Every thruster fires for an equal share of the burn duration.
-fn on_time_command(on_time_s: f64, num_thrusters: usize) -> ThrusterArrayOnTimeCommandMsg {
-    let mut command = ThrusterArrayOnTimeCommandMsg::default();
+fn on_time_command(on_time_s: f64, num_thrusters: usize) -> [f64; MAX_EFF_COUNT] {
+    let mut command = [0.0; MAX_EFF_COUNT];
     let share_s = on_time_s / num_thrusters as f64;
     command
-        .on_time_request_s
         .iter_mut()
         .take(num_thrusters)
         .for_each(|request| *request = share_s);
@@ -607,8 +626,8 @@ mod tests {
     use super::{SpacecraftReconfig, SpacecraftReconfigConfig, truncated_half_on_time_s};
     use crate::messages::{
         AttitudeReferenceMsg, MAX_EFF_COUNT, NavigationTranslationMsg, Output,
-        ReconfigBurnArrayInfoMsg, ReconfigBurnStatus, ThrusterArrayConfigMsg,
-        ThrusterArrayOnTimeCommandMsg, ThrusterConfigMsg, VehicleConfigMsg,
+        ReconfigBurnArrayInfoMsg, ReconfigBurnStatus, ThrusterArrayConfigMsg, ThrusterCommandMsg,
+        ThrusterConfigMsg, VehicleConfigMsg,
     };
     use crate::utilities::linear_algebra::normalize_or_zero;
     use crate::utilities::orbital_motion::ClassicElements;
@@ -635,8 +654,10 @@ mod tests {
     }
 
     impl Inputs {
-        /// Builds the module with every input connected, the reference
-        /// attitude only if `with_reference`, and runs its initialization.
+        /// Builds the module with every input connected (the reference
+        /// attitude only if `with_reference`) and every thruster command
+        /// output registered, so that the outputs past the configured
+        /// thrusters are checked too, and runs its initialization.
         fn module(
             &self,
             config: SpacecraftReconfigConfig,
@@ -650,9 +671,21 @@ mod tests {
             if with_reference {
                 self.att_ref.connect_to(&mut module.att_ref_in_msg);
             }
+            for _ in 0..MAX_EFF_COUNT {
+                module.add_thruster_command_output();
+            }
             module.init();
             module
         }
+    }
+
+    /// The on-times on every registered output, in thruster order.
+    fn on_times(module: &SpacecraftReconfig) -> Vec<f64> {
+        module
+            .on_time_out_msgs
+            .iter()
+            .map(|output| output.read().on_time_s)
+            .collect()
     }
 
     fn thrusters(
@@ -910,7 +943,7 @@ mod tests {
         /// Steps where the published attitude changed, and what it points at.
         pointing_changes: Vec<(usize, Pointing)>,
         /// Steps where a burn started, with `tCurrent` and the on-time command.
-        burn_starts: Vec<(usize, f64, ThrusterArrayOnTimeCommandMsg)>,
+        burn_starts: Vec<(usize, f64, Vec<f64>)>,
         /// Steps where the module reset itself and published the cleared plan.
         self_resets: Vec<usize>,
     }
@@ -920,7 +953,7 @@ mod tests {
     /// it publishes. The inputs are constant, so every plan after a self-reset
     /// must repeat the first one.
     fn run_sequence(module: &mut SpacecraftReconfig, first_nanos: u64, steps: usize) -> Sequence {
-        let marker = ThrusterArrayOnTimeCommandMsg::from_active(&[-1.0]);
+        let marker_s = -1.0;
         let mut sequence = Sequence {
             plan: ReconfigBurnArrayInfoMsg::default(),
             pointing_changes: Vec::new(),
@@ -929,7 +962,11 @@ mod tests {
         };
         for step in 0..steps {
             // Upstream writes the on-time message only when a burn starts.
-            module.on_time_out_msg.write(marker.clone());
+            for output in &module.on_time_out_msgs {
+                output.write(ThrusterCommandMsg {
+                    on_time_s: marker_s,
+                });
+            }
             module.update(&context(first_nanos + step as u64 * STEP_NANOS));
 
             let published_plan = module.burn_array_info_out_msg.read();
@@ -966,8 +1003,8 @@ mod tests {
                 sequence.pointing_changes.push((step, pointing));
             }
 
-            let on_time = module.on_time_out_msg.read();
-            if on_time != marker {
+            let on_time = on_times(module);
+            if on_time.iter().any(|request| *request != marker_s) {
                 sequence
                     .burn_starts
                     .push((step, module.t_current_s, on_time));
@@ -989,7 +1026,7 @@ mod tests {
         {
             assert_eq!(step, true_step);
             assert_close(*t_current_s, *true_t_current_s, 1e-9, "tCurrent");
-            for (index, request) in on_time.on_time_request_s.iter().enumerate() {
+            for (index, request) in on_time.iter().enumerate() {
                 let expected = if index < num_thrusters {
                     *true_on_time_s
                 } else {
@@ -1264,10 +1301,7 @@ mod tests {
                     expected_attitude.domega_rn_n_radps2
                 );
             }
-            assert_eq!(
-                module.on_time_out_msg.read(),
-                ThrusterArrayOnTimeCommandMsg::default()
-            );
+            assert_eq!(on_times(&module), [0.0; MAX_EFF_COUNT]);
         }
     }
 
@@ -1326,10 +1360,7 @@ mod tests {
                 .iter()
                 .all(|burn| burn.status != ReconfigBurnStatus::Burned)
         );
-        assert_eq!(
-            module.on_time_out_msg.read(),
-            ThrusterArrayOnTimeCommandMsg::default()
-        );
+        assert_eq!(on_times(&module), [0.0; MAX_EFF_COUNT]);
     }
 
     #[test]
@@ -1338,13 +1369,13 @@ mod tests {
         inputs.thrusters = Output::new(thrusters(Vector3::x(), 1.0, MAX_EFF_COUNT));
         let mut module = inputs.module(reconfiguration_config(300.0), true);
         let mut step = 0;
-        while module.on_time_out_msg.read() == ThrusterArrayOnTimeCommandMsg::default() {
+        while on_times(&module) == [0.0; MAX_EFF_COUNT] {
             module.update(&context(step * STEP_NANOS));
             step += 1;
             assert!(step < 1000, "no burn started");
         }
         let share_s = NORMAL_ON_TIME_S / MAX_EFF_COUNT as f64;
-        for request in module.on_time_out_msg.read().on_time_request_s {
+        for request in on_times(&module) {
             assert_close(request, share_s, 1e-12, "OnTimeRequest");
         }
     }

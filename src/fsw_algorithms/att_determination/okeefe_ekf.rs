@@ -10,20 +10,23 @@
 //! states: extended unless the largest covariance magnitude exceeds
 //! `ekf_switch`, classical otherwise.
 //!
-//! As in [`super::sunline_ekf`], a connected `css_data_in_msg` counts as
-//! written and its `time_tag_s` stands for upstream's header write time, with
-//! the same two exceptions (a producer that leaves `time_tag_s` at zero, and
-//! a producer that has not written yet at 0 s).
+//! As in [`super::sunline_ekf`], the per-sensor CSS readings count as written
+//! at the current update when every one of `css_data_in_msgs` is connected,
+//! the stand-in for upstream's message header; the update logic takes the
+//! write time as an explicit argument.
 
 use nalgebra::{Matrix3, SVector, Vector3};
 
+use super::CssUnit;
+use super::css_inputs::{
+    check_css_inputs, configured_css_units, css_inputs, css_readings, css_written_nanos,
+};
 use super::sunline_ekf::{
-    CssObservations, ckf_update, configured_css_units, ekf_update, kalman_gain,
-    needs_classical_update,
+    CssObservations, ckf_update, ekf_update, kalman_gain, needs_classical_update,
 };
 use crate::messages::{
-    CssArraySensorMsg, CssConfigMsg, CssUnitConfigMsg, Input, MAX_N_CSS_MEAS,
-    NavigationAttitudeMsg, Output, SKF_N_STATES_HALF, SunlineFilterMsg,
+    Input, MAX_N_CSS_MEAS, NavigationAttitudeMsg, Output, SKF_N_STATES_HALF, SunSensorMsg,
+    SunlineFilterMsg,
 };
 use crate::time::NANO2SEC;
 use crate::utilities::linear_algebra::{is_zero_within, normalize_or_zero, safe_acos};
@@ -52,6 +55,11 @@ pub struct OkeefeEkfConfig {
     /// carried into a step (before its propagation) exceeds it, measurement
     /// updates use the classical instead of the extended form.
     pub ekf_switch: f64,
+    /// Upstream `cssConfigInMsg`: the CSS normals and biases, read at Reset,
+    /// one entry per input of [`OkeefeEkf::css_data_in_msgs`] (which
+    /// [`OkeefeEkf::new`] creates from it). Upstream uses at most
+    /// `MAX_N_CSS_MEAS` sensors.
+    pub css_units: Vec<CssUnit>,
 }
 
 impl Default for OkeefeEkfConfig {
@@ -62,6 +70,7 @@ impl Default for OkeefeEkfConfig {
             q_proc_val: 0.0,
             sensor_use_thresh: 0.0,
             ekf_switch: 0.0,
+            css_units: Vec::new(),
         }
     }
 }
@@ -75,10 +84,9 @@ impl Default for OkeefeEkfConfig {
 pub struct OkeefeEkf {
     /// User-settable parameters.
     pub config: OkeefeEkfConfig,
-    /// Upstream `cssDataInMsg`: the CSS cosine readings.
-    pub css_data_in_msg: Input<CssArraySensorMsg>,
-    /// Upstream `cssConfigInMsg`: the CSS normals and biases, read at Reset.
-    pub css_config_in_msg: Input<CssConfigMsg>,
+    /// Upstream `cssDataInMsg`, one input per sensor of `config.css_units`:
+    /// its cosine reading is `sensed_value`.
+    pub css_data_in_msgs: Vec<Input<SunSensorMsg>>,
     /// Upstream `navStateOutMsg`: the unit sun heading and the filter time.
     pub nav_state_out_msg: Output<NavigationAttitudeMsg>,
     /// Upstream `filtDataOutMsg`: the three-state estimate packed into the
@@ -99,19 +107,19 @@ pub struct OkeefeEkf {
     covar_bar: Matrix3<f64>,
     state_transition: Matrix3<f64>,
     proc_noise: Matrix3<f64>,
-    css_units: Vec<CssUnitConfigMsg>,
+    css_units: Vec<CssUnit>,
     observations: CssObservations<SKF_N_STATES_HALF>,
     post_fits: SVector<f64, MAX_N_CSS_MEAS>,
 }
 
 impl OkeefeEkf {
-    /// A filter with unconnected inputs and a zero estimate; seed `state`,
-    /// `omega`, `state_error` and `covar` before `init`.
+    /// A filter with one unconnected CSS input per configured sensor and a
+    /// zero estimate; seed `state`, `omega`, `state_error` and `covar` before
+    /// `init`.
     pub fn new(config: OkeefeEkfConfig) -> Self {
         Self {
+            css_data_in_msgs: css_inputs(&config.css_units),
             config,
-            css_data_in_msg: Input::default(),
-            css_config_in_msg: Input::default(),
             nav_state_out_msg: Output::default(),
             filt_data_out_msg: Output::default(),
             state: Vector3::zeros(),
@@ -134,14 +142,13 @@ impl OkeefeEkf {
     /// the filter bookkeeping at `call_time_nanos`. The estimate (`state`,
     /// `omega`, `state_error`, `covar`) and the post-fit residuals are kept,
     /// as upstream.
+    ///
+    /// # Panics
+    ///
+    /// If `config.css_units` no longer has one entry per CSS input.
     pub fn reset(&mut self, call_time_nanos: u64) {
-        if !self.css_config_in_msg.is_connected() {
-            log::error!("okeefeEKF.css_config_in_msg is not connected");
-        }
-        if !self.css_data_in_msg.is_connected() {
-            log::error!("okeefeEKF.css_data_in_msg is not connected");
-        }
-        self.css_units = configured_css_units(&self.css_config_in_msg.read(), "okeefeEKF");
+        check_css_inputs(&self.css_data_in_msgs, &self.config.css_units, "okeefeEKF");
+        self.css_units = configured_css_units(&self.config.css_units, "okeefeEKF");
 
         self.time_tag_s = call_time_nanos as f64 * NANO2SEC;
         self.observations = CssObservations::unprocessed();
@@ -152,12 +159,17 @@ impl OkeefeEkf {
         self.proc_noise = self.config.q_proc_val * Matrix3::identity();
     }
 
-    fn update_filter(&mut self, call_time_nanos: u64) {
-        let css_data = self.css_data_in_msg.read();
+    /// Upstream `Update_okeefeEKF`, with the CSS message header explicit:
+    /// `readings` holds one value per sensor, and `written_nanos` is upstream
+    /// `timeWritten` when the message `isWritten`.
+    fn step(&mut self, call_time_nanos: u64, readings: &[f64], written_nanos: Option<u64>) {
         // Upstream: `timeWritten * NANO2SEC >= timeTag && isWritten`.
-        if self.css_data_in_msg.is_connected() && css_data.time_tag_s >= self.time_tag_s {
-            self.time_update(css_data.time_tag_s);
-            self.measurement_update(&css_data.cos_values);
+        let measurement_time_s = written_nanos.map(|nanos| nanos as f64 * NANO2SEC);
+        if let Some(measurement_time_s) = measurement_time_s
+            && measurement_time_s >= self.time_tag_s
+        {
+            self.time_update(measurement_time_s);
+            self.measurement_update(readings);
         }
 
         let call_time_s = call_time_nanos as f64 * NANO2SEC;
@@ -169,6 +181,8 @@ impl OkeefeEkf {
 
         self.observations
             .write_post_fit_residuals(&self.state_error, &mut self.post_fits);
+        self.nav_state_out_msg.write(self.nav_state());
+        self.filt_data_out_msg.write(self.filter_data());
     }
 
     /// Upstream `sunlineTimeUpdate` (okeefeEKF): propagates the heading with
@@ -268,9 +282,9 @@ impl Module for OkeefeEkf {
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        self.update_filter(context.current_sim_nanos);
-        self.nav_state_out_msg.write(self.nav_state());
-        self.filt_data_out_msg.write(self.filter_data());
+        let readings = css_readings(&self.css_data_in_msgs);
+        let written_nanos = css_written_nanos(&self.css_data_in_msgs, context);
+        self.step(context.current_sim_nanos, &readings, written_nanos);
     }
 }
 
@@ -328,19 +342,22 @@ mod tests {
 
     use super::{OkeefeEkf, OkeefeEkfConfig, dynamics_matrix, heading_rate, propagate_state};
     use crate::Module;
+    use crate::fsw_algorithms::att_determination::CssUnit;
+    use crate::fsw_algorithms::att_determination::css_inputs::test_support::UpstreamTimeline;
     use crate::fsw_algorithms::att_determination::sunline_ekf::tests::{
-        TASK_RATE_NANOS, context, css_constellation, css_reading, expected_joseph_covariance,
-        individual_test_css, individual_test_y, padded, unwritten_css_data,
+        TASK_RATE_NANOS, context, css_constellation, css_outputs, css_reading,
+        expected_joseph_covariance, individual_test_css, individual_test_y, padded,
     };
     use crate::fsw_algorithms::att_determination::sunline_ekf::{
         CssObservations, KalmanGain, MeasurementMatrix, ckf_update, ekf_update, kalman_gain,
     };
-    use crate::messages::{CssConfigMsg, MAX_N_CSS_MEAS, Output, SunlineFilterMsg};
+    use crate::messages::{MAX_N_CSS_MEAS, SunlineFilterMsg};
 
     const DT_S: f64 = 0.5;
 
-    /// Upstream `setupFilterData`.
-    fn setup_filter_data() -> OkeefeEkf {
+    /// Upstream `setupFilterData`, with the sensors `css_units` (upstream
+    /// subscribes the filter to their configuration message separately).
+    fn setup_filter_data(css_units: Vec<CssUnit>) -> OkeefeEkf {
         let mut module = OkeefeEkf::new(OkeefeEkfConfig {
             name: "okeefeEKF".to_string(),
             sensor_use_thresh: 0.0,
@@ -348,6 +365,7 @@ mod tests {
             q_proc_val: 0.1 * 0.1,
             q_obs_val: 0.001,
             ekf_switch: 5.0,
+            css_units,
         });
         module.state = Vector3::new(1.0, 1.0, 1.0);
         module.omega = Vector3::new(0.1, 0.2, 0.1);
@@ -539,12 +557,9 @@ mod tests {
 
     #[test]
     fn matches_upstream_state_prop_static() {
-        let mut module = setup_filter_data();
+        // Neither input message is ever written: no sensors, no readings.
+        let mut module = setup_filter_data(Vec::new());
         module.omega = Vector3::zeros();
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::default());
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
 
         // Upstream logs every 5 s over 8000 s; its first and last samples are
@@ -561,16 +576,13 @@ mod tests {
 
     #[test]
     fn matches_upstream_state_prop_variable() {
-        let mut module = setup_filter_data();
+        // As in the static case, no CSS message is ever written.
+        let mut module = setup_filter_data(Vec::new());
         let initial_state = module.state;
         let initial_x = module.state_error;
         let initial_covar = module.covar;
         let init_omega = module.omega;
         let q_proc_val = module.config.q_proc_val;
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::default());
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
 
         let mut log = Vec::new();
@@ -705,39 +717,31 @@ mod tests {
         let covar_tol = 1.0e-1;
         let state_tol = if case.add_meas_noise { 1.0e-1 } else { 1.0e-10 };
 
-        let mut module = setup_filter_data();
-        module.omega = Vector3::zeros();
         let css_units = css_constellation();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-        let css_data = unwritten_css_data();
-        css_config.connect_to(&mut module.css_config_in_msg);
-        css_data.connect_to(&mut module.css_data_in_msg);
+        let mut module = setup_filter_data(css_units.clone());
+        module.omega = Vector3::zeros();
         module.state = Vector3::from(case.state_guess);
         module.state_error = Vector3::from(case.test_vector1) - module.state;
         module.init();
         let noise = Normal::new(0.0, module.config.q_obs_val.sqrt())
             .expect("the noise standard deviation is finite and positive");
 
+        let mut timeline = UpstreamTimeline::new(css_units.len());
         let mut data_log: Vec<SunlineFilterMsg> = Vec::new();
         let mut internal_log: Vec<InternalSample> = Vec::new();
-        let mut now = 0;
         for (half, state_target) in [case.test_vector1, case.test_vector2].iter().enumerate() {
             let state_target = Vector3::from(*state_target);
             for i in 0..case.sim_half_length {
                 if i > 20 {
                     let draw = case.add_meas_noise.then_some((&noise, &mut rng));
-                    css_data.write(css_reading(&css_units, &state_target, draw, now));
+                    timeline.write(css_reading(&css_units, &state_target, draw));
                 }
-                // Upstream's first `ExecuteSimulation` also runs the t = 0 step.
-                if half == 0 && i == 0 {
-                    module.update(&context(0));
+                let stop_nanos = (half * case.sim_half_length + i + 1) as u64 * TASK_RATE_NANOS;
+                timeline.execute_until(stop_nanos, |call_nanos, readings, written_nanos| {
+                    module.step(call_nanos, readings, written_nanos);
                     data_log.push(module.filt_data_out_msg.read());
                     internal_log.push(InternalSample::of(&module));
-                }
-                now = (half * case.sim_half_length + i + 1) as u64 * TASK_RATE_NANOS;
-                module.update(&context(now));
-                data_log.push(module.filt_data_out_msg.read());
-                internal_log.push(InternalSample::of(&module));
+                });
             }
 
             let first_covar = data_log[0].packed_covariance::<3>();
@@ -780,14 +784,11 @@ mod tests {
 
     #[test]
     fn packs_the_three_state_estimate_into_the_filter_message() {
-        let mut module = setup_filter_data();
+        let mut module = setup_filter_data(css_constellation());
         module.covar = Matrix3::new(0.4, 0.01, 0.02, 0.01, 0.5, 0.03, 0.02, 0.03, 0.6);
-        let css_data = unwritten_css_data();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_constellation()));
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
-        module.update(&context(0));
+        // Upstream's subscribed but never written CSS message.
+        module.step(0, &[0.0; 8], None);
 
         let msg = module.filt_data_out_msg.read();
         assert_eq!(msg.packed_covariance::<3>(), module.covar);
@@ -807,75 +808,115 @@ mod tests {
         );
     }
 
-    /// `setup_filter_data` with `ekf_switch`, after one update that processes
-    /// a clean reading of `(-0.7, 0.7, 0)` written at 0 s.
+    /// A clean constellation reading of `(-0.7, 0.7, 0)`.
+    fn clean_reading() -> Vec<f64> {
+        css_reading(&css_constellation(), &Vector3::new(-0.7, 0.7, 0.0), None)
+    }
+
+    /// `setup_filter_data` with `ekf_switch`, after one update at 0.5 s that
+    /// processes [`clean_reading`] written at 0 s.
     fn filter_after_first_reading(omega: Vector3<f64>, ekf_switch: f64) -> OkeefeEkf {
-        let mut module = setup_filter_data();
+        let mut module = setup_filter_data(css_constellation());
         module.omega = omega;
         module.config.ekf_switch = ekf_switch;
-        let css_units = css_constellation();
-        let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-        let css_data = unwritten_css_data();
-        css_data.connect_to(&mut module.css_data_in_msg);
-        css_config.connect_to(&mut module.css_config_in_msg);
         module.init();
-        css_data.write(css_reading(
-            &css_units,
-            &Vector3::new(-0.7, 0.7, 0.0),
-            None,
-            0,
-        ));
-        module.update(&context(TASK_RATE_NANOS));
+        module.step(TASK_RATE_NANOS, &clean_reading(), Some(0));
         module
+    }
+
+    #[test]
+    fn update_reads_connected_css_inputs_as_written_at_the_call_time() {
+        let readings = clean_reading();
+        let css_data = css_outputs(&readings);
+        let mut through_update = setup_filter_data(css_constellation());
+        // Sensor 5 faces the sun, but its input is left unconnected.
+        let mut partly_connected = setup_filter_data(css_constellation());
+        for (index, output) in css_data.iter().enumerate() {
+            output.connect_to(&mut through_update.css_data_in_msgs[index]);
+            if index != 5 {
+                output.connect_to(&mut partly_connected.css_data_in_msgs[index]);
+            }
+        }
+        let mut through_step = setup_filter_data(css_constellation());
+        let mut unwritten_step = setup_filter_data(css_constellation());
+        for module in [
+            &mut through_update,
+            &mut partly_connected,
+            &mut through_step,
+            &mut unwritten_step,
+        ] {
+            module.init();
+        }
+        let mut partial_readings = readings.clone();
+        partial_readings[5] = 0.0;
+
+        for tick in 0..20 {
+            let now = tick * TASK_RATE_NANOS;
+            through_update.update(&context(now));
+            through_step.step(now, &readings, Some(now));
+            assert_eq!(
+                through_update.filt_data_out_msg.read(),
+                through_step.filt_data_out_msg.read()
+            );
+
+            // One unconnected input: the readings count as never written.
+            partly_connected.update(&context(now));
+            unwritten_step.step(now, &partial_readings, None);
+            assert_eq!(
+                partly_connected.filt_data_out_msg.read(),
+                unwritten_step.filt_data_out_msg.read()
+            );
+        }
+        // Sensors 4, 5 and 6 face this sun direction.
+        assert_eq!(through_update.filt_data_out_msg.read().num_obs, 3);
     }
 
     #[test]
     fn config_set_after_new_takes_effect_at_init() {
         let run = |mut module: OkeefeEkf| {
-            let css_units = css_constellation();
-            let css_config = Output::new(CssConfigMsg::from_active(&css_units));
-            let css_data = unwritten_css_data();
-            css_config.connect_to(&mut module.css_config_in_msg);
-            css_data.connect_to(&mut module.css_data_in_msg);
             module.init();
             for step in 0..4 {
-                let sun_heading = Vector3::new(-0.7, 0.7, 0.0);
-                let reading = css_reading(&css_units, &sun_heading, None, step * TASK_RATE_NANOS);
-                css_data.write(reading);
-                module.update(&context((step + 1) * TASK_RATE_NANOS));
+                module.step(
+                    (step + 1) * TASK_RATE_NANOS,
+                    &clean_reading(),
+                    Some(step * TASK_RATE_NANOS),
+                );
             }
             module.filt_data_out_msg.read()
         };
+        // `new` fixes the sensors, as it makes one input per sensor; the
+        // other parameters may change until `init`.
         let tuned = OkeefeEkfConfig {
             q_obs_val: 0.01,
             q_proc_val: 0.5,
             sensor_use_thresh: 0.3,
             ekf_switch: 0.0,
-            ..setup_filter_data().config
+            ..setup_filter_data(css_constellation()).config
         };
 
-        let seeded = setup_filter_data();
+        let seeded = setup_filter_data(css_constellation());
         let mut configured_in_new = OkeefeEkf::new(tuned.clone());
         configured_in_new.state = seeded.state;
         configured_in_new.omega = seeded.omega;
         configured_in_new.state_error = seeded.state_error;
         configured_in_new.covar = seeded.covar;
-        let mut configured_later = setup_filter_data();
+        let mut configured_later = setup_filter_data(css_constellation());
         configured_later.config = tuned;
 
         let expected = run(configured_in_new);
         assert_eq!(run(configured_later), expected);
-        assert_ne!(run(setup_filter_data()), expected);
+        assert_ne!(run(setup_filter_data(css_constellation())), expected);
     }
 
     #[test]
     fn a_classical_update_leaves_the_reference_state_uncorrected() {
         // Upstream quirk: in CKF mode only the state error absorbs the
         // measurement; with no rate the reference heading never moves.
-        let guess = setup_filter_data().state;
+        let seeded = setup_filter_data(Vec::new());
+        let guess = seeded.state;
         let classical = filter_after_first_reading(Vector3::zeros(), 0.0);
         assert_eq!(classical.state, guess);
-        assert_ne!(classical.state_error, setup_filter_data().state_error);
+        assert_ne!(classical.state_error, seeded.state_error);
 
         let extended = filter_after_first_reading(Vector3::zeros(), 5.0);
         assert_ne!(extended.state, guess);

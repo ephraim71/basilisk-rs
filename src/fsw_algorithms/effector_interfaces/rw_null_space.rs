@@ -17,7 +17,7 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix3xX};
 
 use crate::messages::{
-    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, Output, RwConstellationMsg, RwSpeedMsg,
+    ArrayMotorTorqueMsg, Input, MAX_EFF_COUNT, Output, RwArrayConfigMsg, RwSpeedMsg,
 };
 use crate::utilities::linear_algebra::m33_inverse;
 use crate::{Module, SimulationContext};
@@ -52,8 +52,9 @@ pub struct RwNullSpace {
     pub rw_speeds_in_msg: Input<RwSpeedMsg>,
     /// Desired wheel speeds, optional (upstream `rwDesiredSpeedsInMsg`).
     pub rw_desired_speeds_in_msg: Input<RwSpeedMsg>,
-    /// Wheel constellation, read on reset (upstream `rwConfigInMsg`).
-    pub rw_config_in_msg: Input<RwConstellationMsg>,
+    /// Wheel spin axes, read on reset (upstream `rwConfigInMsg`, a
+    /// `RWConstellationMsg` of which only the spin axes are used).
+    pub rw_config_in_msg: Input<RwArrayConfigMsg>,
     /// Control plus null-motion wheel torques (upstream `rwMotorTorqueOutMsg`).
     pub rw_motor_torque_out_msg: Output<ArrayMotorTorqueMsg>,
     num_wheels: usize,
@@ -76,7 +77,7 @@ impl RwNullSpace {
         }
     }
 
-    /// Number of wheels read from the constellation at the last reset.
+    /// Number of wheels read from the configuration at the last reset.
     pub fn num_wheels(&self) -> usize {
         self.num_wheels
     }
@@ -97,20 +98,15 @@ impl RwNullSpace {
             log::error!("rwNullSpace.rw_speeds_in_msg is not connected");
         }
 
-        let constellation = self.rw_config_in_msg.read();
-        if constellation.num_rw > MAX_EFF_COUNT {
+        let rw_config = self.rw_config_in_msg.read();
+        if rw_config.num_rw > MAX_EFF_COUNT {
             // Upstream logs the same error and then overruns its buffers;
             // here the extra wheels are ignored.
             log::error!("rwNullSpace.num_wheels is larger than MAX_EFF_COUNT ({MAX_EFF_COUNT})");
         }
-        let wheels = constellation.active_wheels();
-        self.num_wheels = wheels.len();
-        self.tau = null_space_projector(&Matrix3xX::from_iterator(
-            wheels.len(),
-            wheels
-                .iter()
-                .flat_map(|wheel| wheel.gs_hat_b.iter().copied()),
-        ));
+        let spin_axes = &rw_config.spin_axes_body[..rw_config.num_rw.min(MAX_EFF_COUNT)];
+        self.num_wheels = spin_axes.len();
+        self.tau = null_space_projector(&Matrix3xX::from_columns(spin_axes));
     }
 
     fn compute_wheel_torques(&self) -> ArrayMotorTorqueMsg {
@@ -176,9 +172,7 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{DMatrix, DVector, Vector3};
 
-    use crate::messages::{
-        ArrayMotorTorqueMsg, Output, RwConfigElementMsg, RwConstellationMsg, RwSpeedMsg,
-    };
+    use crate::messages::{ArrayMotorTorqueMsg, Output, RwArrayConfigMsg, RwSpeedMsg};
     use crate::simulation::Simulation;
     use crate::test_utils::MessageRecorder;
     use crate::{Module, SimulationContext};
@@ -191,16 +185,15 @@ mod tests {
         message
     }
 
-    fn constellation(axes: &[Vector3<f64>]) -> RwConstellationMsg {
-        let wheels: Vec<_> = axes
-            .iter()
-            .map(|axis| RwConfigElementMsg {
-                gs_hat_b: *axis,
-                spin_axis_inertia_kg_m2: 0.08,
-                max_motor_torque_nm: 0.2,
-            })
-            .collect();
-        RwConstellationMsg::from_active(&wheels)
+    fn rw_config(axes: &[Vector3<f64>]) -> RwArrayConfigMsg {
+        let mut config = RwArrayConfigMsg {
+            num_rw: axes.len(),
+            ..Default::default()
+        };
+        config.spin_axes_body[..axes.len()].copy_from_slice(axes);
+        config.spin_axis_inertias_kg_m2[..axes.len()].fill(0.08);
+        config.max_motor_torques_nm[..axes.len()].fill(0.2);
+        config
     }
 
     /// Truth of `rwNullSpaceTestFunction`, computed as the pytest does with a
@@ -250,7 +243,7 @@ mod tests {
             };
 
             let speed_out = Output::new(speeds(&wheel_speeds));
-            let config_out = Output::new(constellation(&axes));
+            let config_out = Output::new(rw_config(&axes));
             let command_out = Output::new(ArrayMotorTorqueMsg::from_active(&control));
             let desired_out = Output::new(speeds(&desired));
             let mut module = RwNullSpace::new(RwNullSpaceConfig {
@@ -296,7 +289,7 @@ mod tests {
             Vector3::new(1.0, 1.0, 1.0) / 3.0_f64.sqrt(),
         ];
         let speed_out = Output::new(speeds(&[10.0, 20.0, 30.0, 40.0]));
-        let config_out = Output::new(constellation(&axes));
+        let config_out = Output::new(rw_config(&axes));
         let command_out = Output::new(ArrayMotorTorqueMsg::default());
         let mut module = RwNullSpace::new(RwNullSpaceConfig {
             omega_gain: 0.5,
@@ -325,7 +318,7 @@ mod tests {
     fn singular_axis_set_leaves_the_identity_projector() {
         // Two wheels cannot span three axes: upstream inverts the singular
         // Gram matrix to zero, so [tau] = [I] and the full despin is applied.
-        let config_out = Output::new(constellation(&[Vector3::x(), Vector3::y()]));
+        let config_out = Output::new(rw_config(&[Vector3::x(), Vector3::y()]));
         let mut module = RwNullSpace::new(RwNullSpaceConfig::default());
         config_out.connect_to(&mut module.rw_config_in_msg);
         module.init();

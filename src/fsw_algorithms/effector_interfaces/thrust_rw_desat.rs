@@ -15,13 +15,13 @@
 //! Upstream quirks kept: the direction of momentum reduction is never reset
 //! (Reset keeps the last one), and an update that is inside the firing
 //! cool-down or below the threshold writes no output, so the previous command
-//! stays on the message.
+//! stays on the outputs.
 
 use nalgebra::Vector3;
 
 use crate::messages::{
-    Input, MAX_EFF_COUNT, Output, RwConstellationMsg, RwSpeedMsg, ThrusterArrayConfigMsg,
-    ThrusterArrayOnTimeCommandMsg, VehicleConfigMsg,
+    Input, MAX_EFF_COUNT, Output, RwArrayConfigMsg, RwSpeedMsg, ThrusterArrayConfigMsg,
+    ThrusterCommandMsg, VehicleConfigMsg,
 };
 use crate::time::diff_nanos_to_seconds;
 use crate::utilities::linear_algebra::normalize_or_zero;
@@ -62,14 +62,18 @@ pub struct ThrustRwDesat {
     pub config: ThrustRwDesatConfig,
     /// Upstream `rwSpeedInMsg`.
     pub rw_speed_in_msg: Input<RwSpeedMsg>,
-    /// Upstream `rwConfigInMsg`: wheel spin axes, read at reset.
-    pub rw_config_in_msg: Input<RwConstellationMsg>,
+    /// Upstream `rwConfigInMsg`: wheel spin axes, read at reset. Upstream
+    /// reads them from an `RWConstellationMsg`; only the wheel count and the
+    /// spin axes are used.
+    pub rw_config_in_msg: Input<RwArrayConfigMsg>,
     /// Upstream `thrConfigInMsg`: thruster cluster, read at reset.
     pub thr_config_in_msg: Input<ThrusterArrayConfigMsg>,
     /// Upstream `vecConfigInMsg`: center of mass, read at reset.
     pub vec_config_in_msg: Input<VehicleConfigMsg>,
-    /// Upstream `thrCmdOutMsg`.
-    pub thr_cmd_out_msg: Output<ThrusterArrayOnTimeCommandMsg>,
+    /// Upstream `thrCmdOutMsg`: commanded on-time of each thruster, one output
+    /// per thruster in cluster order, registered with
+    /// [`ThrustRwDesat::add_thruster_command_output`].
+    pub thr_cmd_out_msgs: Vec<Output<ThrusterCommandMsg>>,
     /// Upstream `currDMDir` [-]: current direction of momentum reduction.
     /// As upstream, this one field is both the user-set initial direction
     /// (zero by default; set it before the first update) and the module
@@ -107,7 +111,7 @@ impl ThrustRwDesat {
             rw_config_in_msg: Input::default(),
             thr_config_in_msg: Input::default(),
             vec_config_in_msg: Input::default(),
-            thr_cmd_out_msg: Output::default(),
+            thr_cmd_out_msgs: Vec::new(),
             curr_dm_dir: Vector3::zeros(),
             accumulated_imp: Vector3::zeros(),
             total_accum_firing_s: 0.0,
@@ -117,8 +121,22 @@ impl ThrustRwDesat {
         }
     }
 
+    /// Registers one independently connectable thruster command output. The
+    /// outputs follow the cluster order: the first one registered carries the
+    /// on-time of the first thruster.
+    pub fn add_thruster_command_output(&mut self) -> &Output<ThrusterCommandMsg> {
+        assert!(
+            self.thr_cmd_out_msgs.len() < MAX_EFF_COUNT,
+            "at most {MAX_EFF_COUNT} thruster command outputs are supported"
+        );
+        self.thr_cmd_out_msgs.push(Output::default());
+        self.thr_cmd_out_msgs
+            .last()
+            .expect("registered thruster command output should be available")
+    }
+
     /// Upstream `Reset_thrustRWDesat`: cache the wheel and thruster geometry,
-    /// clear the firing history and zero the output.
+    /// clear the firing history and zero every output.
     pub fn reset(&mut self, _call_time_nanos: u64) {
         if !self.rw_config_in_msg.is_connected() {
             log::error!("thrustRWDesat.rw_config_in_msg is not connected");
@@ -145,11 +163,8 @@ impl ThrustRwDesat {
             );
         }
 
-        self.rw_align_map = rw_config
-            .active_wheels()
-            .iter()
-            .map(|wheel| wheel.gs_hat_b)
-            .collect();
+        self.rw_align_map =
+            rw_config.spin_axes_body[..rw_config.num_rw.min(MAX_EFF_COUNT)].to_vec();
         self.thrusters = thruster_config
             .active_thrusters()
             .iter()
@@ -166,13 +181,14 @@ impl ThrustRwDesat {
         self.previous_firing_nanos = 0;
         self.accumulated_imp = Vector3::zeros();
         self.total_accum_firing_s = 0.0;
-        self.thr_cmd_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.thr_cmd_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
     }
 
-    /// Upstream `Update_thrustRWDesat`; `None` when upstream returns without
-    /// writing the output.
-    fn compute_firing(&mut self, call_time_nanos: u64) -> Option<ThrusterArrayOnTimeCommandMsg> {
+    /// Upstream `Update_thrustRWDesat`: the on-time of every thruster, or
+    /// `None` when upstream returns without writing the output.
+    fn compute_firing(&mut self, call_time_nanos: u64) -> Option<[f64; MAX_EFF_COUNT]> {
         if diff_nanos_to_seconds(call_time_nanos, self.previous_firing_nanos)
             < self.config.thr_firing_period_s
         {
@@ -197,14 +213,14 @@ impl ThrustRwDesat {
             self.curr_dm_dir = normalize_or_zero(self.thrusters[index].torque_b_m);
         }
 
-        let mut output = ThrusterArrayOnTimeCommandMsg::default();
+        let mut output = [0.0; MAX_EFF_COUNT];
         if let Some(index) = self.best_thruster(&self.curr_dm_dir) {
             let thruster = self.thrusters[index];
             let mut on_time_s = self.curr_dm_dir.dot(&thruster.torque_b_m);
             if on_time_s > self.config.max_firing_s {
                 on_time_s = self.config.max_firing_s;
             }
-            output.on_time_request_s[index] = on_time_s;
+            output[index] = on_time_s;
             self.previous_firing_nanos = call_time_nanos;
             self.total_accum_firing_s += on_time_s;
             self.accumulated_imp += on_time_s * thruster.direction_b;
@@ -231,8 +247,9 @@ impl ThrustRwDesat {
 
 impl Module for ThrustRwDesat {
     fn init(&mut self) {
-        self.thr_cmd_out_msg
-            .write(ThrusterArrayOnTimeCommandMsg::default());
+        for output in &self.thr_cmd_out_msgs {
+            output.write(ThrusterCommandMsg::default());
+        }
         self.reset(0);
     }
 
@@ -241,8 +258,12 @@ impl Module for ThrustRwDesat {
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        if let Some(output) = self.compute_firing(context.current_sim_nanos) {
-            self.thr_cmd_out_msg.write(output);
+        if let Some(on_times) = self.compute_firing(context.current_sim_nanos) {
+            for (index, output) in self.thr_cmd_out_msgs.iter().enumerate() {
+                output.write(ThrusterCommandMsg {
+                    on_time_s: on_times[index],
+                });
+            }
         }
     }
 }
@@ -263,8 +284,8 @@ mod tests {
     use nalgebra::Vector3;
 
     use crate::messages::{
-        MAX_EFF_COUNT, Output, RwConfigElementMsg, RwConstellationMsg, RwSpeedMsg,
-        ThrusterArrayConfigMsg, ThrusterConfigMsg, VehicleConfigMsg,
+        Output, RwArrayConfigMsg, RwSpeedMsg, ThrusterArrayConfigMsg, ThrusterConfigMsg,
+        VehicleConfigMsg,
     };
     use crate::{Module, SimulationContext};
 
@@ -322,16 +343,16 @@ mod tests {
     }
 
     /// The upstream test setup: three orthogonal wheels, eight RCS thrusters
-    /// about a center of mass at the body origin, and `currDMDir = [1, 0, 0]`.
+    /// about a center of mass at the body origin, one command output per
+    /// thruster, and `currDMDir = [1, 0, 0]`.
     fn upstream_harness(config: ThrustRwDesatConfig, speeds_radps: [f64; 3]) -> Harness {
-        let wheels: Vec<_> = [Vector3::x(), Vector3::y(), Vector3::z()]
-            .into_iter()
-            .map(|gs_hat_b| RwConfigElementMsg {
-                gs_hat_b,
-                spin_axis_inertia_kg_m2: 0.08,
-                max_motor_torque_nm: 0.2,
-            })
-            .collect();
+        let mut wheels = RwArrayConfigMsg {
+            num_rw: 3,
+            ..Default::default()
+        };
+        wheels.spin_axes_body[..3].copy_from_slice(&[Vector3::x(), Vector3::y(), Vector3::z()]);
+        wheels.spin_axis_inertias_kg_m2[..3].fill(0.08);
+        wheels.max_motor_torques_nm[..3].fill(0.2);
         let thrusters: Vec<_> = RCS_LOCATIONS_M
             .iter()
             .zip(RCS_DIRECTIONS)
@@ -343,7 +364,7 @@ mod tests {
             })
             .collect();
         let speeds = Output::new(wheel_speeds(speeds_radps));
-        let wheels = Output::new(RwConstellationMsg::from_active(&wheels));
+        let wheels = Output::new(wheels);
         let thrusters = Output::new(ThrusterArrayConfigMsg::from_active(&thrusters));
         let vehicle = Output::new(VehicleConfigMsg::default());
 
@@ -353,8 +374,20 @@ mod tests {
         wheels.connect_to(&mut module.rw_config_in_msg);
         thrusters.connect_to(&mut module.thr_config_in_msg);
         vehicle.connect_to(&mut module.vec_config_in_msg);
+        for _ in 0..NUM_THRUSTERS {
+            module.add_thruster_command_output();
+        }
         module.init();
         Harness { module, speeds }
+    }
+
+    /// The on-times on every registered output, in thruster order.
+    fn on_times(module: &ThrustRwDesat) -> Vec<f64> {
+        module
+            .thr_cmd_out_msgs
+            .iter()
+            .map(|output| output.read().on_time_s)
+            .collect()
     }
 
     fn upstream_config() -> ThrustRwDesatConfig {
@@ -372,9 +405,7 @@ mod tests {
             .map(|&time| {
                 module.update(&context(time));
                 let mut row = [0.0; NUM_THRUSTERS];
-                row.copy_from_slice(
-                    &module.thr_cmd_out_msg.read().on_time_request_s[..NUM_THRUSTERS],
-                );
+                row.copy_from_slice(&on_times(module));
                 row
             })
             .collect()
@@ -407,13 +438,10 @@ mod tests {
         assert_rows_match(&second_run, &TRUTH[..second_run.len()]);
 
         // Upstream's "Reset() zeroed onTime" check reads the first recorded
-        // sample; Reset itself must also zero the output message.
+        // sample; Reset itself must also zero every output.
         assert!(second_run[0].iter().all(|on_time| on_time.abs() <= 1e-3));
         harness.module.reset(0);
-        assert_eq!(
-            harness.module.thr_cmd_out_msg.read().on_time_request_s,
-            [0.0; MAX_EFF_COUNT]
-        );
+        assert_eq!(on_times(&harness.module), [0.0; NUM_THRUSTERS]);
         assert_eq!(harness.module.accumulated_imp, Vector3::zeros());
         assert_eq!(harness.module.total_accum_firing_s, 0.0);
     }
@@ -442,7 +470,7 @@ mod tests {
             &[0, 500_000_000, 1_000_000_000, 1_500_000_000],
         );
         // t = 0 is inside the cool-down from the reset time 0; the firing at
-        // 1 s stays on the message through 1.5 s.
+        // 1 s stays on the outputs through 1.5 s.
         assert_eq!(samples[0], [0.0; NUM_THRUSTERS]);
         assert_eq!(samples[1], [0.0; NUM_THRUSTERS]);
         assert!((samples[2][1] - 1.971_815_59).abs() <= 1e-6);

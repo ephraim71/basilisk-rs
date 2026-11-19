@@ -53,6 +53,7 @@ mod body_heading;
 mod body_torque_command;
 mod camera_config;
 mod classic_elements;
+mod cm_estimation_data;
 mod desired_velocity;
 mod device_command;
 mod device_status;
@@ -105,6 +106,8 @@ mod rw_availability;
 mod rw_speed;
 mod scalar_joint_state;
 mod single_actuator;
+mod small_body_nav;
+mod small_body_nav_ukf;
 mod solar_flux;
 mod spacecraft_diagnostics;
 mod spacecraft_mass_props;
@@ -124,6 +127,7 @@ mod thruster_array_config;
 mod thruster_array_force_command;
 mod thruster_command;
 mod thruster_config;
+mod thruster_output;
 mod translation_reference;
 mod vehicle_config;
 mod vscmg_array_config;
@@ -147,6 +151,7 @@ pub use body_heading::BodyHeadingMsg;
 pub use body_torque_command::BodyTorqueCommandMsg;
 pub use camera_config::{CameraConfigMsg, CameraRenderMode, VizSetting};
 pub use classic_elements::ClassicElementsMsg;
+pub use cm_estimation_data::CmEstimationDataMsg;
 pub use desired_velocity::DesiredVelocityMsg;
 pub use device_command::DeviceCommandMsg;
 pub use device_status::{DeviceState, DeviceStatusMsg};
@@ -200,6 +205,8 @@ pub use rw_availability::{RwAvailability, RwAvailabilityMsg};
 pub use rw_speed::RwSpeedMsg;
 pub use scalar_joint_state::ScalarJointStateMsg;
 pub use single_actuator::SingleActuatorMsg;
+pub use small_body_nav::SmallBodyNavMsg;
+pub use small_body_nav_ukf::SmallBodyNavUkfMsg;
 pub use solar_flux::SolarFluxMsg;
 pub use spacecraft_diagnostics::SpacecraftDiagnosticsMsg;
 pub use spacecraft_mass_props::SpacecraftMassPropsMsg;
@@ -219,6 +226,7 @@ pub use thruster_array_config::ThrusterArrayConfigMsg;
 pub use thruster_array_force_command::ThrusterArrayForceCommandMsg;
 pub use thruster_command::ThrusterCommandMsg;
 pub use thruster_config::ThrusterConfigMsg;
+pub use thruster_output::ThrusterOutputMsg;
 pub use translation_reference::TranslationReferenceMsg;
 pub use vehicle_config::VehicleConfigMsg;
 pub use vscmg_array_config::VscmgArrayConfigMsg;
@@ -297,6 +305,12 @@ pub const PIXLINE_DYN_STATES: usize = 6;
 /// Upstream `PIXLINE_N_MEAS` (`PixelLineFilterMsgPayload.h`): measurements per
 /// `pixelLineBiasUKF` update.
 pub const PIXLINE_N_MEAS: usize = 6;
+/// Upstream `SMALL_BODY_NAV_N_STATES` (`SmallBodyNavMsgPayload.h`): states of
+/// `smallBodyNavEKF`, and the size of [`SmallBodyNavMsg`].
+pub const SMALL_BODY_NAV_N_STATES: usize = 12;
+/// States of `smallBodyNavUKF`, and the size of [`SmallBodyNavUkfMsg`]
+/// (upstream hard-codes 9 in `SmallBodyNavUKFMsgPayload.h`).
+pub const SMALL_BODY_NAV_UKF_N_STATES: usize = 9;
 /// Upstream `MAX_STRING_LENGTH` (`CameraConfigMsgPayload.h`): size of the
 /// payload's `char` buffers, terminator included. [`CameraConfigMsg`] holds
 /// `String`s and does not truncate.

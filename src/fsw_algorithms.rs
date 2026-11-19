@@ -12,6 +12,8 @@ pub mod image_processing;
 pub mod optical_navigation;
 pub mod orbit_control;
 pub mod sensor_interfaces;
+pub mod small_body_navigation;
+pub mod state_estimation;
 pub mod trans_determination;
 
 // The paths these modules had before they were grouped by family.

@@ -3,6 +3,7 @@
 pub mod att_ref_correction;
 pub mod att_tracking_error;
 pub mod celestial_two_body_point;
+pub mod constrained_attitude_maneuver;
 pub mod euler_rotation;
 pub mod hill_point;
 pub mod inertial_3d;
@@ -15,3 +16,4 @@ pub mod raster_manager;
 pub mod simple_deadband;
 pub mod sun_safe_point;
 pub mod velocity_point;
+pub mod waypoint_reference;

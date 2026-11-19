@@ -28,6 +28,8 @@ pub mod telemetry;
 pub mod thermal;
 mod time;
 pub mod utilities;
+#[cfg(feature = "vizard")]
+pub mod vizard;
 
 #[cfg(test)]
 mod test_utils;

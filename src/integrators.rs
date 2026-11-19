@@ -1,9 +1,11 @@
 pub mod stochastic;
+pub mod synchronized;
 pub mod traits;
 
 mod butcher;
 mod methods;
 
+pub use synchronized::{Coupling, Synchronized, Uncoupled};
 pub use traits::{DiffusionIncrement, DynamicObject};
 
 pub use butcher::{

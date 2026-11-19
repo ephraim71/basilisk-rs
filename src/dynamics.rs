@@ -1,3 +1,4 @@
+pub mod constraint_dynamic_effector;
 pub mod drag_dynamic_effector;
 pub mod dual_hinged_rigid_body_state_effector;
 pub mod facet_drag_dynamic_effector;

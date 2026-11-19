@@ -72,3 +72,44 @@ pub trait StateEffector: Send {
         Vec::new()
     }
 }
+
+/// An effector acting between the spacecraft of a
+/// [`SpacecraftGroup`](crate::spacecraft::SpacecraftGroup), such as upstream
+/// `constraintDynamicEffector`: upstream a `DynamicEffector` added to every
+/// spacecraft it acts on, whose integration is synchronized
+/// (`syncDynamicsIntegration`).
+///
+/// At every integrator stage the group hands the effector the stage state of
+/// every spacecraft at once, before it evaluates any spacecraft's equations of
+/// motion, so the effector sees one consistent stage and computes the loads
+/// on all of them together. Upstream instead calls the effector once per
+/// spacecraft and the effector alternates which spacecraft it serves.
+pub trait CouplingEffector: Send {
+    fn name(&self) -> &str;
+
+    /// Called when the group initializes (upstream `Reset` and
+    /// `linkInStates`), with the number of spacecraft in the group. Panics on
+    /// a configuration it cannot run with.
+    fn init(&mut self, _spacecraft_count: usize) {}
+
+    /// Called before each integration step, like
+    /// [`DynamicEffector::pre_integration`].
+    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {}
+
+    /// Adds this effector's load on each spacecraft at the stage states
+    /// `states` to `loads`: a force in inertial components and a torque about
+    /// the body origin in body components, as a [`DynamicEffector`] returns
+    /// them. `states[i]` and `loads[i]` belong to group member `i`; the states
+    /// are inertial, as [`DynamicEffector::compute_output`] sees them.
+    fn add_loads(&mut self, states: &[SpacecraftStateMsg], loads: &mut [EffectorOutput]);
+
+    /// Called once per group update after the spacecraft have integrated and
+    /// published, and at `t = 0` after they publish their initial outputs:
+    /// upstream the effector's own `UpdateState`, scheduled after the
+    /// spacecraft. Reads inputs and writes outputs.
+    fn update(&mut self, _current_sim_nanos: u64) {}
+
+    fn as_any(&self) -> &dyn Any;
+
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}

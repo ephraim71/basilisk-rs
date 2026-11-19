@@ -16,10 +16,12 @@ use utils::{
 
 pub mod mrp;
 pub mod structs;
+pub mod synchronized;
 pub mod traits;
 pub mod utils;
 
 pub use structs::*;
+pub use synchronized::{SpacecraftCoupling, SpacecraftGroup, SpacecraftGroupDynamics};
 pub use traits::*;
 
 pub struct Spacecraft {
@@ -470,42 +472,9 @@ impl Module for Spacecraft {
     }
 
     fn update(&mut self, context: &SimulationContext) {
-        self.gravity
-            .update_cache(context.current_sim_nanos)
-            .unwrap_or_else(|error| panic!("failed to refresh gravity inputs: {error}"));
-
-        if context.current_sim_nanos == 0 {
-            self.refresh_outputs_without_integration(context);
+        let Some((step, integrated_state)) = self.begin_step(context) else {
             return;
-        }
-
-        let dt_seconds = self.integration_step_seconds;
-        let step_start_nanos = context
-            .current_sim_nanos
-            .saturating_sub(self.config.integration_step_nanos);
-        let step_start_epoch = context.current_epoch - self.integration_step_duration;
-
-        if dt_seconds == 0.0 {
-            return;
-        }
-
-        self.sync_effectors_from_integrated_state();
-
-        for effector in &mut self.state_effectors {
-            effector.pre_integration(step_start_nanos, dt_seconds);
-        }
-
-        for effector in &mut self.dynamic_effectors {
-            effector.pre_integration(step_start_nanos, dt_seconds);
-        }
-
-        let integrated_state = self
-            .integrated_state
-            .clone()
-            .expect("spacecraft integrated state must be initialized");
-        // Upstream `preIntegration`: the velocities the ΔV is measured from.
-        let old_velocity_mps = integrated_state.velocity_wrt_central_body_mps;
-        let old_com_velocity_mps = self.center_of_mass_velocity_mps(&integrated_state);
+        };
 
         // Move the integrator out of `self` so it no longer aliases `*self`;
         // `propagate` takes `&mut self`, which would collide with a reference
@@ -518,13 +487,100 @@ impl Module for Spacecraft {
         let (new_state, gravity_delta_velocity_inertial_mps) = chosen.propagate(
             self,
             &integrated_state,
-            step_start_nanos,
-            step_start_epoch,
-            dt_seconds,
+            step.start_nanos,
+            step.start_epoch,
+            step.dt_seconds,
         );
         self.config.integrator = integrator_slot;
 
-        let omega_dot_radps2 = (new_state.omega_radps - integrated_state.omega_radps) / dt_seconds;
+        self.finish_step(
+            context,
+            &step,
+            new_state,
+            gravity_delta_velocity_inertial_mps,
+        );
+    }
+}
+
+/// What [`Spacecraft::begin_step`] records for [`Spacecraft::finish_step`].
+struct StepStart {
+    start_nanos: u64,
+    start_epoch: Epoch,
+    dt_seconds: f64,
+    old_omega_radps: Vector3<f64>,
+    old_velocity_mps: Vector3<f64>,
+    old_com_velocity_mps: Vector3<f64>,
+}
+
+impl Spacecraft {
+    /// The part of an update before the integration: refreshes the gravity
+    /// inputs, then upstream `preIntegration`. Returns the step and the state
+    /// it starts from, or `None` when this update integrates nothing: at
+    /// `t = 0`, where it publishes the initial outputs instead, or with a zero
+    /// integration step.
+    fn begin_step(&mut self, context: &SimulationContext) -> Option<(StepStart, IntegratedState)> {
+        self.gravity
+            .update_cache(context.current_sim_nanos)
+            .unwrap_or_else(|error| panic!("failed to refresh gravity inputs: {error}"));
+
+        if context.current_sim_nanos == 0 {
+            self.refresh_outputs_without_integration(context);
+            return None;
+        }
+
+        let dt_seconds = self.integration_step_seconds;
+        let start_nanos = context
+            .current_sim_nanos
+            .saturating_sub(self.config.integration_step_nanos);
+        let start_epoch = context.current_epoch - self.integration_step_duration;
+
+        if dt_seconds == 0.0 {
+            return None;
+        }
+
+        self.sync_effectors_from_integrated_state();
+
+        for effector in &mut self.state_effectors {
+            effector.pre_integration(start_nanos, dt_seconds);
+        }
+
+        for effector in &mut self.dynamic_effectors {
+            effector.pre_integration(start_nanos, dt_seconds);
+        }
+
+        let integrated_state = self
+            .integrated_state
+            .clone()
+            .expect("spacecraft integrated state must be initialized");
+        // Upstream `preIntegration`: the velocities the ΔV is measured from.
+        let step = StepStart {
+            start_nanos,
+            start_epoch,
+            dt_seconds,
+            old_omega_radps: integrated_state.omega_radps,
+            old_velocity_mps: integrated_state.velocity_wrt_central_body_mps,
+            old_com_velocity_mps: self.center_of_mass_velocity_mps(&integrated_state),
+        };
+        Some((step, integrated_state))
+    }
+
+    /// The part of an update after the integration: commits `new_state`, then
+    /// upstream `postIntegration` and the output writes of `UpdateState`.
+    fn finish_step(
+        &mut self,
+        context: &SimulationContext,
+        step: &StepStart,
+        new_state: IntegratedState,
+        gravity_delta_velocity_inertial_mps: Vector3<f64>,
+    ) {
+        let StepStart {
+            dt_seconds,
+            old_omega_radps,
+            old_velocity_mps,
+            old_com_velocity_mps,
+            ..
+        } = *step;
+        let omega_dot_radps2 = (new_state.omega_radps - old_omega_radps) / dt_seconds;
 
         // Upstream `modifyStates`: effectors may re-parameterize their states
         // once the step is complete, e.g. away from a coordinate singularity.
@@ -585,44 +641,37 @@ impl Module for Spacecraft {
     }
 }
 
-impl DynamicObject for Spacecraft {
-    type State = IntegratedState;
-    type Derivative = StateDerivative;
-    type StepOutput = Vector3<f64>;
-
-    fn state_with_derivative(
+impl Spacecraft {
+    /// The state message a dynamic effector sees at the stage state `state`:
+    /// inertial position and velocity, attitude and rate, without the
+    /// accumulated ΔV.
+    fn stage_state_msg(
         &self,
         state: &IntegratedState,
-        derivative: &StateDerivative,
-        dt: f64,
-    ) -> IntegratedState {
-        IntegratedState {
-            position_wrt_central_body_m: state.position_wrt_central_body_m
-                + derivative.position_wrt_central_body_dot_mps * dt,
-            velocity_wrt_central_body_mps: state.velocity_wrt_central_body_mps
-                + derivative.velocity_wrt_central_body_dot_mps2 * dt,
-            sigma_bn: state.sigma_bn + derivative.sigma_dot * dt,
-            omega_radps: state.omega_radps + derivative.omega_dot_radps2 * dt,
-            effector_states: state
-                .effector_states
-                .iter()
-                .zip(derivative.effector_state_dots.iter())
-                .map(|(effector_state, effector_state_dot)| {
-                    effector_state
-                        .iter()
-                        .zip(effector_state_dot.iter())
-                        .map(|(value, value_dot)| value + value_dot * dt)
-                        .collect()
-                })
-                .collect(),
-        }
+        current_sim_nanos: u64,
+    ) -> SpacecraftStateMsg {
+        let (inertial_position_m, inertial_velocity_mps) =
+            self.gravity.inertial_position_and_velocity(
+                state.position_wrt_central_body_m,
+                state.velocity_wrt_central_body_mps,
+                current_sim_nanos,
+            );
+        spacecraft_state_msg_from_integrated_state(
+            state,
+            inertial_position_m,
+            inertial_velocity_mps,
+        )
     }
 
-    fn equations_of_motion(
+    /// The drift at `state`, with `external_load` (a force in inertial and a
+    /// torque about the body origin in body components) added to the dynamic
+    /// effectors' loads. A [`SpacecraftGroup`] passes its coupling effectors'
+    /// loads here; the spacecraft alone passes `None`.
+    fn equations_of_motion_with_load(
         &mut self,
         state: &IntegratedState,
         current_sim_nanos: u64,
-        _current_epoch: Epoch,
+        external_load: Option<&EffectorOutput>,
     ) -> StateDerivative {
         // Sync outputs (e.g. panel angle) so dynamic effectors read the correct trial state.
         self.sync_state_effectors_from_states(&state.effector_states);
@@ -630,17 +679,7 @@ impl DynamicObject for Spacecraft {
         let inertia = mass_props.inertia_about_point_b_body_kg_m2;
         let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);
         let inertial_to_body_dcm = body_to_inertial_dcm.transpose();
-        let (inertial_position_m, inertial_velocity_mps) =
-            self.gravity.inertial_position_and_velocity(
-                state.position_wrt_central_body_m,
-                state.velocity_wrt_central_body_mps,
-                current_sim_nanos,
-            );
-        let state_msg = spacecraft_state_msg_from_integrated_state(
-            state,
-            inertial_position_m,
-            inertial_velocity_mps,
-        );
+        let state_msg = self.stage_state_msg(state, current_sim_nanos);
 
         let center_of_mass_tilde = tilde(mass_props.center_of_mass_body_m);
         let omega_cross_omega_cross_center = state
@@ -675,6 +714,10 @@ impl DynamicObject for Spacecraft {
             let output = effector.compute_output(&state_msg);
             back_sub.vec_trans += inertial_to_body_dcm * output.force_inertial_n;
             back_sub.vec_rot += output.torque_body_nm;
+        }
+        if let Some(load) = external_load {
+            back_sub.vec_trans += inertial_to_body_dcm * load.force_inertial_n;
+            back_sub.vec_rot += load.torque_body_nm;
         }
         if let Some(mu_m3ps2) = self.gravity_gradient_mu_m3ps2 {
             back_sub.vec_rot += gravity_gradient_torque_body(
@@ -747,6 +790,49 @@ impl DynamicObject for Spacecraft {
             omega_dot_radps2: omega_dot,
             effector_state_dots,
         }
+    }
+}
+
+impl DynamicObject for Spacecraft {
+    type State = IntegratedState;
+    type Derivative = StateDerivative;
+    type StepOutput = Vector3<f64>;
+
+    fn state_with_derivative(
+        &self,
+        state: &IntegratedState,
+        derivative: &StateDerivative,
+        dt: f64,
+    ) -> IntegratedState {
+        IntegratedState {
+            position_wrt_central_body_m: state.position_wrt_central_body_m
+                + derivative.position_wrt_central_body_dot_mps * dt,
+            velocity_wrt_central_body_mps: state.velocity_wrt_central_body_mps
+                + derivative.velocity_wrt_central_body_dot_mps2 * dt,
+            sigma_bn: state.sigma_bn + derivative.sigma_dot * dt,
+            omega_radps: state.omega_radps + derivative.omega_dot_radps2 * dt,
+            effector_states: state
+                .effector_states
+                .iter()
+                .zip(derivative.effector_state_dots.iter())
+                .map(|(effector_state, effector_state_dot)| {
+                    effector_state
+                        .iter()
+                        .zip(effector_state_dot.iter())
+                        .map(|(value, value_dot)| value + value_dot * dt)
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn equations_of_motion(
+        &mut self,
+        state: &IntegratedState,
+        current_sim_nanos: u64,
+        _current_epoch: Epoch,
+    ) -> StateDerivative {
+        self.equations_of_motion_with_load(state, current_sim_nanos, None)
     }
 
     /// Weighted RMS error norm across every integrated scalar (translation,

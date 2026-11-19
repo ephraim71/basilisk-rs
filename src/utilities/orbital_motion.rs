@@ -22,6 +22,7 @@
 //! | `hillFrame` | [`hill_frame`] |
 //! | `hill2rv` | [`hill_to_state`] |
 //! | `rv2hill` | [`state_to_hill`] |
+//! | `lambertPlanner`/`lambertValidator` `propagate` + `RK4` | [`propagate_two_body_rk4`] |
 //!
 //! # Conventions
 //!
@@ -43,7 +44,7 @@
 
 use std::f64::consts::TAU;
 
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Vector3, Vector6};
 use serde::{Deserialize, Serialize};
 
 use crate::utilities::linear_algebra::{normalize_or_zero, safe_acos, safe_asin};
@@ -628,6 +629,53 @@ fn hill_frame_rate(rc_n: Vector3<f64>, vc_n: Vector3<f64>) -> Vector3<f64> {
     let rc = rc_n.norm();
     let f_dot = rc_n.cross(&vc_n).norm() / rc / rc;
     Vector3::new(0.0, 0.0, f_dot)
+}
+
+/// Point-mass two-body propagation of `state = [r, v]` from time `t0` to `tf`
+/// with fixed-step classical RK4, as upstream `lambertPlanner` and
+/// `lambertValidator` each implement it (their private `propagate` and `RK4`).
+///
+/// Returns every state from `t0` to `tf` inclusive: `ceil(|tf - t0| / step)`
+/// steps of `step`, the last one shortened to land on `tf`, backwards when
+/// `tf < t0`. `tf == t0` returns the initial state alone. Times and `step`
+/// are in the time unit of `mu`.
+pub fn propagate_two_body_rk4(
+    mu: f64,
+    state: Vector6<f64>,
+    t0: f64,
+    tf: f64,
+    step: f64,
+) -> Vec<Vector6<f64>> {
+    let derivative = |x: &Vector6<f64>| {
+        let r = x.fixed_rows::<3>(0);
+        let gravity = r * (-mu / r.norm().powf(3.0));
+        let mut x_dot = Vector6::zeros();
+        x_dot
+            .fixed_rows_mut::<3>(0)
+            .copy_from(&x.fixed_rows::<3>(3));
+        x_dot.fixed_rows_mut::<3>(3).copy_from(&gravity);
+        x_dot
+    };
+
+    let step_count = ((tf - t0).abs() / step).ceil() as usize;
+    let mut states = Vec::with_capacity(step_count + 1);
+    states.push(state);
+    let (mut t, mut x) = (t0, state);
+    for _ in 0..step_count {
+        // The last step may be shorter than `step`.
+        let mut h = step.min((tf - t).abs());
+        if tf < t0 {
+            h = -h;
+        }
+        let k1 = derivative(&x);
+        let k2 = derivative(&(x + k1 * h / 2.0));
+        let k3 = derivative(&(x + k2 * h / 2.0));
+        let k4 = derivative(&(x + k3 * h));
+        x += (k1 + k2 * 2.0 + k3 * 2.0 + k4) * (1.0 / 6.0 * h);
+        t += h;
+        states.push(x);
+    }
+    states
 }
 
 /// Newton iteration `x -= step(x)` from `initial`, as upstream `M2E`/`N2H`

@@ -1075,15 +1075,16 @@ mod upstream_payloads {
     use crate::messages::{
         AccelerometerDataMsg, AccelerometerPacket, AccessMsg, ArrayEffectorLockMsg,
         AttitudeStateMsg, BodyForceCommandMsg, BodyHeadingMsg, CameraConfigMsg, CameraRenderMode,
-        DeviceCommandMsg, DeviceState, DeviceStatusMsg, DipoleRequestBodyMsg, DvBurnCommandMsg,
-        DvExecutionDataMsg, EffectorLock, EphemerisMsg, GroundStateMsg, HeadingFilterMsg,
-        HillRelativeStateMsg, ImuMsg, ImuSensorBodyMsg, InertialFilterMsg, InertialForceCommandMsg,
-        InertialHeadingMsg, MAX_ACC_BUF_PKT, MAX_EFF_COUNT, MAX_LIMB_PNTS,
-        NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg, OpNavLimbMsg, OpNavMsg,
-        PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg, ReconfigBurnArrayInfoMsg,
-        ReconfigBurnInfoMsg, ReconfigBurnStatus, SKF_N_STATES, SimulationMessage,
-        SpacecraftStateMsg, StarTrackerAttitudeMsg, StarTrackerMsg, StripStateMsg,
-        SunlineFilterMsg, TdbVehicleClockCorrelationMsg, ThrusterArrayConfigMsg,
+        ClassicElementsMsg, DesiredVelocityMsg, DeviceCommandMsg, DeviceState, DeviceStatusMsg,
+        DipoleRequestBodyMsg, DvBurnCommandMsg, DvExecutionDataMsg, EffectorLock, EphemerisMsg,
+        GroundStateMsg, HeadingFilterMsg, HillRelativeStateMsg, ImuMsg, ImuSensorBodyMsg,
+        InertialFilterMsg, InertialForceCommandMsg, InertialHeadingMsg, LambertPerformanceMsg,
+        LambertProblemMsg, LambertSolutionMsg, LambertValidatorMsg, MAX_ACC_BUF_PKT, MAX_EFF_COUNT,
+        MAX_LIMB_PNTS, NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg, OpNavLimbMsg,
+        OpNavMsg, PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg,
+        ReconfigBurnArrayInfoMsg, ReconfigBurnInfoMsg, ReconfigBurnStatus, SKF_N_STATES,
+        SimulationMessage, SpacecraftStateMsg, StarTrackerAttitudeMsg, StarTrackerMsg,
+        StripStateMsg, SunlineFilterMsg, TdbVehicleClockCorrelationMsg, ThrusterArrayConfigMsg,
         ThrusterArrayForceCommandMsg, ThrusterConfigMsg, VizSetting,
     };
     use crate::telemetry::TelemetryMessage;
@@ -1099,6 +1100,8 @@ mod upstream_payloads {
             $check::<AttitudeStateMsg>();
             $check::<BodyForceCommandMsg>();
             $check::<BodyHeadingMsg>();
+            $check::<ClassicElementsMsg>();
+            $check::<DesiredVelocityMsg>();
             $check::<DeviceCommandMsg>();
             $check::<DeviceStatusMsg>();
             $check::<DipoleRequestBodyMsg>();
@@ -1113,6 +1116,10 @@ mod upstream_payloads {
             $check::<InertialFilterMsg>();
             $check::<InertialForceCommandMsg>();
             $check::<InertialHeadingMsg>();
+            $check::<LambertPerformanceMsg>();
+            $check::<LambertProblemMsg>();
+            $check::<LambertSolutionMsg>();
+            $check::<LambertValidatorMsg>();
             $check::<NavigationTranslationMsg>();
             $check::<OpNavCirclesMsg>();
             $check::<OpNavFilterMsg>();
@@ -1137,12 +1144,14 @@ mod upstream_payloads {
     /// Every unit enum the payloads hold, as `(zeroed default, non-default
     /// variant, that variant's upstream code)`. The variant names are unique
     /// across the enums, so a serialised name identifies its enum.
-    const VARIANTS: [(&str, &str, f64); 5] = [
+    const VARIANTS: [(&str, &str, f64); 7] = [
         ("Off", "On", 1.0),
         ("Unlocked", "Locked", 1.0),
         ("NotScheduled", "Burned", 2.0),
         ("Visual", "DepthMap", 1.0),
         ("UseVizDefault", "Enabled", 1.0),
+        ("Izzo", "Gooding", 1.0),
+        ("Prograde", "Retrograde", 1.0),
     ];
 
     /// Gives every number in `value` a distinct non-zero value — fractional
@@ -1306,6 +1315,8 @@ mod upstream_payloads {
             AttitudeStateMsg,
             BodyForceCommandMsg,
             BodyHeadingMsg,
+            ClassicElementsMsg,
+            DesiredVelocityMsg,
             DeviceCommandMsg,
             DeviceStatusMsg,
             DipoleRequestBodyMsg,
@@ -1320,6 +1331,10 @@ mod upstream_payloads {
             InertialFilterMsg,
             InertialForceCommandMsg,
             InertialHeadingMsg,
+            LambertPerformanceMsg,
+            LambertProblemMsg,
+            LambertSolutionMsg,
+            LambertValidatorMsg,
             NavigationTranslationMsg,
             OpNavCirclesMsg,
             OpNavFilterMsg,

@@ -2,6 +2,7 @@
 //! from upstream Basilisk's `architecture/utilities`.
 
 pub mod astro_constants;
+pub mod lambert;
 pub mod linear_algebra;
 pub mod orbital_motion;
 pub mod rigid_body_kinematics;

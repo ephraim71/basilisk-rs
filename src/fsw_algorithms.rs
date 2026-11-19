@@ -10,6 +10,7 @@ pub mod effector_interfaces;
 pub mod formation_flying;
 pub mod image_processing;
 pub mod optical_navigation;
+pub mod orbit_control;
 pub mod sensor_interfaces;
 pub mod trans_determination;
 

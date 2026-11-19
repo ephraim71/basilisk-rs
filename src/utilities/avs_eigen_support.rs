@@ -34,9 +34,37 @@ pub fn is_positive_semidefinite(matrix: &Matrix3<f64>, tolerance: f64) -> bool {
     matrix.symmetric_eigen().eigenvalues.min() >= -tolerance
 }
 
+/// Whether `inertia` is a physically realizable inertia tensor (upstream
+/// `eigenIsValidInertiaMatrix`): finite, symmetric (`‖I − Iᵀ‖ <= tolerance`),
+/// with at most one zero principal moment, and with principal moments
+/// `λ0 <= λ1 <= λ2` satisfying the triangle inequality `λ0 + λ1 >= λ2 (1 − tolerance)`,
+/// which also makes it positive semidefinite. The zero-moment check is
+/// relative: `λ1 > tolerance · λ2`.
+pub fn is_valid_inertia_matrix(inertia: &Matrix3<f64>, tolerance: f64) -> bool {
+    if !inertia.iter().all(|value| value.is_finite()) {
+        return false;
+    }
+    if (inertia - inertia.transpose()).norm() > tolerance {
+        return false;
+    }
+    let mut moments: Vec<f64> = inertia
+        .symmetric_eigen()
+        .eigenvalues
+        .iter()
+        .copied()
+        .collect();
+    moments.sort_by(f64::total_cmp);
+    if moments[1] <= tolerance * moments[2] {
+        return false;
+    }
+    moments[0] + moments[1] >= moments[2] * (1.0 - tolerance)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_TOLERANCE, is_positive_semidefinite, is_rotation_matrix};
+    use super::{
+        DEFAULT_TOLERANCE, is_positive_semidefinite, is_rotation_matrix, is_valid_inertia_matrix,
+    };
     use crate::utilities::rigid_body_kinematics::euler321_to_dcm;
     use nalgebra::{Matrix3, Vector3};
 
@@ -72,6 +100,40 @@ mod tests {
         ];
         for matrix in rejected {
             assert!(!is_positive_semidefinite(&matrix, DEFAULT_TOLERANCE));
+        }
+    }
+
+    #[test]
+    fn inertia_check_matches_upstream_validation_cases() {
+        // Valid and invalid tensors of the upstream state effector reset checks
+        // (`test_spinningBodyOneDOFResetChecks.py`,
+        // `test_linearTranslationOneDOFStateEffector.py`).
+        let accepted = [
+            Matrix3::from_diagonal(&Vector3::new(50.0, 30.0, 40.0)),
+            Matrix3::from_diagonal(&Vector3::new(50.0, 80.0, 60.0)),
+            // A thin rod: one zero principal moment.
+            Matrix3::from_diagonal(&Vector3::new(0.0, 10.0, 10.0)),
+        ];
+        for matrix in accepted {
+            assert!(
+                is_valid_inertia_matrix(&matrix, DEFAULT_TOLERANCE),
+                "{matrix}"
+            );
+        }
+        let rejected = [
+            Matrix3::new(50.0, 5.0, 0.0, 0.0, 30.0, 0.0, 0.0, 0.0, 40.0),
+            Matrix3::from_diagonal(&Vector3::new(-50.0, 30.0, 40.0)),
+            Matrix3::from_diagonal(&Vector3::new(50.0, 80.0, -10.0)),
+            Matrix3::from_diagonal(&Vector3::new(10.0, 10.0, 90.0)),
+            Matrix3::zeros(),
+            Matrix3::from_diagonal(&Vector3::new(0.0, 0.0, 1.0)),
+            Matrix3::new(1.0, f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        ];
+        for matrix in rejected {
+            assert!(
+                !is_valid_inertia_matrix(&matrix, DEFAULT_TOLERANCE),
+                "{matrix}"
+            );
         }
     }
 }

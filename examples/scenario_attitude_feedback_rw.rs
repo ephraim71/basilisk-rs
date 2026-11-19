@@ -20,8 +20,9 @@ use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::fsw_algorithms::rw_motor_voltage::{RwMotorVoltage, RwMotorVoltageConfig};
 use basilisk_rs::messages::{
-    ArrayMotorTorqueMsg, ArrayMotorVoltageMsg, AttitudeGuidanceMsg, MAX_EFF_COUNT, Output,
-    ReactionWheelStateMsg, RwArrayConfigMsg, RwSpeedMsg, TranslationReferenceMsg, VehicleConfigMsg,
+    ArrayMotorTorqueMsg, ArrayMotorVoltageMsg, AttitudeGuidanceMsg, MAX_EFF_COUNT,
+    NavigationTranslationMsg, Output, ReactionWheelStateMsg, RwArrayConfigMsg, RwSpeedMsg,
+    VehicleConfigMsg,
 };
 use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
@@ -207,8 +208,8 @@ fn main() {
                     )),
             ),
         ),
-        &navigation.translation_out_msg => recorder.add_source::<TranslationReferenceMsg>(
-            CsvSourceConfig::columns(vector_columns("position_m", "r_BN_N_m")),
+        &navigation.translation_out_msg => recorder.add_source::<NavigationTranslationMsg>(
+            CsvSourceConfig::columns(vector_columns("position_bn_n_m", "r_BN_N_m")),
         ),
         &wheel_speed_output => recorder.add_source::<RwSpeedMsg>(
             CsvSourceConfig::columns(array_columns(

@@ -112,7 +112,6 @@ mod thruster_array_config;
 mod thruster_array_force_command;
 mod thruster_command;
 mod thruster_config;
-mod translation_reference;
 mod vehicle_config;
 
 pub use accelerometer_data::AccelerometerDataMsg;
@@ -188,7 +187,6 @@ pub use thruster_array_config::ThrusterArrayConfigMsg;
 pub use thruster_array_force_command::ThrusterArrayForceCommandMsg;
 pub use thruster_command::ThrusterCommandMsg;
 pub use thruster_config::ThrusterConfigMsg;
-pub use translation_reference::TranslationReferenceMsg;
 pub use vehicle_config::VehicleConfigMsg;
 
 // ---------------------------------------------------------------------------

@@ -1,21 +1,40 @@
+//! Perfect navigation: port of upstream Basilisk `simpleNav` without its error
+//! model.
+//!
+//! Republishes spacecraft truth in the navigation messages the flight-software
+//! modules read: upstream `attOutMsg` ([`NavigationAttitudeMsg`]) and
+//! `transOutMsg` ([`NavigationTranslationMsg`]). Upstream adds Gauss-Markov
+//! errors to the truth; this port has none, so the outputs are upstream's
+//! `trueAttState` / `trueTransState` with upstream's time tags.
+//!
+//! Two fields upstream fills stay zero:
+//! - the Sun-point vector, because [`SpacecraftStateMsg`] carries no Sun
+//!   direction and the optional Sun-state input is not ported;
+//! - the accumulated ΔV, which upstream copies from the spacecraft state's
+//!   `TotalAccumDVBdy`. [`crate::spacecraft::Spacecraft`] does not accumulate
+//!   ΔV (its diagnostics carry only the last step's non-conservative
+//!   acceleration), so there is nothing to copy. Flight software that needs
+//!   the burn ΔV can take it from
+//!   [`crate::fsw_algorithms::trans_determination::dv_accumulation`] instead.
+
+use nalgebra::Vector3;
+
 use crate::messages::{
-    Input, NavigationAttitudeMsg, Output, SpacecraftStateMsg, TranslationReferenceMsg,
+    Input, NavigationAttitudeMsg, NavigationTranslationMsg, Output, SpacecraftStateMsg,
 };
 use crate::{Module, SimulationContext};
 
-/// Perfect navigation adapter that republishes spacecraft truth in the
-/// navigation-message types consumed by flight-software modules.
-///
-/// This is a noiseless navigation solution: position, velocity,
-/// attitude, and body rate are copied exactly from the connected spacecraft
-/// state. The Sun-point field remains zero because [`SpacecraftStateMsg`] does
-/// not carry a Sun direction.
+/// Noiseless navigation solution: upstream `simpleNav` without errors.
 #[derive(Clone, Debug)]
 pub struct SimpleNavigation {
+    /// Module name (upstream `ModelTag`).
     pub name: String,
+    /// Upstream `scStateInMsg`: spacecraft truth state.
     pub spacecraft_state_in_msg: Input<SpacecraftStateMsg>,
+    /// Upstream `attOutMsg`: attitude and body rate.
     pub attitude_out_msg: Output<NavigationAttitudeMsg>,
-    pub translation_out_msg: Output<TranslationReferenceMsg>,
+    /// Upstream `transOutMsg`: inertial position and velocity.
+    pub translation_out_msg: Output<NavigationTranslationMsg>,
 }
 
 impl SimpleNavigation {
@@ -40,21 +59,25 @@ impl Module for SimpleNavigation {
         self.attitude_out_msg
             .write(NavigationAttitudeMsg::default());
         self.translation_out_msg
-            .write(TranslationReferenceMsg::default());
+            .write(NavigationTranslationMsg::default());
     }
 
     fn update(&mut self, context: &SimulationContext) {
         let state = self.spacecraft_state_in_msg.read();
+        // Upstream `(double)Clock * NANO2SEC` on both outputs.
+        let time_tag_s = context.current_sim_nanos as f64 * 1.0e-9;
 
         self.attitude_out_msg.write(NavigationAttitudeMsg {
-            time_tag_s: context.current_sim_nanos as f64 * 1.0e-9,
+            time_tag_s,
             sigma_bn: state.sigma_bn,
             omega_bn_b_radps: state.omega_radps,
-            vehicle_sun_point_body: nalgebra::Vector3::zeros(),
+            vehicle_sun_point_body: Vector3::zeros(),
         });
-        self.translation_out_msg.write(TranslationReferenceMsg {
-            position_m: state.position_m,
-            velocity_mps: state.velocity_mps,
+        self.translation_out_msg.write(NavigationTranslationMsg {
+            time_tag_s,
+            position_bn_n_m: state.position_m,
+            velocity_bn_n_mps: state.velocity_mps,
+            accumulated_dv_b_mps: Vector3::zeros(),
         });
     }
 }
@@ -62,12 +85,26 @@ impl Module for SimpleNavigation {
 #[cfg(test)]
 mod tests {
     use hifitime::Epoch;
-    use nalgebra::Vector3;
+    use nalgebra::{Matrix3, Vector3};
 
-    use crate::messages::{Output, SpacecraftStateMsg};
+    use crate::dynamics::gravity::GravBodyData;
+    use crate::fsw_algorithms::att_guidance::hill_point::{
+        HillPoint, HillPointConfig, compute_hill_pointing_reference,
+    };
+    use crate::fsw_algorithms::att_guidance::velocity_point::{VelocityPoint, VelocityPointConfig};
+    use crate::messages::{AttitudeReferenceMsg, Output, SpacecraftStateMsg};
+    use crate::simulation::Simulation;
+    use crate::spacecraft::{Spacecraft, SpacecraftConfig};
+    use crate::utilities::rigid_body_kinematics::mrp_to_dcm;
     use crate::{Module, SimulationContext};
 
     use super::SimpleNavigation;
+
+    fn assert_same_reference(actual: &AttitudeReferenceMsg, expected: &AttitudeReferenceMsg) {
+        assert_eq!(actual.sigma_rn, expected.sigma_rn);
+        assert_eq!(actual.omega_rn_n_radps, expected.omega_rn_n_radps);
+        assert_eq!(actual.domega_rn_n_radps2, expected.domega_rn_n_radps2);
+    }
 
     #[test]
     fn copies_spacecraft_truth_exactly() {
@@ -94,7 +131,102 @@ mod tests {
         assert_eq!(attitude.vehicle_sun_point_body, Vector3::zeros());
 
         let translation = navigation.translation_out_msg.read();
-        assert_eq!(translation.position_m, state.position_m);
-        assert_eq!(translation.velocity_mps, state.velocity_mps);
+        assert_eq!(translation.time_tag_s, attitude.time_tag_s);
+        assert_eq!(translation.position_bn_n_m, state.position_m);
+        assert_eq!(translation.velocity_bn_n_mps, state.velocity_mps);
+        assert_eq!(translation.accumulated_dv_b_mps, Vector3::zeros());
+    }
+
+    /// A propagated spacecraft feeds `hillPoint` and `velocityPoint` through
+    /// the translation output: each reference is the one computed from the
+    /// spacecraft truth, and for the circular orbit the Hill frame turns at the
+    /// mean motion with its first axis along the position.
+    #[test]
+    fn translation_output_drives_orbit_pointing_guidance() {
+        const MU_EARTH_M3PS2: f64 = 3.986_004_418e14;
+        const STEP_NANOS: u64 = 1_000_000_000;
+        let radius_m = 7_000_000.0;
+        let inclination = 30.0_f64.to_radians();
+        let speed_mps = (MU_EARTH_M3PS2 / radius_m).sqrt();
+        let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+            mass_kg: 100.0,
+            hub_center_of_mass_body_m: Vector3::zeros(),
+            inertia_kg_m2: Matrix3::identity(),
+            integration_step_nanos: STEP_NANOS,
+            initial_position_m: Vector3::new(radius_m, 0.0, 0.0),
+            initial_velocity_mps: speed_mps
+                * Vector3::new(0.0, inclination.cos(), inclination.sin()),
+            initial_sigma_bn: Vector3::zeros(),
+            initial_omega_radps: Vector3::zeros(),
+            integrator: None,
+        });
+        spacecraft
+            .add_grav_body(
+                GravBodyData::point_mass(
+                    "earth",
+                    MU_EARTH_M3PS2,
+                    true,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )
+                .expect("valid Earth gravity body"),
+            )
+            .expect("unique central gravity body");
+        let mut navigation = SimpleNavigation::new("simple_navigation");
+        let mut hill_point = HillPoint::new(HillPointConfig::default());
+        let mut velocity_point = VelocityPoint::new(VelocityPointConfig {
+            mu_m3ps2: MU_EARTH_M3PS2,
+            ..Default::default()
+        });
+
+        {
+            let mut simulation =
+                Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
+            crate::connect!(&simulation,
+                &spacecraft.state_out => &mut navigation.spacecraft_state_in_msg,
+                &navigation.translation_out_msg => &mut hill_point.trans_nav_in_msg,
+                &navigation.translation_out_msg => &mut velocity_point.trans_nav_in_msg,
+            );
+            crate::schedule! { simulation,
+                "spacecraft" => &mut spacecraft, period = STEP_NANOS, priority = 30;
+                "navigation" => &mut navigation, period = STEP_NANOS, priority = 20;
+                "hill_point" => &mut hill_point, period = STEP_NANOS, priority = 10;
+                "velocity_point" => &mut velocity_point, period = STEP_NANOS, priority = 10;
+            }
+            simulation.run_for(600 * STEP_NANOS);
+        }
+
+        let truth = spacecraft.state_out.read();
+        let translation = navigation.translation_out_msg.read();
+        assert_eq!(translation.time_tag_s, 600.0);
+        assert_eq!(translation.position_bn_n_m, truth.position_m);
+        assert_eq!(translation.velocity_bn_n_mps, truth.velocity_mps);
+        assert!(
+            (truth.position_m - Vector3::new(radius_m, 0.0, 0.0)).norm() > 1.0e6,
+            "the spacecraft has moved along its orbit"
+        );
+
+        let zero = Vector3::zeros();
+        let hill = hill_point.att_ref_out_msg.read();
+        assert_same_reference(
+            &hill,
+            &compute_hill_pointing_reference(truth.position_m, truth.velocity_mps, zero, zero),
+        );
+        assert_same_reference(
+            &velocity_point.att_ref_out_msg.read(),
+            &velocity_point.compute_velocity_pointing_reference(
+                truth.position_m,
+                truth.velocity_mps,
+                zero,
+                zero,
+            ),
+        );
+
+        let dcm_rn = mrp_to_dcm(hill.sigma_rn);
+        let radial = truth.position_m.normalize();
+        let orbit_normal = truth.position_m.cross(&truth.velocity_mps).normalize();
+        let mean_motion_radps = (MU_EARTH_M3PS2 / radius_m.powi(3)).sqrt();
+        assert!((dcm_rn.row(0).transpose() - radial).norm() < 1.0e-12);
+        assert!((hill.omega_rn_n_radps - mean_motion_radps * orbit_normal).norm() < 1.0e-9);
     }
 }

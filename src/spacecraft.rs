@@ -288,7 +288,7 @@ impl Spacecraft {
         let mut srp_force_inertial_n = Vector3::zeros();
         let mut srp_torque_body_nm = Vector3::zeros();
         for effector in &self.dynamic_effectors {
-            let output = effector.compute_output(state_msg);
+            let output = effector.compute_output_at(state_msg, current_sim_nanos);
             let force_body_n = inertial_to_body_dcm * output.force_inertial_n;
             let name = effector.name().to_ascii_lowercase();
             if name.contains("drag") {
@@ -711,7 +711,7 @@ impl Spacecraft {
         let gravity_body_mps2 = inertial_to_body_dcm * gravity_accel;
 
         for effector in &self.dynamic_effectors {
-            let output = effector.compute_output(&state_msg);
+            let output = effector.compute_output_at(&state_msg, current_sim_nanos);
             back_sub.vec_trans += inertial_to_body_dcm * output.force_inertial_n;
             back_sub.vec_rot += output.torque_body_nm;
         }

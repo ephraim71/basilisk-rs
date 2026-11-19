@@ -8,6 +8,21 @@ pub trait DynamicEffector: Send {
     fn name(&self) -> &str;
     fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {}
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput;
+    /// Force and torque at a derivative evaluation at simulation time
+    /// `current_sim_nanos` (upstream `computeForceTorque(integTime, timeStep)`),
+    /// for effectors whose loads depend on the time of the evaluation, such as
+    /// a pulse train or an Euler-stepped planet position. A spacecraft that
+    /// evaluates its effectors at integrator stages passes the stage time.
+    ///
+    /// The default ignores the time and returns
+    /// [`compute_output`](Self::compute_output).
+    fn compute_output_at(
+        &self,
+        state: &SpacecraftStateMsg,
+        _current_sim_nanos: u64,
+    ) -> EffectorOutput {
+        self.compute_output(state)
+    }
     fn as_any(&self) -> &dyn Any;
 }
 

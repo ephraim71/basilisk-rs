@@ -149,8 +149,7 @@ impl FacetSRPDynamicEffector {
             .inverse()
             .transform_vector(&sun_vector_inertial);
         let sun_hat_body = sun_vector_body / sun_distance_m;
-        let srp_pressure = SOLAR_FLUX_AT_EARTH_WPM2 / SPEED_OF_LIGHT_MPS
-            * (ASTRONOMICAL_UNIT_M / sun_distance_m).powi(2);
+        let srp_pressure = srp_pressure_pa(SOLAR_FLUX_AT_EARTH_WPM2, sun_distance_m);
         let illumination_factor = if self.input_eclipse_msg.is_connected() {
             self.input_eclipse_msg.read().illumination_factor
         } else {
@@ -167,12 +166,15 @@ impl FacetSRPDynamicEffector {
                     return (force_sum, torque_sum);
                 }
 
-                let facet_force_body = -srp_pressure
-                    * projected_area_m2
-                    * ((1.0 - facet.specular_coeff) * sun_hat_body
-                        + 2.0
-                            * (facet.diffuse_coeff / 3.0 + facet.specular_coeff * cos_theta)
-                            * normal_body);
+                let facet_force_body = facet_srp_force_body(
+                    srp_pressure,
+                    projected_area_m2,
+                    cos_theta,
+                    sun_hat_body,
+                    normal_body,
+                    facet.diffuse_coeff,
+                    facet.specular_coeff,
+                );
                 (
                     force_sum + facet_force_body,
                     torque_sum + facet.location_body_m.cross(&facet_force_body),
@@ -200,6 +202,39 @@ impl DynamicEffector for FacetSRPDynamicEffector {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// Solar radiation pressure \[Pa\] at `sun_distance_m` from the Sun, for a
+/// solar flux of `flux_at_1_au_wpm2` at one astronomical unit (upstream
+/// `SRPPressure`). Shared with
+/// [`FacetedSrpEffector`](super::faceted_srp_effector::FacetedSrpEffector).
+pub(crate) fn srp_pressure_pa(flux_at_1_au_wpm2: f64, sun_distance_m: f64) -> f64 {
+    flux_at_1_au_wpm2 / SPEED_OF_LIGHT_MPS * (ASTRONOMICAL_UNIT_M / sun_distance_m).powi(2)
+}
+
+/// SRP force \[N\] on one sunlit facet, body components (upstream
+/// `facetSRPForcePntB_B`): the photons not reflected specularly push along
+/// `−ŝ`, away from the Sun, and the reflected ones along the facet normal
+/// `−n̂`,
+///
+/// `F = −P A_proj [(1 − c_s) ŝ + 2 (c_d / 3 + c_s cos θ) n̂]`,
+///
+/// with `A_proj = A cos θ` the facet area projected onto the Sun direction.
+/// Shared with
+/// [`FacetedSrpEffector`](super::faceted_srp_effector::FacetedSrpEffector).
+pub(crate) fn facet_srp_force_body(
+    srp_pressure_pa: f64,
+    projected_area_m2: f64,
+    cos_theta: f64,
+    sun_hat_body: Vector3<f64>,
+    normal_body: Vector3<f64>,
+    diffuse_coeff: f64,
+    specular_coeff: f64,
+) -> Vector3<f64> {
+    -srp_pressure_pa
+        * projected_area_m2
+        * ((1.0 - specular_coeff) * sun_hat_body
+            + 2.0 * (diffuse_coeff / 3.0 + specular_coeff * cos_theta) * normal_body)
 }
 
 pub fn prv_to_dcm(prv: Vector3<f64>) -> Matrix3<f64> {

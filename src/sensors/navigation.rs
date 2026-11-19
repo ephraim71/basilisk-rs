@@ -7,15 +7,13 @@
 //! errors to the truth; this port has none, so the outputs are upstream's
 //! `trueAttState` / `trueTransState` with upstream's time tags.
 //!
-//! Two fields upstream fills stay zero:
-//! - the Sun-point vector, because [`SpacecraftStateMsg`] carries no Sun
-//!   direction and the optional Sun-state input is not ported;
-//! - the accumulated ΔV, which upstream copies from the spacecraft state's
-//!   `TotalAccumDVBdy`. [`crate::spacecraft::Spacecraft`] does not accumulate
-//!   ΔV (its diagnostics carry only the last step's non-conservative
-//!   acceleration), so there is nothing to copy. Flight software that needs
-//!   the burn ΔV can take it from
-//!   [`crate::fsw_algorithms::trans_determination::dv_accumulation`] instead.
+//! The accumulated ΔV is copied from the spacecraft state's
+//! `TotalAccumDVBdy` ([`SpacecraftStateMsg::accumulated_dv_cn_b_mps`]), as
+//! upstream does: the non-gravitational velocity change of the center of mass
+//! that [`crate::spacecraft::Spacecraft`] sums in body-frame components.
+//!
+//! The Sun-point vector stays zero: [`SpacecraftStateMsg`] carries no Sun
+//! direction and the optional Sun-state input is not ported.
 
 use nalgebra::Vector3;
 
@@ -77,7 +75,8 @@ impl Module for SimpleNavigation {
             time_tag_s,
             position_bn_n_m: state.position_m,
             velocity_bn_n_mps: state.velocity_mps,
-            accumulated_dv_b_mps: Vector3::zeros(),
+            // Upstream `v3Copy(inertialState.TotalAccumDVBdy, trueTransState.vehAccumDV)`.
+            accumulated_dv_b_mps: state.accumulated_dv_cn_b_mps,
         });
     }
 }
@@ -113,6 +112,9 @@ mod tests {
             velocity_mps: Vector3::new(10.0, 7_500.0, -20.0),
             sigma_bn: Vector3::new(0.1, -0.2, 0.3),
             omega_radps: Vector3::new(0.01, 0.02, -0.03),
+            accumulated_dv_cn_b_mps: Vector3::new(0.5, -1.5, 2.5),
+            accumulated_dv_bn_b_mps: Vector3::new(9.0, 9.0, 9.0),
+            accumulated_dv_cn_n_mps: Vector3::new(-9.0, -9.0, -9.0),
         };
         let state_out = Output::new(state.clone());
         let mut navigation = SimpleNavigation::new("simple_navigation");
@@ -134,7 +136,10 @@ mod tests {
         assert_eq!(translation.time_tag_s, attitude.time_tag_s);
         assert_eq!(translation.position_bn_n_m, state.position_m);
         assert_eq!(translation.velocity_bn_n_mps, state.velocity_mps);
-        assert_eq!(translation.accumulated_dv_b_mps, Vector3::zeros());
+        assert_eq!(
+            translation.accumulated_dv_b_mps, state.accumulated_dv_cn_b_mps,
+            "upstream copies TotalAccumDVBdy"
+        );
     }
 
     /// A propagated spacecraft feeds `hillPoint` and `velocityPoint` through
@@ -228,5 +233,93 @@ mod tests {
         let mean_motion_radps = (MU_EARTH_M3PS2 / radius_m.powi(3)).sqrt();
         assert!((dcm_rn.row(0).transpose() - radial).norm() < 1.0e-12);
         assert!((hill.omega_rn_n_radps - mean_motion_radps * orbit_normal).norm() < 1.0e-9);
+    }
+
+    /// A body force on the spacecraft accumulates ΔV in its state message,
+    /// which the navigation forwards, so `dvExecuteGuidance` cuts the burn
+    /// once the ΔV since its start time exceeds the command: 0.1 m/s² from
+    /// 2 s exceeds 0.955 m/s at 11.6 s.
+    #[test]
+    fn accumulated_dv_ends_a_dv_execute_guidance_burn() {
+        use std::any::Any;
+
+        use crate::fsw_algorithms::dv_guidance::dv_execute_guidance::{
+            BurnState, DvExecuteGuidance, DvExecuteGuidanceConfig,
+        };
+        use crate::messages::DvBurnCommandMsg;
+        use crate::spacecraft::{DynamicEffector, EffectorOutput};
+
+        struct BodyForce;
+        impl DynamicEffector for BodyForce {
+            fn name(&self) -> &str {
+                "body_force"
+            }
+            fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+                EffectorOutput {
+                    force_inertial_n: state
+                        .body_to_inertial()
+                        .transform_vector(&Vector3::new(10.0, 0.0, 0.0)),
+                    torque_body_nm: Vector3::zeros(),
+                }
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        const STEP_NANOS: u64 = 100_000_000;
+        let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+            mass_kg: 100.0,
+            hub_center_of_mass_body_m: Vector3::zeros(),
+            inertia_kg_m2: Matrix3::identity(),
+            integration_step_nanos: STEP_NANOS,
+            initial_position_m: Vector3::zeros(),
+            initial_velocity_mps: Vector3::zeros(),
+            initial_sigma_bn: Vector3::zeros(),
+            initial_omega_radps: Vector3::zeros(),
+            integrator: None,
+        });
+        spacecraft.add_dynamic_effector(BodyForce);
+        let mut navigation = SimpleNavigation::new("simple_navigation");
+        let mut guidance = DvExecuteGuidance::new(DvExecuteGuidanceConfig::default());
+        let burn = Output::new(DvBurnCommandMsg {
+            dv_inertial_cmd_mps: Vector3::new(0.955, 0.0, 0.0),
+            burn_start_time_nanos: 2_000_000_000,
+            ..Default::default()
+        });
+        guidance.burn_data_in_msg.connect(burn.slot());
+
+        let epoch = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+        {
+            let mut simulation = Simulation::new(epoch, false);
+            crate::connect!(&simulation,
+                &spacecraft.state_out => &mut navigation.spacecraft_state_in_msg,
+                &navigation.translation_out_msg => &mut guidance.nav_data_in_msg,
+            );
+            crate::schedule! { simulation,
+                "spacecraft" => &mut spacecraft, period = STEP_NANOS, priority = 30;
+                "navigation" => &mut navigation, period = STEP_NANOS, priority = 20;
+                "guidance" => &mut guidance, period = STEP_NANOS, priority = 10;
+            }
+            simulation.run_for(11_500_000_000);
+        }
+        assert_eq!(guidance.burn_state, BurnState::Executing);
+        assert!((guidance.dv_init_mps.x - 0.2).abs() < 1.0e-12);
+        let translation = navigation.translation_out_msg.read();
+        assert!((translation.accumulated_dv_b_mps.x - 1.15).abs() < 1.0e-12);
+        assert_eq!(
+            translation.accumulated_dv_b_mps,
+            spacecraft.state_out.read().accumulated_dv_cn_b_mps
+        );
+
+        // One more step: 0.96 m/s since the start exceeds the 0.955 m/s command.
+        let next = SimulationContext {
+            current_sim_nanos: 11_600_000_000,
+            current_epoch: epoch,
+        };
+        spacecraft.update(&next);
+        navigation.update(&next);
+        guidance.update(&next);
+        assert_eq!(guidance.burn_state, BurnState::Complete);
     }
 }

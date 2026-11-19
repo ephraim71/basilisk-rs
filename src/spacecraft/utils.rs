@@ -4,7 +4,7 @@ use crate::{messages::SpacecraftStateMsg, spacecraft::IntegratedState};
 
 pub fn combine_effector_state_derivatives(
     weighted_derivatives: Vec<(Vec<Vec<f64>>, f64)>,
-    effector_states: &Vec<Vec<f64>>,
+    effector_states: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
     weighted_derivatives.iter().for_each(|(derivatives, _)| {
         assert_eq!(
@@ -53,6 +53,9 @@ pub fn gravity_gradient_torque_body(
         * r_hat_body.cross(&(inertia_about_com_body_kg_m2 * r_hat_body))
 }
 
+/// The kinematic part of the state message for `state`; the accumulated ΔV
+/// is left zero, as the spacecraft fills it only in the messages it
+/// publishes (dynamic effectors see stage states without it).
 pub fn spacecraft_state_msg_from_integrated_state(
     state: &IntegratedState,
     inertial_position_m: Vector3<f64>,
@@ -63,6 +66,7 @@ pub fn spacecraft_state_msg_from_integrated_state(
         velocity_mps: inertial_velocity_mps,
         sigma_bn: state.sigma_bn,
         omega_radps: state.omega_radps,
+        ..SpacecraftStateMsg::default()
     }
 }
 

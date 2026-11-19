@@ -1,5 +1,20 @@
 use hifitime::Epoch;
 
+/// One noise source's contribution to a stochastic update,
+/// `pseudo_step · Σ weightᵢ · tangentᵢ`.
+///
+/// Each tangent is a diffusion column `g_k(t, x)` in derivative form (see
+/// [`DynamicObject::equations_of_motion_diffusion`]); the weights combine the
+/// stages of a stochastic Runge-Kutta method and `pseudo_step` is the random
+/// variable multiplying them, usually a Wiener increment (upstream
+/// `pseudoStep`).
+pub struct DiffusionIncrement<'a, T> {
+    /// Diffusion tangents and their stage weights.
+    pub tangents: Vec<(&'a T, f64)>,
+    /// Multiplier of the weighted tangent sum.
+    pub pseudo_step: f64,
+}
+
 pub trait DynamicObject {
     type State: Clone;
     type StepOutput;
@@ -92,5 +107,74 @@ pub trait DynamicObject {
         _rtol: f64,
     ) -> Option<f64> {
         None
+    }
+
+    /// Number of independent Wiener processes `W_k` in
+    /// `dx = f(t, x) dt + Σ_k g_k(t, x) dW_k` (upstream: the global noise
+    /// sources of the registered states).
+    ///
+    /// The default is `0`: a deterministic object. Stochastic integrators then
+    /// reduce to their drift tableau, and deterministic integrators ignore any
+    /// diffusion an object declares.
+    fn noise_source_count(&self) -> usize {
+        0
+    }
+
+    /// Evaluates the diffusion columns `g_k(t, x)` at `state`, one per noise
+    /// source and in source order (upstream `equationsOfMotionDiffusion`).
+    ///
+    /// Each column is expressed as a [`Derivative`](Self::Derivative): the
+    /// state change per unit Wiener increment, so stochastic integrators build
+    /// stage states with [`state_with_derivatives`](Self::state_with_derivatives)
+    /// exactly as they apply drift. Components without noise are zero. Takes
+    /// `&mut self` for the same reason as
+    /// [`equations_of_motion`](Self::equations_of_motion).
+    ///
+    /// The default returns no columns, matching the default
+    /// [`noise_source_count`](Self::noise_source_count) of `0`; an object
+    /// overriding one must override both.
+    fn equations_of_motion_diffusion(
+        &mut self,
+        _state: &Self::State,
+        _current_sim_nanos: u64,
+        _current_epoch: Epoch,
+    ) -> Vec<Self::Derivative> {
+        Vec::new()
+    }
+
+    /// Applies the diffusion increments to `state` in order (upstream
+    /// `applyStochasticNoiseInLocalOrder`): each one adds
+    /// `pseudo_step · Σ weightᵢ · tangentᵢ` through
+    /// [`state_with_derivatives`](Self::state_with_derivatives). An empty
+    /// slice returns `state.clone()`.
+    fn state_with_diffusion(
+        &self,
+        state: &Self::State,
+        diffusion: &[DiffusionIncrement<'_, Self::Derivative>],
+    ) -> Self::State {
+        let mut next = state.clone();
+        for increment in diffusion {
+            next = self.state_with_derivatives(&next, &increment.tangents, increment.pseudo_step);
+        }
+        next
+    }
+
+    /// The final update of a stochastic step: [`combine`](Self::combine) the
+    /// weighted drift over `step`, then add the diffusion increments with
+    /// [`state_with_diffusion`](Self::state_with_diffusion). The step output
+    /// is the drift's, as diffusion carries no step output.
+    ///
+    /// Upstream also forms the drift candidate first and then adds the noise
+    /// terms. Override this when the state needs the noise inside a
+    /// non-linear projection that `combine` applies.
+    fn combine_with_diffusion(
+        &self,
+        state: &Self::State,
+        drift: Vec<(Self::Derivative, f64)>,
+        step: f64,
+        diffusion: &[DiffusionIncrement<'_, Self::Derivative>],
+    ) -> (Self::State, Self::StepOutput) {
+        let (drifted, output) = self.combine(state, drift, step);
+        (self.state_with_diffusion(&drifted, diffusion), output)
     }
 }

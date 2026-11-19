@@ -45,4 +45,25 @@ pub trait StateEffector: Send {
     }
     fn write_outputs(&mut self, _current_sim_nanos: u64, _hub_state: &SpacecraftStateMsg) {}
     fn as_any(&self) -> &dyn Any;
+
+    /// Number of independent Wiener processes driving this effector's states
+    /// (upstream `StateSpec::noiseCount`). The spacecraft numbers its noise
+    /// sources effector by effector, in the order the effectors were added.
+    ///
+    /// The default is `0`: the effector's states have no diffusion.
+    fn noise_source_count(&self) -> usize {
+        0
+    }
+
+    /// Diffusion columns of this effector's states, one per noise source, each
+    /// [`state_len`](Self::state_len) long: the state change per unit Wiener
+    /// increment, as upstream effectors write with `StateData::setDiffusion`.
+    ///
+    /// A stochastic integrator calls this at its diffusion stages with the
+    /// stage's effector state; deterministic integrators never do. The default
+    /// returns no columns, matching the default
+    /// [`noise_source_count`](Self::noise_source_count).
+    fn compute_diffusion(&self, _effector_state: &[f64]) -> Vec<Vec<f64>> {
+        Vec::new()
+    }
 }

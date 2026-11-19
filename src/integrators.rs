@@ -1,9 +1,10 @@
+pub mod stochastic;
 pub mod traits;
 
 mod butcher;
 mod methods;
 
-pub use traits::DynamicObject;
+pub use traits::{DiffusionIncrement, DynamicObject};
 
 pub use butcher::{
     // Adaptive step-size control.
@@ -19,6 +20,7 @@ pub use butcher::{
     RK4,
     RK4_THREE_EIGHTHS,
     RKF45,
+    RKF78,
     // Low-level drivers.
     propagate_adaptive_rk,
     propagate_explicit_rk,
@@ -36,4 +38,5 @@ pub use methods::{
     Rk4,
     Rk4ThreeEighths,
     Rkf45,
+    Rkf78,
 };

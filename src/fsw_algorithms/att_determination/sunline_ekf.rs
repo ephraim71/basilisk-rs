@@ -1326,6 +1326,7 @@ pub(crate) mod tests {
             velocity_mps: Vector3::zeros(),
             sigma_bn: Vector3::new(0.1, 0.2, -0.3),
             omega_radps: Vector3::zeros(),
+            ..Default::default()
         };
         let sun_direction_n = Vector3::new(0.3, -0.5, 0.8).normalize();
         let sun_direction_b = spacecraft_state

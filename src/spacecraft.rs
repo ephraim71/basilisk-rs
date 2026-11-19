@@ -36,6 +36,24 @@ pub struct Spacecraft {
     integrated_state: Option<IntegratedState>,
     last_gravity_accel_inertial_mps2: Vector3<f64>,
     last_non_conservative_accel_body_mps2: Vector3<f64>,
+    accumulated_dv: AccumulatedDeltaV,
+}
+
+/// Upstream `dvAccum_CN_B`, `dvAccum_BN_B` and `dvAccum_CN_N`: the
+/// non-gravitational velocity change summed over the integration steps.
+///
+/// Each step adds `v_new - (v_old + Δv_grav)`, where `Δv_grav` is the step's
+/// integrated gravity (the integrator's step output, upstream's
+/// `hubGravVelocity` / `BcGravVelocity` states) and the velocities are the
+/// integrated ones, relative to the central body. The body-frame sums take
+/// each increment in the body frame at the end of its step. `init` restarts
+/// the sums along with the state; upstream zeroes them once, in the
+/// constructor.
+#[derive(Clone, Copy, Debug, Default)]
+struct AccumulatedDeltaV {
+    com_body_mps: Vector3<f64>,
+    body_origin_body_mps: Vector3<f64>,
+    com_inertial_mps: Vector3<f64>,
 }
 
 impl Spacecraft {
@@ -57,6 +75,37 @@ impl Spacecraft {
             integrated_state: None,
             last_gravity_accel_inertial_mps2: Vector3::zeros(),
             last_non_conservative_accel_body_mps2: Vector3::zeros(),
+            accumulated_dv: AccumulatedDeltaV::default(),
+        }
+    }
+
+    /// Inertial-frame velocity of the center of mass relative to the central
+    /// body: `v_B + [NB] (c' + ω × c)` (upstream `v_CN_N` from `cDot_B`).
+    fn center_of_mass_velocity_mps(&self, state: &IntegratedState) -> Vector3<f64> {
+        let mass_props = self.mass_props_for_effector_states(&state.effector_states);
+        let center_of_mass_dot_body_mps = mass_props.center_of_mass_prime_body_mps
+            + state.omega_radps.cross(&mass_props.center_of_mass_body_m);
+        state.velocity_wrt_central_body_mps
+            + body_to_inertial_dcm_from_sigma_bn(state.sigma_bn) * center_of_mass_dot_body_mps
+    }
+
+    /// The state message for `state` at the given inertial position and
+    /// velocity, with the accumulated ΔV.
+    fn state_msg(
+        &self,
+        state: &IntegratedState,
+        inertial_position_m: Vector3<f64>,
+        inertial_velocity_mps: Vector3<f64>,
+    ) -> SpacecraftStateMsg {
+        SpacecraftStateMsg {
+            accumulated_dv_cn_b_mps: self.accumulated_dv.com_body_mps,
+            accumulated_dv_bn_b_mps: self.accumulated_dv.body_origin_body_mps,
+            accumulated_dv_cn_n_mps: self.accumulated_dv.com_inertial_mps,
+            ..spacecraft_state_msg_from_integrated_state(
+                state,
+                inertial_position_m,
+                inertial_velocity_mps,
+            )
         }
     }
 
@@ -112,12 +161,11 @@ impl Spacecraft {
             .gravity
             .compute_gravity_field(com_position_wrt_central_body_m, context.current_sim_nanos)
             .unwrap_or_else(|error| panic!("failed to evaluate gravity acceleration: {error}"));
-        let state_msg = SpacecraftStateMsg {
-            position_m: inertial_position_m,
-            velocity_mps: inertial_velocity_mps,
-            sigma_bn: integrated_state.sigma_bn,
-            omega_radps: integrated_state.omega_radps,
-        };
+        let state_msg = self.state_msg(
+            &integrated_state,
+            inertial_position_m,
+            inertial_velocity_mps,
+        );
         let diagnostics_msg = self.current_diagnostics_msg(
             &integrated_state,
             &state_msg,
@@ -386,6 +434,7 @@ impl Spacecraft {
 
 impl Module for Spacecraft {
     fn init(&mut self) {
+        self.accumulated_dv = AccumulatedDeltaV::default();
         self.integrated_state = Some(IntegratedState {
             position_wrt_central_body_m: self.config.initial_position_m,
             velocity_wrt_central_body_mps: self.config.initial_velocity_mps,
@@ -407,12 +456,11 @@ impl Module for Spacecraft {
                 0,
             );
 
-        let state_msg = SpacecraftStateMsg {
-            position_m: inertial_position_m,
-            velocity_mps: inertial_velocity_mps,
-            sigma_bn: self.config.initial_sigma_bn,
-            omega_radps: self.config.initial_omega_radps,
-        };
+        let state_msg = self.state_msg(
+            &integrated_state,
+            inertial_position_m,
+            inertial_velocity_mps,
+        );
         let diagnostics_msg =
             self.current_diagnostics_msg(&integrated_state, &state_msg, Vector3::zeros(), 0);
         self.state_out.write(state_msg.clone());
@@ -455,21 +503,16 @@ impl Module for Spacecraft {
             .integrated_state
             .clone()
             .expect("spacecraft integrated state must be initialized");
-        let old_inertial_velocity_mps = self
-            .gravity
-            .inertial_position_and_velocity(
-                integrated_state.position_wrt_central_body_m,
-                integrated_state.velocity_wrt_central_body_mps,
-                step_start_nanos,
-            )
-            .1;
+        // Upstream `preIntegration`: the velocities the ΔV is measured from.
+        let old_velocity_mps = integrated_state.velocity_wrt_central_body_mps;
+        let old_com_velocity_mps = self.center_of_mass_velocity_mps(&integrated_state);
 
         // Move the integrator out of `self` so it no longer aliases `*self`;
         // `propagate` takes `&mut self`, which would collide with a reference
         // borrowed out of `self.config`. `Rk4` is the zero-config default when
         // none is configured. Restored below once `chosen` is dead.
         let integrator_slot = self.config.integrator.take();
-        let default_integrator = Rk4::default();
+        let default_integrator = Rk4;
         let chosen: &dyn Integrator<Spacecraft> =
             integrator_slot.as_deref().unwrap_or(&default_integrator);
         let (new_state, gravity_delta_velocity_inertial_mps) = chosen.propagate(
@@ -498,18 +541,27 @@ impl Module for Spacecraft {
                 context.current_sim_nanos,
             );
 
-        let state_msg = SpacecraftStateMsg {
-            position_m: inertial_position_m,
-            velocity_mps: inertial_velocity_mps,
-            sigma_bn: integrated_state.sigma_bn,
-            omega_radps: integrated_state.omega_radps,
-        };
-        let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(integrated_state.sigma_bn);
-        self.last_non_conservative_accel_body_mps2 = body_to_inertial_dcm.transpose()
-            * ((inertial_velocity_mps
-                - old_inertial_velocity_mps
-                - gravity_delta_velocity_inertial_mps)
-                / dt_seconds);
+        // Upstream `postIntegration`: the step's non-gravitational velocity
+        // change, from the velocities relative to the central body, which the
+        // integrated gravity is also relative to.
+        let inertial_to_body_dcm =
+            body_to_inertial_dcm_from_sigma_bn(integrated_state.sigma_bn).transpose();
+        let dv_body_origin_mps = integrated_state.velocity_wrt_central_body_mps
+            - old_velocity_mps
+            - gravity_delta_velocity_inertial_mps;
+        let dv_com_mps = self.center_of_mass_velocity_mps(&integrated_state)
+            - old_com_velocity_mps
+            - gravity_delta_velocity_inertial_mps;
+        self.accumulated_dv.com_body_mps += inertial_to_body_dcm * dv_com_mps;
+        self.accumulated_dv.body_origin_body_mps += inertial_to_body_dcm * dv_body_origin_mps;
+        self.accumulated_dv.com_inertial_mps += dv_com_mps;
+        self.last_non_conservative_accel_body_mps2 =
+            inertial_to_body_dcm * (dv_body_origin_mps / dt_seconds);
+        let state_msg = self.state_msg(
+            &integrated_state,
+            inertial_position_m,
+            inertial_velocity_mps,
+        );
         let diagnostics_msg = self.current_diagnostics_msg(
             &integrated_state,
             &state_msg,
@@ -731,6 +783,73 @@ impl DynamicObject for Spacecraft {
             return Some(0.0);
         }
         Some((sum_of_squares / count as f64).sqrt())
+    }
+
+    /// Every state effector's noise sources, effector by effector in the
+    /// order they were added.
+    fn noise_source_count(&self) -> usize {
+        self.state_effectors
+            .iter()
+            .map(|effector| effector.noise_source_count())
+            .sum()
+    }
+
+    /// Upstream `Spacecraft::equationsOfMotionDiffusion`: one column per noise
+    /// source, carrying its effector's
+    /// [`compute_diffusion`](StateEffector::compute_diffusion) column and zero
+    /// elsewhere. The hub states have no diffusion, as upstream.
+    fn equations_of_motion_diffusion(
+        &mut self,
+        state: &IntegratedState,
+        _current_sim_nanos: u64,
+        _current_epoch: Epoch,
+    ) -> Vec<StateDerivative> {
+        assert_eq!(
+            self.state_effectors.len(),
+            state.effector_states.len(),
+            "state effector count does not match integrated state count"
+        );
+        let zero_effector_dots: Vec<Vec<f64>> = state
+            .effector_states
+            .iter()
+            .map(|effector_state| vec![0.0; effector_state.len()])
+            .collect();
+        let mut columns = Vec::new();
+        for (index, (effector, effector_state)) in self
+            .state_effectors
+            .iter()
+            .zip(state.effector_states.iter())
+            .enumerate()
+        {
+            let effector_columns = effector.compute_diffusion(effector_state);
+            assert_eq!(
+                effector_columns.len(),
+                effector.noise_source_count(),
+                "state effector '{}' returned {} diffusion columns for {} noise sources",
+                effector.name(),
+                effector_columns.len(),
+                effector.noise_source_count()
+            );
+            for column in effector_columns {
+                assert_eq!(
+                    column.len(),
+                    effector.state_len(),
+                    "diffusion column length mismatch for state effector '{}'",
+                    effector.name()
+                );
+                let mut effector_state_dots = zero_effector_dots.clone();
+                effector_state_dots[index] = column;
+                columns.push(StateDerivative {
+                    position_wrt_central_body_dot_mps: Vector3::zeros(),
+                    velocity_wrt_central_body_dot_mps2: Vector3::zeros(),
+                    gravity_accel_inertial_mps2: Vector3::zeros(),
+                    sigma_dot: Vector3::zeros(),
+                    omega_dot_radps2: Vector3::zeros(),
+                    effector_state_dots,
+                });
+            }
+        }
+        columns
     }
 
     /// The step output is the gravity-induced velocity change over the step, an

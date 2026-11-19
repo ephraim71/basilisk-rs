@@ -99,6 +99,7 @@ impl HingedRigidBodyStateEffector {
                 + body_to_inertial.transform_vector(&velocity_body_mps),
             sigma_bn: quaternion_to_mrp(panel_to_inertial),
             omega_radps: self.kinematic.dcm_panel_body * omega_sn_body,
+            ..Default::default()
         }
     }
 

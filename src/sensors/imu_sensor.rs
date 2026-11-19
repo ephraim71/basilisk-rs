@@ -255,6 +255,7 @@ mod tests {
             velocity_mps: Vector3::zeros(),
             sigma_bn: Vector3::zeros(),
             omega_radps,
+            ..Default::default()
         });
         imu.input_state_msg.connect(state_out.slot());
         imu.init();

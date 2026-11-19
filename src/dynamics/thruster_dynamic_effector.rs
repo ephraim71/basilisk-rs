@@ -460,6 +460,7 @@ mod tests {
             velocity_mps: Vector3::zeros(),
             sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
+            ..Default::default()
         }
     }
 

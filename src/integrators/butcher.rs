@@ -16,6 +16,7 @@ use hifitime::{Duration, Epoch};
 /// Row `a[i]` holds the stage coefficients `a_{i,j}` for `j < i`, so it has
 /// length `i` (row 0 is empty). `c[i]` is the node (fraction of the step) at
 /// which stage `i` is evaluated, and `b[i]` are the solution weights.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ButcherTableau {
     /// Lower-triangular stage coefficients; `a[i]` has length `i`.
     pub a: &'static [&'static [f64]],
@@ -31,9 +32,63 @@ pub struct ButcherTableau {
     pub error_estimate_order: u32,
 }
 
+impl ButcherTableau {
+    /// Checks a (custom) tableau the way upstream's `svIntegratorRungeKutta`
+    /// and `svIntegratorAdaptiveRungeKutta` constructors do: matching stage
+    /// counts, finite coefficients and an explicit (strictly lower
+    /// triangular) stage matrix. Row `a[i]` with more than `i` entries is
+    /// accepted only if the extra entries are zero. The drivers do not call
+    /// this; it is for validating a tableau once, where it is built.
+    pub fn validate(&self) -> Result<(), String> {
+        let stages = self.c.len();
+        if self.a.len() != stages || self.b.len() != stages {
+            return Err(format!(
+                "Runge-Kutta tableau dimensions disagree: {} rows of a, {} nodes c, {} weights b",
+                self.a.len(),
+                stages,
+                self.b.len()
+            ));
+        }
+        if let Some(b_embedded) = self.b_embedded {
+            if b_embedded.len() != stages {
+                return Err(format!(
+                    "Runge-Kutta tableau has {stages} stages but {} embedded weights",
+                    b_embedded.len()
+                ));
+            }
+            if b_embedded.iter().any(|value| !value.is_finite()) {
+                return Err("Runge-Kutta embedded weights must be finite".to_string());
+            }
+        }
+        if self.error_estimate_order == 0 {
+            return Err("Runge-Kutta error-estimate order must be finite and positive".to_string());
+        }
+        for (row_index, row) in self.a.iter().enumerate() {
+            if row.len() > stages {
+                return Err(format!(
+                    "Runge-Kutta tableau row {row_index} has {} entries for {stages} stages",
+                    row.len()
+                ));
+            }
+            if row.iter().any(|value| !value.is_finite()) {
+                return Err("Runge-Kutta stage coefficients must be finite".to_string());
+            }
+            if row.iter().skip(row_index).any(|&value| value != 0.0) {
+                return Err(
+                    "Runge-Kutta stage coefficients must be strictly lower triangular".to_string(),
+                );
+            }
+        }
+        if self.b.iter().chain(self.c).any(|value| !value.is_finite()) {
+            return Err("Runge-Kutta weights and nodes must be finite".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// Nanosecond offset of a stage node, saturating so pathological steps can't
 /// panic on overflow.
-fn offset_nanos(base_nanos: u64, seconds: f64) -> u64 {
+pub(super) fn offset_nanos(base_nanos: u64, seconds: f64) -> u64 {
     base_nanos.saturating_add((seconds * 1.0e9).max(0.0) as u64)
 }
 
@@ -370,6 +425,147 @@ pub const DOPRI45: ButcherTableau = ButcherTableau {
         1.0 / 40.0,
     ]),
     error_estimate_order: 4,
+};
+
+/// Runge-Kutta-Fehlberg 7(8), the tableau of upstream `svIntegratorRKF78`
+/// (Fehlberg 1968, NASA TR R-287). Thirteen evaluations per step.
+///
+/// Like [`RKF45`] this propagates the higher-order (8th) solution and uses the
+/// 7th-order one as the embedded estimate; upstream propagates the 7th-order
+/// solution (`bStarArray`). The difference of the two, and so the step-size
+/// control with its `1/8` exponent, is the same.
+pub const RKF78: ButcherTableau = ButcherTableau {
+    a: &[
+        &[],
+        &[2.0 / 27.0],
+        &[1.0 / 36.0, 1.0 / 12.0],
+        &[1.0 / 24.0, 0.0, 1.0 / 8.0],
+        &[5.0 / 12.0, 0.0, -25.0 / 16.0, 25.0 / 16.0],
+        &[1.0 / 20.0, 0.0, 0.0, 1.0 / 4.0, 1.0 / 5.0],
+        &[
+            -25.0 / 108.0,
+            0.0,
+            0.0,
+            125.0 / 108.0,
+            -65.0 / 27.0,
+            125.0 / 54.0,
+        ],
+        &[
+            31.0 / 300.0,
+            0.0,
+            0.0,
+            0.0,
+            61.0 / 225.0,
+            -2.0 / 9.0,
+            13.0 / 900.0,
+        ],
+        &[
+            2.0,
+            0.0,
+            0.0,
+            -53.0 / 6.0,
+            704.0 / 45.0,
+            -107.0 / 9.0,
+            67.0 / 90.0,
+            3.0,
+        ],
+        &[
+            -91.0 / 108.0,
+            0.0,
+            0.0,
+            23.0 / 108.0,
+            -976.0 / 135.0,
+            311.0 / 54.0,
+            -19.0 / 60.0,
+            17.0 / 6.0,
+            -1.0 / 12.0,
+        ],
+        &[
+            2383.0 / 4100.0,
+            0.0,
+            0.0,
+            -341.0 / 164.0,
+            4496.0 / 1025.0,
+            -301.0 / 82.0,
+            2133.0 / 4100.0,
+            45.0 / 82.0,
+            45.0 / 164.0,
+            18.0 / 41.0,
+        ],
+        &[
+            3.0 / 205.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -6.0 / 41.0,
+            -3.0 / 205.0,
+            -3.0 / 41.0,
+            3.0 / 41.0,
+            6.0 / 41.0,
+            0.0,
+        ],
+        &[
+            -1777.0 / 4100.0,
+            0.0,
+            0.0,
+            -341.0 / 164.0,
+            4496.0 / 1025.0,
+            -289.0 / 82.0,
+            2193.0 / 4100.0,
+            51.0 / 82.0,
+            33.0 / 164.0,
+            12.0 / 41.0,
+            0.0,
+            1.0,
+        ],
+    ],
+    c: &[
+        0.0,
+        2.0 / 27.0,
+        1.0 / 9.0,
+        1.0 / 6.0,
+        5.0 / 12.0,
+        1.0 / 2.0,
+        5.0 / 6.0,
+        1.0 / 6.0,
+        2.0 / 3.0,
+        1.0 / 3.0,
+        1.0,
+        0.0,
+        1.0,
+    ],
+    b: &[
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        34.0 / 105.0,
+        9.0 / 35.0,
+        9.0 / 35.0,
+        9.0 / 280.0,
+        9.0 / 280.0,
+        0.0,
+        41.0 / 840.0,
+        41.0 / 840.0,
+    ],
+    b_embedded: Some(&[
+        41.0 / 840.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        34.0 / 105.0,
+        9.0 / 35.0,
+        9.0 / 35.0,
+        9.0 / 280.0,
+        9.0 / 280.0,
+        41.0 / 840.0,
+        0.0,
+        0.0,
+    ]),
+    error_estimate_order: 7,
 };
 
 #[cfg(test)]

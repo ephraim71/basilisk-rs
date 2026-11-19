@@ -11,7 +11,7 @@
 
 use super::butcher::{
     AdaptiveController, DOPRI45, EULER, HEUN, MIDPOINT, RALSTON, RK4, RK4_THREE_EIGHTHS, RKF45,
-    propagate_adaptive_rk, propagate_explicit_rk,
+    RKF78, propagate_adaptive_rk, propagate_explicit_rk,
 };
 use super::traits::DynamicObject;
 use hifitime::Epoch;
@@ -137,6 +137,11 @@ adaptive_method! {
 adaptive_method! {
     /// Adaptive Dormand-Prince 5(4), the workhorse of many ODE suites.
     Dopri45 => DOPRI45
+}
+adaptive_method! {
+    /// Adaptive Runge-Kutta-Fehlberg 7(8): port of upstream `svIntegratorRKF78`.
+    /// Thirteen evaluations per accepted step; see [`RKF78`](super::RKF78).
+    Rkf78 => RKF78
 }
 
 #[cfg(test)]

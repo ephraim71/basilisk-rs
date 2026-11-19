@@ -3,6 +3,8 @@ pub mod facet_drag_dynamic_effector;
 pub mod facet_srp_dynamic_effector;
 pub mod gravity;
 pub mod hinged_rigid_body_state_effector;
+pub mod igbm_noise_state_effector;
+pub mod mean_reverting_noise_state_effector;
 pub mod mtb_dynamic_effector;
 pub mod radiation_pressure;
 pub mod reaction_wheel_state_effector;

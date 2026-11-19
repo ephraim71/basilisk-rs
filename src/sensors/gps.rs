@@ -171,6 +171,7 @@ mod tests {
             velocity_mps: velocity,
             sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
+            ..Default::default()
         });
         gps.input_state_msg.connect(state_out.slot());
         gps.init();

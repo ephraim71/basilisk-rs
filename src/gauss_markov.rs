@@ -14,6 +14,8 @@
 //!   random draw is biased back toward zero by `exp(-((2B-|s|)/|s|)^3)^2`;
 //!   the state may briefly exceed the bound and never sits pinned at it,
 //!   unlike a hard clamp, which piles probability mass at the boundary.
+//!   [`GaussMarkov::clamp_state`] applies upstream's current hard clamp
+//!   instead, for a module whose upstream relies on it.
 
 use nalgebra::{SMatrix, SVector};
 use rand::Rng;
@@ -74,6 +76,22 @@ impl<const N: usize> GaussMarkov<N> {
         }
 
         self.state += self.noise_matrix_sqrt * draws;
+        self.state
+    }
+
+    /// Hard-limit each state whose entry in `bounds` is positive to
+    /// `±bound`, and return the result: the bound of upstream's current
+    /// `GaussMarkov`, which clips the state after every step instead of
+    /// repelling it. A caller wanting it leaves
+    /// [`state_bounds`](Self::state_bounds) at zero and calls this after each
+    /// [`compute_next_state`](Self::compute_next_state); the clipped state is
+    /// the one the next step propagates.
+    pub fn clamp_state(&mut self, bounds: &SVector<f64, N>) -> SVector<f64, N> {
+        for (state, &bound) in self.state.iter_mut().zip(bounds.iter()) {
+            if bound > 0.0 && state.abs() > bound {
+                *state = bound.copysign(*state);
+            }
+        }
         self.state
     }
 }
@@ -221,5 +239,41 @@ mod tests {
             .sum();
         let std = (sum_sq / n as f64).sqrt();
         assert!((std - 0.1).abs() < 0.005, "std {std}");
+    }
+
+    /// The hard clamp pins a random walk at its bound, and the next step
+    /// propagates the clipped state.
+    #[test]
+    fn clamp_state_pins_the_walk_at_the_bound() {
+        use nalgebra::{Matrix2, Vector2};
+
+        let bounds = Vector2::new(2.0e-3, 0.0);
+        let mut model = GaussMarkov::new(
+            Matrix2::identity(),
+            Matrix2::from_diagonal(&Vector2::repeat(3.0e-3)),
+            Vector2::zeros(),
+        );
+        let mut rng = StdRng::seed_from_u64(13);
+        let mut pinned = 0;
+        let mut unbounded_max: f64 = 0.0;
+        for _ in 0..5_000 {
+            let before = model.current_state();
+            let raw = model.compute_next_state(&mut rng);
+            let state = model.clamp_state(&bounds);
+            assert!(state[0].abs() <= bounds[0]);
+            assert_eq!(
+                state[1], raw[1],
+                "a non-positive bound leaves the state free"
+            );
+            assert!(
+                (raw[0] - before[0]).abs() < 1.0e-2,
+                "steps from the clipped state"
+            );
+            pinned += usize::from(state[0].abs() == bounds[0]);
+            unbounded_max = unbounded_max.max(state[1].abs());
+            assert_eq!(model.current_state(), state);
+        }
+        assert!(pinned > 0, "the walk never reached its bound");
+        assert!(unbounded_max > bounds[0]);
     }
 }

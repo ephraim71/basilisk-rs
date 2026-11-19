@@ -949,6 +949,7 @@ impl StateEffector for ReactionWheelStateEffector {
                 omega_radps: wheel.omega_radps,
                 theta_rad: wheel.theta_rad,
                 applied_motor_torque_nm: wheel.u_current_nm,
+                friction_torque_nm: wheel.friction_torque_nm,
             });
             speed_message.wheel_speeds_radps[index] = wheel.omega_radps;
             speed_message.wheel_angles_rad[index] = wheel.theta_rad;

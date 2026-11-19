@@ -6,6 +6,10 @@ pub struct ReactionWheelStateMsg {
     pub omega_radps: f64,
     pub theta_rad: f64,
     pub applied_motor_torque_nm: f64,
+    /// Upstream `RWConfigLogMsgPayload::frictionTorque` \[N·m\]: the bearing
+    /// friction torque on the wheel, opposing its spin.
+    #[serde(default)]
+    pub friction_torque_nm: f64,
 }
 
 impl TelemetryMessage for ReactionWheelStateMsg {
@@ -22,6 +26,10 @@ impl TelemetryMessage for ReactionWheelStateMsg {
             TelemetryField {
                 path: "applied_motor_torque_nm".to_string(),
                 value: self.applied_motor_torque_nm,
+            },
+            TelemetryField {
+                path: "friction_torque_nm".to_string(),
+                value: self.friction_torque_nm,
             },
         ]
     }

@@ -23,6 +23,7 @@ pub mod sensors;
 pub mod simulation;
 pub mod spacecraft;
 pub mod telemetry;
+pub mod thermal;
 mod time;
 pub mod utilities;
 

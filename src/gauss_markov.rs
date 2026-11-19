@@ -1,5 +1,9 @@
 //! First-order bounded Gauss-Markov error model.
 //!
+//! [`GaussMarkov`] carries `N` error states, three unless a caller names
+//! another count (one for a scalar sensor, twelve for a full navigation
+//! state); its propagation and noise matrices may couple any pair of them.
+//!
 //! Two conventions callers must know:
 //!
 //! * **The noise matrix is in 3-sigma units.** Draws are `N(0, 1/3)`, so a
@@ -11,57 +15,57 @@
 //!   the state may briefly exceed the bound and never sits pinned at it,
 //!   unlike a hard clamp, which piles probability mass at the boundary.
 
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{SMatrix, SVector};
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
-/// Three-state bounded Gauss-Markov process.
+/// `N`-state bounded Gauss-Markov process (three states by default).
 #[derive(Clone, Debug)]
-pub struct GaussMarkov {
+pub struct GaussMarkov<const N: usize = 3> {
     /// Error-state propagation matrix. Zero reduces the model to independent
     /// per-sample noise; identity is a random walk.
-    pub prop_matrix: Matrix3<f64>,
+    pub prop_matrix: SMatrix<f64, N, N>,
     /// Matrix square root of the noise covariance in **3-sigma units**;
     /// see the module docs.
-    pub noise_matrix_sqrt: Matrix3<f64>,
+    pub noise_matrix_sqrt: SMatrix<f64, N, N>,
     /// Per-state soft bounds; a non-positive bound leaves that state
     /// unbounded.
-    pub state_bounds: Vector3<f64>,
-    state: Vector3<f64>,
+    pub state_bounds: SVector<f64, N>,
+    state: SVector<f64, N>,
 }
 
-impl GaussMarkov {
+impl<const N: usize> GaussMarkov<N> {
     pub fn new(
-        prop_matrix: Matrix3<f64>,
-        noise_matrix_sqrt: Matrix3<f64>,
-        state_bounds: Vector3<f64>,
+        prop_matrix: SMatrix<f64, N, N>,
+        noise_matrix_sqrt: SMatrix<f64, N, N>,
+        state_bounds: SVector<f64, N>,
     ) -> Self {
         Self {
             prop_matrix,
             noise_matrix_sqrt,
             state_bounds,
-            state: Vector3::zeros(),
+            state: SVector::zeros(),
         }
     }
 
     /// Clear the accumulated error state (module reset).
     pub fn reset(&mut self) {
-        self.state = Vector3::zeros();
+        self.state = SVector::zeros();
     }
 
-    pub fn current_state(&self) -> Vector3<f64> {
+    pub fn current_state(&self) -> SVector<f64, N> {
         self.state
     }
 
     /// Advance one step and return the new error state: propagate, draw
     /// `N(0, 1/3)` per state, apply the bound repulsion to the raw draw,
     /// then scale by the noise matrix and accumulate.
-    pub fn compute_next_state<R: Rng>(&mut self, rng: &mut R) -> Vector3<f64> {
+    pub fn compute_next_state<R: Rng>(&mut self, rng: &mut R) -> SVector<f64, N> {
         self.state = self.prop_matrix * self.state;
 
         let normal = Normal::new(0.0, 1.0 / 3.0).expect("valid distribution");
-        let mut draws = Vector3::zeros();
-        for i in 0..3 {
+        let mut draws = SVector::<f64, N>::zeros();
+        for i in 0..N {
             draws[i] = normal.sample(rng);
             let bound = self.state_bounds[i];
             if bound > 0.0 {
@@ -177,5 +181,45 @@ mod tests {
         assert!(model.current_state().norm() > 0.0);
         model.reset();
         assert_eq!(model.current_state(), Vector3::zeros());
+    }
+
+    /// An off-diagonal propagation term couples two states: with noise on the
+    /// second state only, the first integrates it, `x0 += dt * x1` each step.
+    #[test]
+    fn propagation_couples_states_across_the_model() {
+        use nalgebra::{Matrix2, Vector2};
+
+        let dt = 0.1;
+        let mut model = GaussMarkov::new(
+            Matrix2::new(1.0, dt, 0.0, 1.0),
+            Matrix2::new(0.0, 0.0, 0.0, 3.0e-2),
+            Vector2::zeros(),
+        );
+        let mut rng = StdRng::seed_from_u64(5);
+
+        let mut expected_first = 0.0;
+        let mut previous_second = 0.0;
+        for _ in 0..100 {
+            let state = model.compute_next_state(&mut rng);
+            expected_first += dt * previous_second;
+            previous_second = state[1];
+            assert!((state[0] - expected_first).abs() < 1.0e-15);
+        }
+        assert!(previous_second != 0.0 && expected_first != 0.0);
+    }
+
+    /// A one-state model draws from the same 3-sigma distribution.
+    #[test]
+    fn a_single_state_model_keeps_the_three_sigma_convention() {
+        use nalgebra::{Matrix1, Vector1};
+
+        let mut model = GaussMarkov::new(Matrix1::zeros(), Matrix1::new(0.3), Vector1::zeros());
+        let mut rng = StdRng::seed_from_u64(9);
+        let n = 50_000;
+        let sum_sq: f64 = (0..n)
+            .map(|_| model.compute_next_state(&mut rng)[0].powi(2))
+            .sum();
+        let std = (sum_sq / n as f64).sqrt();
+        assert!((std - 0.1).abs() < 0.005, "std {std}");
     }
 }

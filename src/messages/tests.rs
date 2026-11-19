@@ -1079,9 +1079,9 @@ mod upstream_payloads {
         DipoleRequestBodyMsg, DvBurnCommandMsg, DvExecutionDataMsg, EffectorLock, EphemerisMsg,
         GroundStateMsg, HeadingFilterMsg, HillRelativeStateMsg, ImuMsg, ImuSensorBodyMsg,
         InertialFilterMsg, InertialForceCommandMsg, InertialHeadingMsg, LambertPerformanceMsg,
-        LambertProblemMsg, LambertSolutionMsg, LambertValidatorMsg, MAX_ACC_BUF_PKT, MAX_EFF_COUNT,
-        MAX_LIMB_PNTS, NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg, OpNavLimbMsg,
-        OpNavMsg, PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg,
+        LambertProblemMsg, LambertSolutionMsg, LambertValidatorMsg, LandmarkMsg, MAX_ACC_BUF_PKT,
+        MAX_EFF_COUNT, MAX_LIMB_PNTS, NavigationTranslationMsg, OpNavCirclesMsg, OpNavFilterMsg,
+        OpNavLimbMsg, OpNavMsg, PixelLineFilterMsg, PrescribedRotationMsg, RateCommandMsg,
         ReconfigBurnArrayInfoMsg, ReconfigBurnInfoMsg, ReconfigBurnStatus, SKF_N_STATES,
         SimulationMessage, SpacecraftStateMsg, StarTrackerAttitudeMsg, StarTrackerMsg,
         StripStateMsg, SunlineFilterMsg, TdbVehicleClockCorrelationMsg, ThrusterArrayConfigMsg,
@@ -1120,6 +1120,7 @@ mod upstream_payloads {
             $check::<LambertProblemMsg>();
             $check::<LambertSolutionMsg>();
             $check::<LambertValidatorMsg>();
+            $check::<LandmarkMsg>();
             $check::<NavigationTranslationMsg>();
             $check::<OpNavCirclesMsg>();
             $check::<OpNavFilterMsg>();
@@ -1335,6 +1336,7 @@ mod upstream_payloads {
             LambertProblemMsg,
             LambertSolutionMsg,
             LambertValidatorMsg,
+            LandmarkMsg,
             NavigationTranslationMsg,
             OpNavCirclesMsg,
             OpNavFilterMsg,

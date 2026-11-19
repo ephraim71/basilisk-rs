@@ -87,6 +87,7 @@ mod lambert_performance;
 mod lambert_problem;
 mod lambert_solution;
 mod lambert_validator;
+mod landmark;
 mod magnetic_dipole_command;
 mod magnetic_field;
 mod mj_joint_reactions;
@@ -201,6 +202,7 @@ pub use lambert_solution::{
     LambertSolutionMsg, LambertSolutionSpecifier, LambertTransferVelocities,
 };
 pub use lambert_validator::LambertValidatorMsg;
+pub use landmark::LandmarkMsg;
 pub use magnetic_dipole_command::MagneticDipoleCommandMsg;
 pub use magnetic_field::MagneticFieldMsg;
 pub use mj_joint_reactions::{MjJointReactionsMsg, MjJointType};

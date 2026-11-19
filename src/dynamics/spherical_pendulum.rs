@@ -7,7 +7,13 @@
 //! angles in the pendulum frame P0 (axes `p̂01`, `p̂02`, `p̂03`, fixed in the body
 //! frame): `l_P0 = R [cos φ cos θ, sin φ cos θ, −sin θ]`. A damping matrix `D`
 //! (P0 components) resists the motion of the mass relative to the tank. The
-//! states `[φ, θ, φ̇, θ̇]` are coupled to the hub by back-substitution.
+//! states `[φ, θ, φ̇, θ̇, m]` are coupled to the hub by back-substitution.
+//!
+//! The pendulum mass `m` is constant on its own. Pushed onto a
+//! [`FuelTank`](super::fuel_tank::FuelTank) as fuel slosh
+//! ([`FuelTank::push_fuel_slosh_particle`](super::fuel_tank::FuelTank::push_fuel_slosh_particle),
+//! upstream `pushFuelSloshParticle`), it is a [`FuelSlosh`] particle the tank
+//! drains (see [`super::fuel_slosh`]).
 //!
 //! The angles are singular at `θ = ±90°`. Called after an integration step,
 //! [`StateEffector::modify_states`] (upstream `modifyStates`) moves P0 onto the
@@ -18,10 +24,6 @@
 //! upstream, it is kept when the spacecraft is initialized again.
 //!
 //! Differences from upstream:
-//! - Upstream's mass is a fifth integrated state whose rate a `FuelTank` sets
-//!   when the pendulum is pushed onto it as fuel slosh (`FuelSlosh`,
-//!   `retrieveMassValue`). There is no fuel tank model here yet, so the mass
-//!   is the constant [`SphericalPendulumConfig::mass_kg`].
 //! - Upstream folds φ and θ back into `[−2π, 2π]` inside
 //!   `updateEffectorMassProps`, rewriting the state in the middle of an
 //!   integrator stage. Here the fold happens in `modify_states`, after the
@@ -35,9 +37,9 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
+use super::fuel_slosh::{DepletionMassProps, FuelSlosh, FuelSloshFlow, point_mass_slosh_props};
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
 use crate::utilities::avs_eigen_support::{DEFAULT_TOLERANCE, is_positive_semidefinite};
-use crate::utilities::rigid_body_kinematics::tilde;
 
 /// User-settable parameters of [`SphericalPendulum`].
 #[derive(Clone, Debug)]
@@ -59,8 +61,9 @@ pub struct SphericalPendulumConfig {
     pub phi_dot_init_radps: f64,
     /// Upstream `thetaDotInit` \[rad/s\] (default 0).
     pub theta_dot_init_radps: f64,
-    /// Upstream `massInit` \[kg\] (default 1).
-    pub mass_kg: f64,
+    /// Upstream `massInit` \[kg\]: initial pendulum mass, the start of its
+    /// mass state (default 1).
+    pub mass_init_kg: f64,
     /// Upstream `pHat_01`: first P0 axis in body-frame components (default x̂).
     pub p_hat_01_body: Vector3<f64>,
     /// Upstream `pHat_02` (default ŷ).
@@ -79,19 +82,19 @@ impl SphericalPendulumConfig {
             damping_matrix_p0_ns_per_m: Matrix3::zeros(),
             phi_dot_init_radps: 0.0,
             theta_dot_init_radps: 0.0,
-            mass_kg: 1.0,
+            mass_init_kg: 1.0,
             p_hat_01_body: Vector3::x(),
             p_hat_02_body: Vector3::y(),
             p_hat_03_body: Vector3::z(),
         }
     }
 
-    /// Upstream `validateConfiguration`: the mass finite and non-negative and
-    /// `D` symmetric positive semidefinite. Also requires a finite, positive
-    /// pendulum radius.
+    /// Upstream `validateConfiguration`: the initial mass finite and
+    /// non-negative and `D` symmetric positive semidefinite. Also requires a
+    /// finite, positive pendulum radius.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.mass_kg.is_finite() || self.mass_kg < 0.0 {
-            return Err("mass_kg must be finite and non-negative".to_string());
+        if !self.mass_init_kg.is_finite() || self.mass_init_kg < 0.0 {
+            return Err("mass_init_kg must be finite and non-negative".to_string());
         }
         if !is_positive_semidefinite(&self.damping_matrix_p0_ns_per_m, DEFAULT_TOLERANCE) {
             return Err("D must be symmetric positive semidefinite".to_string());
@@ -110,7 +113,7 @@ impl SphericalPendulumConfig {
 
 /// Spherical pendulum fuel-slosh model (upstream `SphericalPendulum`).
 ///
-/// State layout: `[φ, θ, φ̇, θ̇]`.
+/// State layout: `[φ, θ, φ̇, θ̇, m]`.
 #[derive(Debug)]
 pub struct SphericalPendulum {
     pub config: SphericalPendulumConfig,
@@ -118,6 +121,8 @@ pub struct SphericalPendulum {
     pub angles_rad: [f64; 2],
     /// Upstream `phiDot`, `thetaDot` \[rad/s\] of the last loaded state.
     pub angle_rates_radps: [f64; 2],
+    /// Upstream `massFSP` \[kg\] of the last loaded state.
+    pub mass_kg: f64,
     /// Upstream `dcm_B_P0` (columns `pHat_01`, `pHat_02`, `pHat_03`), moved by
     /// `modify_states`.
     dcm_b_p0: Matrix3<f64>,
@@ -128,10 +133,12 @@ impl SphericalPendulum {
     pub fn new(config: SphericalPendulumConfig) -> Self {
         let dcm_b_p0 = config.pendulum_frame_body();
         let angle_rates_radps = [config.phi_dot_init_radps, config.theta_dot_init_radps];
+        let mass_kg = config.mass_init_kg;
         Self {
             config,
             angles_rad: [0.0; 2],
             angle_rates_radps,
+            mass_kg,
             dcm_b_p0,
             back_sub: RefCell::new(PendulumAccelerationTerms::default()),
         }
@@ -145,7 +152,7 @@ impl SphericalPendulum {
     fn kinematics(&self, effector_state: &[f64]) -> PendulumKinematics {
         assert_eq!(
             effector_state.len(),
-            4,
+            5,
             "spherical pendulum state length mismatch"
         );
         PendulumKinematics::new(
@@ -160,10 +167,10 @@ impl SphericalPendulum {
     fn back_sub_terms(
         &self,
         k: &PendulumKinematics,
+        mass: f64,
         body_omega_radps: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
     ) -> (BackSubMatrices, PendulumAccelerationTerms) {
-        let mass = self.config.mass_kg;
         let radius = self.config.pendulum_radius_m;
         let d = self.config.tank_center_body_m;
         let omega = body_omega_radps;
@@ -257,11 +264,11 @@ impl StateEffector for SphericalPendulum {
     }
 
     fn state_len(&self) -> usize {
-        4
+        5
     }
 
     /// Validates the configuration (upstream `registerStates`) and returns the
-    /// initial `[0, 0, φ̇0, θ̇0]`.
+    /// initial `[0, 0, φ̇0, θ̇0, m0]`.
     ///
     /// # Panics
     ///
@@ -278,6 +285,7 @@ impl StateEffector for SphericalPendulum {
             0.0,
             self.config.phi_dot_init_radps,
             self.config.theta_dot_init_radps,
+            self.config.mass_init_kg,
         ]
     }
 
@@ -289,6 +297,7 @@ impl StateEffector for SphericalPendulum {
         );
         self.angles_rad = [state[0], state[1]];
         self.angle_rates_radps = [state[2], state[3]];
+        self.mass_kg = state[4];
     }
 
     fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {}
@@ -303,12 +312,13 @@ impl StateEffector for SphericalPendulum {
         back_sub: &mut BackSubMatrices,
     ) {
         let kinematics = self.kinematics(effector_state);
-        if self.config.mass_kg <= 0.0 {
+        let mass = self.fuel_mass_kg(effector_state);
+        if mass <= 0.0 {
             self.back_sub.replace(PendulumAccelerationTerms::default());
             return;
         }
         let (terms, acceleration) =
-            self.back_sub_terms(&kinematics, body_omega_radps, gravity_body_mps2);
+            self.back_sub_terms(&kinematics, mass, body_omega_radps, gravity_body_mps2);
         back_sub.matrix_a += terms.matrix_a;
         back_sub.matrix_b += terms.matrix_b;
         back_sub.matrix_c += terms.matrix_c;
@@ -318,45 +328,25 @@ impl StateEffector for SphericalPendulum {
         self.back_sub.replace(acceleration);
     }
 
+    /// The derivatives at a constant mass: the pendulum on its own.
     fn compute_derivatives(
         &self,
         effector_state: &[f64],
         body_trans_accel_mps2: Vector3<f64>,
         body_omega_dot_radps2: Vector3<f64>,
     ) -> Vec<f64> {
-        assert_eq!(
-            effector_state.len(),
-            self.state_len(),
-            "spherical pendulum state length mismatch"
-        );
-        let terms = self.back_sub.borrow();
-        vec![
-            effector_state[2],
-            effector_state[3],
-            terms.a_phi.dot(&body_trans_accel_mps2)
-                + terms.b_phi.dot(&body_omega_dot_radps2)
-                + terms.c_phi,
-            terms.a_theta.dot(&body_trans_accel_mps2)
-                + terms.b_theta.dot(&body_omega_dot_radps2)
-                + terms.c_theta,
-        ]
+        self.compute_derivatives_with_flow(
+            effector_state,
+            body_trans_accel_mps2,
+            body_omega_dot_radps2,
+            FuelSloshFlow::default(),
+        )
     }
 
-    /// Upstream `updateEffectorMassProps`.
+    /// Upstream `updateEffectorMassProps` at a constant mass.
     fn mass_properties(&self, effector_state: &[f64]) -> StateEffectorMassProps {
-        let k = self.kinematics(effector_state);
-        let mass = self.config.mass_kg;
-        let r_tilde = tilde(k.r_pc_b);
-        let r_prime_tilde = tilde(k.l_prime_b);
-        StateEffectorMassProps {
-            mass_kg: mass,
-            mass_dot_kgps: 0.0,
-            center_of_mass_body_m: k.r_pc_b,
-            center_of_mass_prime_body_mps: k.l_prime_b,
-            inertia_about_point_b_body_kg_m2: mass * r_tilde * r_tilde.transpose(),
-            inertia_about_point_b_body_prime_kg_m2ps: -mass
-                * (r_prime_tilde * r_tilde + r_tilde * r_prime_tilde),
-        }
+        self.mass_properties_with_flow(effector_state, FuelSloshFlow::default())
+            .dynamics
     }
 
     /// Upstream `updateEnergyMomContributions` (angular momentum about B).
@@ -367,20 +357,20 @@ impl StateEffector for SphericalPendulum {
     ) -> Vector3<f64> {
         let k = self.kinematics(effector_state);
         let r_dot = k.l_prime_b + body_omega_radps.cross(&k.r_pc_b);
-        self.config.mass_kg * k.r_pc_b.cross(&r_dot)
+        self.fuel_mass_kg(effector_state) * k.r_pc_b.cross(&r_dot)
     }
 
     /// Upstream `updateEnergyMomContributions`: kinetic energy relative to B.
     fn rotational_energy_j(&self, effector_state: &[f64], body_omega_radps: Vector3<f64>) -> f64 {
         let k = self.kinematics(effector_state);
         let r_dot = k.l_prime_b + body_omega_radps.cross(&k.r_pc_b);
-        0.5 * self.config.mass_kg * r_dot.dot(&r_dot)
+        0.5 * self.fuel_mass_kg(effector_state) * r_dot.dot(&r_dot)
     }
 
     /// Upstream `modifyStates`, with the angle folding upstream does in
     /// `updateEffectorMassProps`: folds φ and θ into `[−2π, 2π]`, then, when
     /// `|cos θ| < √2/2`, rotates P0 onto the pendulum direction and rewrites
-    /// the state as `[0, 0, φ̇', θ̇']` in the new frame.
+    /// the state as `[0, 0, φ̇', θ̇', m]` in the new frame.
     fn modify_states(&mut self, _current_sim_nanos: u64, effector_state: &mut [f64]) {
         assert_eq!(
             effector_state.len(),
@@ -413,7 +403,7 @@ impl StateEffector for SphericalPendulum {
             self.dcm_b_p0 *= dcm_p0_p0new;
             let l_prime_p0new = self.dcm_b_p0.transpose() * k.l_prime_b;
             let radius = self.config.pendulum_radius_m;
-            effector_state.copy_from_slice(&[
+            effector_state[..4].copy_from_slice(&[
                 0.0,
                 0.0,
                 l_prime_p0new.y / radius,
@@ -425,6 +415,53 @@ impl StateEffector for SphericalPendulum {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl FuelSlosh for SphericalPendulum {
+    fn fuel_mass_index(&self) -> usize {
+        4
+    }
+
+    /// Upstream `updateEffectorMassProps` with the tank's `fuelMassDot`.
+    fn mass_properties_with_flow(
+        &self,
+        effector_state: &[f64],
+        flow: FuelSloshFlow,
+    ) -> DepletionMassProps {
+        let k = self.kinematics(effector_state);
+        point_mass_slosh_props(
+            self.fuel_mass_kg(effector_state),
+            k.r_pc_b,
+            k.l_prime_b,
+            flow,
+        )
+    }
+
+    fn compute_derivatives_with_flow(
+        &self,
+        effector_state: &[f64],
+        body_trans_accel_mps2: Vector3<f64>,
+        body_omega_dot_radps2: Vector3<f64>,
+        flow: FuelSloshFlow,
+    ) -> Vec<f64> {
+        assert_eq!(
+            effector_state.len(),
+            self.state_len(),
+            "spherical pendulum state length mismatch"
+        );
+        let terms = self.back_sub.borrow();
+        vec![
+            effector_state[2],
+            effector_state[3],
+            terms.a_phi.dot(&body_trans_accel_mps2)
+                + terms.b_phi.dot(&body_omega_dot_radps2)
+                + terms.c_phi,
+            terms.a_theta.dot(&body_trans_accel_mps2)
+                + terms.b_theta.dot(&body_omega_dot_radps2)
+                + terms.c_theta,
+            flow.fuel_mass_dot_kgps,
+        ]
     }
 }
 
@@ -492,10 +529,6 @@ impl PendulumKinematics {
 mod tests {
     //! Ports of upstream `test_sphericalPendulum.py`.
     //!
-    //! Not ported: `testCase == 3`, which drains the pendulums through a
-    //! `FuelTank` fed by a thruster; neither the fuel tank nor the fuel-slosh
-    //! mass coupling exists here (see the module docs).
-    //!
     //! The 10 ms cases (`testCase` 1, 4 and 5) drive θ past 45° and rely on the
     //! frame switch of [`StateEffector::modify_states`], which `Spacecraft`
     //! calls after every integration step. Without it the angles approach the
@@ -503,9 +536,10 @@ mod tests {
     //! over the 1e-8 tolerance. The 1 ms case passes either way.
 
     use super::{SphericalPendulum, SphericalPendulumConfig};
+    use crate::dynamics::fuel_tank::FuelTank;
     use crate::dynamics::state_effector_test_support::{
-        HubSetup, MU_EARTH_M3PS2, add_point_mass_earth, run_logging_every_step,
-        spacecraft_with_effectors,
+        HubSetup, MU_EARTH_M3PS2, add_point_mass_earth, run_inspecting_every_step,
+        run_logging_every_step, slosh_depletion_tank, spacecraft_with_effectors,
     };
     use crate::spacecraft::{BackSubMatrices, StateEffector};
     use crate::utilities::orbital_motion::{ClassicElements, elements_to_state};
@@ -513,13 +547,21 @@ mod tests {
     use std::f64::consts::FRAC_1_SQRT_2;
 
     fn pendulums(damping: Matrix3<f64>) -> Vec<Box<dyn StateEffector>> {
+        pendulum_configs(damping)
+            .into_iter()
+            .map(|config| Box::new(SphericalPendulum::new(config)) as Box<dyn StateEffector>)
+            .collect()
+    }
+
+    /// The two pendulums of upstream `sphericalPendulumTest`.
+    fn pendulum_configs(damping: Matrix3<f64>) -> [SphericalPendulumConfig; 2] {
         let mut config1 = SphericalPendulumConfig::new("pendulum1");
         config1.pendulum_radius_m = 0.3;
         config1.tank_center_body_m = Vector3::new(0.1, 0.1, 0.1);
         config1.damping_matrix_p0_ns_per_m = damping;
         config1.phi_dot_init_radps = 0.01;
         config1.theta_dot_init_radps = 0.05;
-        config1.mass_kg = 20.0;
+        config1.mass_init_kg = 20.0;
         config1.p_hat_01_body = Vector3::new(FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
         config1.p_hat_02_body = Vector3::new(0.0, 1.0, 0.0);
         config1.p_hat_03_body = Vector3::new(-FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
@@ -530,12 +572,76 @@ mod tests {
         config2.damping_matrix_p0_ns_per_m = damping;
         config2.phi_dot_init_radps = 0.1;
         config2.theta_dot_init_radps = 0.5;
-        config2.mass_kg = 40.0;
+        config2.mass_init_kg = 40.0;
 
-        vec![
-            Box::new(SphericalPendulum::new(config1)),
-            Box::new(SphericalPendulum::new(config2)),
-        ]
+        [config1, config2]
+    }
+
+    /// Upstream `sphericalPendulumTest`'s hub, in Earth orbit and spinning
+    /// fast.
+    fn spinning_hub() -> HubSetup {
+        let elements = ClassicElements {
+            semi_major_axis: 6700.0 * 1000.0,
+            eccentricity: 0.01,
+            inclination_rad: 30.0_f64.to_radians(),
+            raan_rad: 100.0_f64.to_radians(),
+            arg_periapsis_rad: 100.0_f64.to_radians(),
+            true_anomaly_rad: 0.0,
+            ..ClassicElements::default()
+        };
+        let (r_n, v_n) = elements_to_state(MU_EARTH_M3PS2, &elements);
+        HubSetup {
+            mass_kg: 1500.0,
+            center_of_mass_body_m: Vector3::new(1.0, 0.5, 0.1),
+            inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(900.0, 800.0, 600.0)),
+            r_cn_n_m: r_n,
+            v_cn_n_mps: v_n,
+            sigma_bn: Vector3::zeros(),
+            omega_bn_b_radps: Vector3::new(1.0, 0.5, 0.1),
+        }
+    }
+
+    /// Upstream `sphericalPendulumTest(testCase = 3)`: the pendulums pushed
+    /// onto a 40 kg tank that a 445 N thruster drains for 5 s; each pendulum
+    /// drains at its share of the thruster's flow.
+    #[test]
+    fn spherical_pendulums_drain_at_their_share_of_the_tank_flow() {
+        let (mut tank, thruster) = slosh_depletion_tank(5.0);
+        for config in pendulum_configs(Matrix3::zeros()) {
+            tank.push_fuel_slosh_particle(SphericalPendulum::new(config));
+        }
+        let mut spacecraft =
+            spacecraft_with_effectors(&spinning_hub(), 10_000_000, vec![Box::new(tank)]);
+        spacecraft.add_dynamic_effector(thruster);
+        add_point_mass_earth(&mut spacecraft);
+
+        let mut masses: Vec<[f64; 2]> = Vec::new();
+        run_inspecting_every_step(&mut spacecraft, 1_000, |spacecraft| {
+            let tank = spacecraft.state_effectors[0]
+                .as_any()
+                .downcast_ref::<FuelTank>()
+                .expect("tank");
+            let mass = |index: usize| {
+                tank.fuel_slosh_particles()[index]
+                    .as_any()
+                    .downcast_ref::<SphericalPendulum>()
+                    .expect("pendulum")
+                    .mass_kg
+            };
+            masses.push([mass(0), mass(1)]);
+        });
+
+        let m_dot_fuel = -0.19392039093;
+        let accuracy = 1e-4;
+        for (index, share) in [20.0 / 100.0, 40.0 / 100.0].into_iter().enumerate() {
+            let m_dot = (masses[2][index] - masses[1][index]) / 0.01;
+            assert!(
+                (m_dot - m_dot_fuel * share).abs() <= accuracy,
+                "pendulum {}: {m_dot} vs {}",
+                index + 1,
+                m_dot_fuel * share
+            );
+        }
     }
 
     /// Upstream `sphericalPendulumTest`: two pendulums on a fast-spinning hub
@@ -551,25 +657,7 @@ mod tests {
             5 => Matrix3::from_diagonal(&Vector3::new(50.0, 0.0, 0.0)),
             _ => Matrix3::zeros(),
         };
-        let elements = ClassicElements {
-            semi_major_axis: 6700.0 * 1000.0,
-            eccentricity: 0.01,
-            inclination_rad: 30.0_f64.to_radians(),
-            raan_rad: 100.0_f64.to_radians(),
-            arg_periapsis_rad: 100.0_f64.to_radians(),
-            true_anomaly_rad: 0.0,
-            ..ClassicElements::default()
-        };
-        let (r_n, v_n) = elements_to_state(MU_EARTH_M3PS2, &elements);
-        let hub = HubSetup {
-            mass_kg: 1500.0,
-            center_of_mass_body_m: Vector3::new(1.0, 0.5, 0.1),
-            inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(900.0, 800.0, 600.0)),
-            r_cn_n_m: r_n,
-            v_cn_n_mps: v_n,
-            sigma_bn: Vector3::zeros(),
-            omega_bn_b_radps: Vector3::new(1.0, 0.5, 0.1),
-        };
+        let hub = spinning_hub();
         let mut spacecraft = spacecraft_with_effectors(&hub, time_step_nanos, pendulums(damping));
         add_point_mass_earth(&mut spacecraft);
 
@@ -657,7 +745,7 @@ mod tests {
     fn damped_config(damping: Matrix3<f64>) -> SphericalPendulumConfig {
         let mut config = SphericalPendulumConfig::new("pendulum");
         config.pendulum_radius_m = 0.3;
-        config.mass_kg = 20.0;
+        config.mass_init_kg = 20.0;
         config.damping_matrix_p0_ns_per_m = damping;
         config
     }
@@ -701,8 +789,8 @@ mod tests {
     #[test]
     fn validation_rejects_bad_mass_and_radius() {
         let mut config = damped_config(Matrix3::zeros());
-        config.mass_kg = -1.0;
-        assert!(config.validate().unwrap_err().contains("mass_kg"));
+        config.mass_init_kg = -1.0;
+        assert!(config.validate().unwrap_err().contains("mass_init_kg"));
         let mut config = damped_config(Matrix3::zeros());
         config.pendulum_radius_m = 0.0;
         assert!(config.validate().unwrap_err().contains("pendulum_radius_m"));
@@ -717,7 +805,7 @@ mod tests {
         config.p_hat_01_body = Vector3::new(FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
         config.p_hat_03_body = Vector3::new(-FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
         let mut pendulum = SphericalPendulum::new(config);
-        let mut state = [0.7, 1.0, -0.3, 0.4];
+        let mut state = [0.7, 1.0, -0.3, 0.4, 20.0];
         let before = pendulum.mass_properties(&state);
 
         pendulum.modify_states(0, &mut state);
@@ -738,12 +826,12 @@ mod tests {
     #[test]
     fn modify_states_folds_angles_and_keeps_frame_below_45_degrees() {
         let mut pendulum = SphericalPendulum::new(damped_config(Matrix3::zeros()));
-        let mut state = [7.0, -6.5, 0.1, 0.2];
+        let mut state = [7.0, -6.5, 0.1, 0.2, 20.0];
 
         pendulum.modify_states(0, &mut state);
 
         let two_pi = 2.0 * std::f64::consts::PI;
-        assert_eq!(state, [7.0 - two_pi, -6.5 + two_pi, 0.1, 0.2]);
+        assert_eq!(state, [7.0 - two_pi, -6.5 + two_pi, 0.1, 0.2, 20.0]);
         assert_eq!(pendulum.pendulum_frame_body(), Matrix3::identity());
     }
 
@@ -752,9 +840,9 @@ mod tests {
     #[test]
     fn massless_pendulum_contributes_nothing() {
         let mut config = damped_config(Matrix3::identity());
-        config.mass_kg = 0.0;
+        config.mass_init_kg = 0.0;
         let pendulum = SphericalPendulum::new(config);
-        let state = [0.2, 0.3, 0.1, -0.1];
+        let state = [0.2, 0.3, 0.1, -0.1, 0.0];
         let mut back_sub = BackSubMatrices::default();
 
         pendulum.update_contributions(
@@ -767,6 +855,6 @@ mod tests {
         assert_eq!(back_sub.matrix_a.norm() + back_sub.matrix_d.norm(), 0.0);
         assert_eq!(back_sub.vec_trans.norm() + back_sub.vec_rot.norm(), 0.0);
         let derivatives = pendulum.compute_derivatives(&state, Vector3::x(), Vector3::y());
-        assert_eq!(derivatives, vec![0.1, -0.1, 0.0, 0.0]);
+        assert_eq!(derivatives, vec![0.1, -0.1, 0.0, 0.0, 0.0]);
     }
 }

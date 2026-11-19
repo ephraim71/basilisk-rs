@@ -407,7 +407,7 @@ impl Spacecraft {
         };
         let center_of_mass_prime_body_mps = if total_mass_kg > 0.0 {
             effectors_first_moment_prime / total_mass_kg
-                - total_mass_dot_kgps * center_of_mass_body_m / total_mass_kg / total_mass_kg
+                - total_mass_dot_kgps * center_of_mass_body_m / total_mass_kg
         } else {
             Vector3::zeros()
         };
@@ -675,6 +675,14 @@ impl Spacecraft {
     ) -> StateDerivative {
         // Sync outputs (e.g. panel angle) so dynamic effectors read the correct trial state.
         self.sync_state_effectors_from_states(&state.effector_states);
+        // Stage time for the effectors whose dynamics depend on it (upstream
+        // `integTime`), such as thrusters and the tanks they drain.
+        for effector in &mut self.state_effectors {
+            effector.begin_stage(current_sim_nanos);
+        }
+        for effector in &mut self.dynamic_effectors {
+            effector.begin_stage(current_sim_nanos);
+        }
         let mass_props = self.mass_props_for_effector_states(&state.effector_states);
         let inertia = mass_props.inertia_about_point_b_body_kg_m2;
         let body_to_inertial_dcm = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);

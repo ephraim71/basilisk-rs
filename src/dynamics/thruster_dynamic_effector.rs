@@ -1,8 +1,30 @@
+//! A thruster with on and off ramps: port of upstream Basilisk
+//! `simulation/dynamics/Thrusters/thrusterDynamicEffector`
+//! (`ThrusterDynamicEffector`), one effector per thruster.
+//!
+//! The thruster reads its [`ThrusterCommandMsg`] before each integration step
+//! (see [`ThrusterDynamicEffector::pre_integration`] for when a command
+//! re-arms it) and, as upstream `computeForceTorque`, decides at every
+//! integrator stage whether it is still firing
+//! ([`DynamicEffector::begin_stage`]). It publishes its delivered thrust as a
+//! [`ThrusterOutputMsg`] (upstream `thrusterOutMsgs`) before each step, and
+//! the propellant it consumes as a [`MassFlowRateMsg`] at every stage, which
+//! a [`FuelTank`](super::fuel_tank::FuelTank) it is attached to
+//! ([`FuelTank::add_thruster_set`](super::fuel_tank::FuelTank::add_thruster_set),
+//! upstream `addThrusterSet`) drains. The tank in turn sets the propellant
+//! mass of the blow-down model through
+//! [`ThrusterDynamicEffector::fuel_tank_in_msg`].
+
 use nalgebra::Vector3;
 use std::any::Any;
 
-use crate::messages::{Input, SpacecraftStateMsg, ThrusterCommandMsg};
+use super::fuel_tank::TankFedThruster;
+use crate::messages::{
+    FuelTankMsg, Input, MassFlowRateMsg, Output, SpacecraftStateMsg, ThrusterCommandMsg,
+    ThrusterOutputMsg,
+};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
+use crate::utilities::astro_constants::EARTH_GRAV;
 
 #[derive(Clone, Debug)]
 pub struct ThrusterRampPoint {
@@ -110,8 +132,22 @@ impl Default for ThrusterOperation {
 pub struct ThrusterDynamicEffector {
     pub config: ThrusterDynamicEffectorConfig,
     pub command_in: Input<ThrusterCommandMsg>,
+    /// Upstream `fuelMass`, set by the `FuelTank` the thruster is attached
+    /// to: when connected, the blow-down model reads the tank's
+    /// [`FuelTankMsg::fuel_mass_kg`] instead of
+    /// [`ThrusterDynamicEffectorConfig::fuel_mass_kg`].
+    pub fuel_tank_in_msg: Input<FuelTankMsg>,
+    /// Upstream `thrusterOutMsgs` entry: the delivered thrust, written before
+    /// each integration step.
+    pub thruster_out_msg: Output<ThrusterOutputMsg>,
+    /// Upstream `mDotTotal` (`stateDerivContribution(0)`): the propellant the
+    /// thruster consumes, written before each step and at every integrator
+    /// stage.
+    pub mass_flow_out_msg: Output<MassFlowRateMsg>,
     pub operation: ThrusterOperation,
     last_command: ThrusterCommandMsg,
+    /// Upstream `prevFireTime` \[s\]: time of the last firing update.
+    previous_fire_time_s: f64,
 }
 
 impl ThrusterDynamicEffector {
@@ -119,8 +155,12 @@ impl ThrusterDynamicEffector {
         Self {
             config,
             command_in: Input::default(),
+            fuel_tank_in_msg: Input::default(),
+            thruster_out_msg: Output::default(),
+            mass_flow_out_msg: Output::default(),
             operation: ThrusterOperation::default(),
             last_command: ThrusterCommandMsg::default(),
+            previous_fire_time_s: 0.0,
         }
     }
 
@@ -130,6 +170,10 @@ impl ThrusterDynamicEffector {
     /// new when its `command_time_nanos` or its on-time differs from the last
     /// one taken, so stamped writes re-arm every period and an unstamped,
     /// hand-written command still takes effect when its value changes.
+    ///
+    /// Then, as upstream `computeForceTorque` at the step's first stage,
+    /// updates the blow-down factors and the firing at the step start, and
+    /// writes the thruster's outputs.
     pub fn pre_integration(&mut self, current_sim_nanos: u64) {
         let current_time_s = current_sim_nanos as f64 * 1.0e-9;
         let command = self.command_in.read();
@@ -141,34 +185,79 @@ impl ThrusterDynamicEffector {
         }
 
         self.compute_blowdown_decay();
+        self.update_firing(current_time_s);
+        self.thruster_out_msg.write(self.thruster_output());
+        self.write_mass_flow();
+    }
 
-        if (self.operation.thrust_on_cmd_s + self.operation.thruster_start_time_s - current_time_s)
-            >= 0.0
+    /// Upstream `computeForceTorque`'s firing update at `time_s`: the
+    /// thruster keeps firing while its on-time has not expired, within a
+    /// relative 1e-9 of the time since the last update, and otherwise shuts
+    /// down along its off ramp.
+    fn update_firing(&mut self, time_s: f64) {
+        let dt_s = time_s - self.previous_fire_time_s;
+        if (self.operation.thrust_on_cmd_s + self.operation.thruster_start_time_s - time_s)
+            >= -dt_s * 10e-10
             && self.operation.thrust_on_cmd_s > 0.0
         {
-            self.compute_thruster_fire(current_time_s);
+            self.compute_thruster_fire(time_s);
         } else if self.operation.thrust_factor > 0.0 {
-            self.compute_thruster_shut(current_time_s);
+            self.compute_thruster_shut(time_s);
+        }
+        self.previous_fire_time_s = time_s;
+    }
+
+    fn write_mass_flow(&self) {
+        self.mass_flow_out_msg.write(MassFlowRateMsg {
+            mass_flow_rate_kgps: self.mass_flow_rate_kgps(),
+        });
+    }
+
+    /// Thrust force \[N\] in body components, without the mass-depletion
+    /// terms (upstream `SingleThrusterForce`).
+    fn thrust_force_body_n(&self) -> Vector3<f64> {
+        let thrust_mag_n = self.config.max_thrust_n
+            * self.operation.thrust_factor
+            * self.operation.thrust_blow_down_factor
+            * (1.0 + self.config.thrust_magnitude_dispersion);
+        thrust_mag_n * normalized_direction(self.config.direction_body)
+    }
+
+    /// Thrust torque about B \[N m\] in body components, swirl included and
+    /// the mass-depletion terms not (upstream `SingleThrusterTorque`).
+    fn thrust_torque_body_nm(&self, force_body_n: Vector3<f64>) -> Vector3<f64> {
+        self.config.position_m.cross(&force_body_n)
+            + self.operation.thrust_factor
+                * self.operation.thrust_blow_down_factor
+                * self.config.max_swirl_torque_nm
+                * normalized_direction(self.config.direction_body)
+    }
+
+    /// Upstream `writeOutputMessages` for this thruster.
+    pub fn thruster_output(&self) -> ThrusterOutputMsg {
+        let force_body_n = self.thrust_force_body_n();
+        ThrusterOutputMsg {
+            max_thrust_n: self.config.max_thrust_n,
+            thrust_factor: self.operation.thrust_factor,
+            thrust_blow_down_factor: self.operation.thrust_blow_down_factor,
+            isp_blow_down_factor: self.operation.isp_blow_down_factor,
+            thrust_force_n: force_body_n.norm(),
+            thrust_force_b_n: force_body_n,
+            thrust_torque_pnt_b_b_nm: self.thrust_torque_body_nm(force_body_n),
+            thruster_location_m: self.config.position_m,
+            thruster_direction: self.config.direction_body,
         }
     }
 
     pub fn compute_output(&self, state: &crate::messages::SpacecraftStateMsg) -> EffectorOutput {
         let direction_body = normalized_direction(self.config.direction_body);
-        let thrust_mag_n = self.config.max_thrust_n
-            * self.operation.thrust_factor
-            * self.operation.thrust_blow_down_factor
-            * (1.0 + self.config.thrust_magnitude_dispersion);
-        let force_body_n = thrust_mag_n * direction_body;
-        let swirl_torque_body_nm = self.operation.thrust_factor
-            * self.operation.thrust_blow_down_factor
-            * self.config.max_swirl_torque_nm
-            * direction_body;
-
-        let mut torque_body_nm = self.config.position_m.cross(&force_body_n) + swirl_torque_body_nm;
+        let mut force_body_n = self.thrust_force_body_n();
+        let mut torque_body_nm = self.thrust_torque_body_nm(force_body_n);
 
         if !self.config.update_only {
             let omega_body = state.omega_radps;
             let m_dot_nozzle = self.mass_flow_rate_kgps();
+            force_body_n += 2.0 * m_dot_nozzle * omega_body.cross(&self.config.position_m);
             torque_body_nm += m_dot_nozzle
                 * nozzle_mass_depletion_torque(
                     direction_body,
@@ -197,7 +286,7 @@ impl ThrusterDynamicEffector {
             * self.operation.thrust_factor
             * self.operation.thrust_blow_down_factor
             * (1.0 + self.config.thrust_magnitude_dispersion)
-            / (9.80665
+            / (EARTH_GRAV
                 * self.config.steady_isp_s
                 * self.operation.isp_factor
                 * self.operation.isp_blow_down_factor)
@@ -224,8 +313,15 @@ impl ThrusterDynamicEffector {
         self.operation.thrust_off_ramp_time_s = 0.0;
     }
 
+    /// Upstream `computeBlowDownDecay`, with the propellant mass of the tank
+    /// feeding the thruster when one is attached.
     fn compute_blowdown_decay(&mut self) {
-        if let Some(fuel_mass_kg) = self.config.fuel_mass_kg {
+        let fuel_mass_kg = if self.fuel_tank_in_msg.is_connected() {
+            Some(self.fuel_tank_in_msg.read().fuel_mass_kg)
+        } else {
+            self.config.fuel_mass_kg
+        };
+        if let Some(fuel_mass_kg) = fuel_mass_kg {
             if !self.config.thrust_blow_down_coeff.is_empty() {
                 let thrust_blow_down =
                     evaluate_polynomial(&self.config.thrust_blow_down_coeff, fuel_mass_kg);
@@ -337,12 +433,29 @@ impl DynamicEffector for ThrusterDynamicEffector {
         ThrusterDynamicEffector::pre_integration(self, current_sim_nanos);
     }
 
+    /// Upstream `computeForceTorque`'s firing update at the stage time, and
+    /// the stage's propellant consumption for an attached tank.
+    fn begin_stage(&mut self, stage_nanos: u64) {
+        self.update_firing(stage_nanos as f64 * 1.0e-9);
+        self.write_mass_flow();
+    }
+
     fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
         ThrusterDynamicEffector::compute_output(self, state)
     }
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl TankFedThruster for ThrusterDynamicEffector {
+    fn mass_flow_out_msg(&self) -> &Output<MassFlowRateMsg> {
+        &self.mass_flow_out_msg
+    }
+
+    fn connect_fuel_tank(&mut self, fuel_tank_out_msg: &Output<FuelTankMsg>) {
+        fuel_tank_out_msg.connect_to(&mut self.fuel_tank_in_msg);
     }
 }
 
@@ -392,7 +505,12 @@ fn evaluate_polynomial(coeffs_descending: &[f64], x: f64) -> f64 {
         .fold(0.0, |value, coefficient| value * x + coefficient)
 }
 
-fn nozzle_mass_depletion_torque(
+/// Torque per unit mass flow of the propellant leaving the nozzle of a
+/// thruster along `thrust_direction_body` while the body turns at
+/// `omega_body_radps` (upstream's mass-depletion torque of
+/// `computeForceTorque` and `calcForceTorqueOnBody`, before the factor
+/// `mDotNozzle`).
+pub(crate) fn nozzle_mass_depletion_torque(
     thrust_direction_body: Vector3<f64>,
     area_nozzle_m2: f64,
     omega_body_radps: Vector3<f64>,
@@ -422,7 +540,8 @@ fn tilde(vector: Vector3<f64>) -> nalgebra::Matrix3<f64> {
 mod tests {
     use nalgebra::Vector3;
 
-    use crate::messages::{Output, SpacecraftStateMsg, ThrusterCommandMsg};
+    use crate::messages::{FuelTankMsg, Output, SpacecraftStateMsg, ThrusterCommandMsg};
+    use crate::spacecraft::DynamicEffector;
 
     use super::{ThrusterDynamicEffector, ThrusterDynamicEffectorConfig};
 
@@ -592,5 +711,98 @@ mod tests {
             (mdot - expected_mdot).abs() < 1e-6,
             "mdot mismatch: expected {expected_mdot:.6e}, got {mdot:.6e}"
         );
+    }
+
+    /// As upstream `computeForceTorque`, the firing is decided at every
+    /// integrator stage: the stage at the end of the on-time still fires
+    /// (within upstream's relative 1e-9 of the time since the last update),
+    /// a later one shuts the thruster down.
+    #[test]
+    fn firing_is_decided_at_every_stage() {
+        let command = Output::new(ThrusterCommandMsg {
+            on_time_s: 0.5,
+            command_time_nanos: 0,
+        });
+        let mut thruster = simple_thruster(&command);
+        // Read at t = 0, so the on-time ends at 0.5 s.
+        thruster.pre_integration(0);
+        thruster.pre_integration(400_000_000);
+        for stage in [400_000_000, 450_000_000, 450_000_000, 500_000_000] {
+            thruster.begin_stage(stage);
+            assert_eq!(thruster.operation.thrust_factor, 1.0, "stage {stage}");
+        }
+        thruster.pre_integration(500_000_000);
+        thruster.begin_stage(500_000_000);
+        assert_eq!(thruster.operation.thrust_factor, 1.0);
+        thruster.begin_stage(550_000_000);
+        assert_eq!(thruster.operation.thrust_factor, 0.0);
+        assert_eq!(thruster.mass_flow_out_msg.read().mass_flow_rate_kgps, 0.0);
+    }
+
+    /// Upstream `writeOutputMessages` and `computeStateContribution`: the
+    /// delivered thrust and the propellant consumption.
+    #[test]
+    fn thruster_publishes_its_thrust_and_mass_flow() {
+        let mut thruster = fired_thruster();
+        thruster.config.max_swirl_torque_nm = 0.2;
+        thruster.pre_integration(0);
+        let output = thruster.thruster_out_msg.read();
+        let direction = thruster.config.direction_body.normalize();
+        assert_eq!(output.max_thrust_n, 1.0);
+        assert_eq!(output.thrust_factor, 1.0);
+        assert_eq!(
+            (output.thrust_blow_down_factor, output.isp_blow_down_factor),
+            (1.0, 1.0)
+        );
+        assert!((output.thrust_force_n - 1.0).abs() < 1e-15);
+        assert!((output.thrust_force_b_n - direction).norm() < 1e-15);
+        let expected_torque = thruster.config.position_m.cross(&direction) + 0.2 * direction;
+        assert!((output.thrust_torque_pnt_b_b_nm - expected_torque).norm() < 1e-15);
+        assert_eq!(output.thruster_location_m, thruster.config.position_m);
+        assert_eq!(output.thruster_direction, thruster.config.direction_body);
+        let mass_flow = thruster.mass_flow_out_msg.read().mass_flow_rate_kgps;
+        assert!((mass_flow - 1.0 / (9.80665 * 226.7)).abs() < 1e-15);
+    }
+
+    /// A tank feeding the thruster sets the propellant mass of the blow-down
+    /// model.
+    #[test]
+    fn blow_down_follows_the_fuel_tank() {
+        let command = Output::new(ThrusterCommandMsg {
+            on_time_s: 1.0,
+            command_time_nanos: 0,
+        });
+        let mut thruster = simple_thruster(&command);
+        thruster.config.max_thrust_n = 2.0;
+        // Thrust 0.1 N per kg of propellant.
+        thruster.config.thrust_blow_down_coeff = vec![0.1, 0.0];
+        thruster.config.fuel_mass_kg = Some(15.0);
+        let tank = Output::new(FuelTankMsg {
+            fuel_mass_kg: 5.0,
+            ..FuelTankMsg::default()
+        });
+        thruster.pre_integration(0);
+        assert!((thruster.operation.thrust_blow_down_factor - 0.75).abs() < 1e-15);
+        tank.connect_to(&mut thruster.fuel_tank_in_msg);
+        thruster.pre_integration(0);
+        assert!((thruster.operation.thrust_blow_down_factor - 0.25).abs() < 1e-15);
+    }
+
+    /// Without update-only, the propellant leaving the nozzle adds upstream's
+    /// force `2 ṁ ω × r` to the thrust.
+    #[test]
+    fn mass_depletion_force_follows_the_body_rate() {
+        let mut thruster = fired_thruster();
+        thruster.config.update_only = false;
+        let omega = Vector3::new(0.0, 0.0, 0.3);
+        let state = SpacecraftStateMsg {
+            omega_radps: omega,
+            ..identity_state()
+        };
+        let m_dot = thruster.mass_flow_rate_kgps();
+        let expected = thruster.config.direction_body.normalize()
+            + 2.0 * m_dot * omega.cross(&thruster.config.position_m);
+        let output = thruster.compute_output(&state);
+        assert!((output.force_inertial_n - expected).norm() < 1e-15);
     }
 }

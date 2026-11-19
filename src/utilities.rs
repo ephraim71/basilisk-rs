@@ -8,6 +8,7 @@ pub mod bspline;
 pub mod geodetic_conversion;
 pub mod lambert;
 pub mod linear_algebra;
+pub mod newton_raphson;
 pub mod orbital_motion;
 pub mod rigid_body_kinematics;
 pub mod signal_condition;

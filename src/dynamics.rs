@@ -7,6 +7,8 @@ pub mod ext_pulsed_torque;
 pub mod facet_drag_dynamic_effector;
 pub mod facet_srp_dynamic_effector;
 pub mod faceted_srp_effector;
+pub mod fuel_slosh;
+pub mod fuel_tank;
 pub mod gravity;
 pub mod gravity_gradient_effector;
 pub mod hinged_rigid_body_motor;
@@ -23,3 +25,5 @@ pub mod spherical_pendulum;
 #[cfg(test)]
 mod state_effector_test_support;
 pub mod thruster_dynamic_effector;
+pub mod thruster_state_effector;
+pub mod vscmg_state_effector;

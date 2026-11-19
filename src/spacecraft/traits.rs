@@ -24,6 +24,13 @@ pub trait DynamicEffector: Send {
         self.compute_output(state)
     }
     fn as_any(&self) -> &dyn Any;
+
+    /// Called at the start of every derivative evaluation, before any
+    /// [`compute_output`](Self::compute_output) of that evaluation, with its
+    /// integrator stage time: upstream passes `integTime` to
+    /// `computeForceTorque`, where a thruster decides whether it still fires.
+    /// The default does nothing.
+    fn begin_stage(&mut self, _stage_nanos: u64) {}
 }
 
 pub trait StateEffector: Send {
@@ -65,6 +72,13 @@ pub trait StateEffector: Send {
     /// away from a coordinate singularity. The default leaves the state as is.
     fn modify_states(&mut self, _current_sim_nanos: u64, _effector_state: &mut [f64]) {}
     fn as_any(&self) -> &dyn Any;
+
+    /// Called at the start of every derivative evaluation, after the stage
+    /// state is loaded ([`load_state`](Self::load_state)) and before any
+    /// other call of that evaluation, with its integrator stage time:
+    /// upstream passes `integTime` to every state-effector call, where a
+    /// thruster decides whether it still fires. The default does nothing.
+    fn begin_stage(&mut self, _stage_nanos: u64) {}
 
     /// Number of independent Wiener processes driving this effector's states
     /// (upstream `StateSpec::noiseCount`). The spacecraft numbers its noise

@@ -1,7 +1,7 @@
 //! Scaffolding shared by the integrated state-effector tests ported from
 //! upstream Basilisk (`test_dualhingedRigidBodyStateEffector.py`,
 //! `test_nHingedRigidBodyStateEffector.py`, `test_linearSpringMassDamper.py`,
-//! `test_sphericalPendulum.py`).
+//! `test_sphericalPendulum.py`, `test_mass_depletion.py`).
 //!
 //! Those tests configure the hub the way upstream `spacecraft.hub` does, with
 //! the initial position and velocity of the spacecraft center of mass C
@@ -9,14 +9,19 @@
 //! integration step and compare the first and last samples with
 //! `unitTestSupport.isArrayEqualRelative` / `isArrayEqual`.
 
-use hifitime::Epoch;
+use hifitime::{Duration, Epoch};
 use nalgebra::{Matrix3, Vector3};
 
+use crate::dynamics::fuel_tank::{FuelTank, FuelTankConfig, FuelTankModel, FuelTankShape};
 use crate::dynamics::gravity::GravBodyData;
-use crate::messages::SpacecraftDiagnosticsMsg;
+use crate::dynamics::thruster_dynamic_effector::{
+    ThrusterDynamicEffector, ThrusterDynamicEffectorConfig,
+};
+use crate::messages::{Output, SpacecraftDiagnosticsMsg, ThrusterCommandMsg};
 use crate::simulation::Simulation;
 use crate::spacecraft::mrp::body_to_inertial_dcm_from_sigma_bn;
 use crate::spacecraft::{Spacecraft, SpacecraftConfig, StateEffector};
+use crate::{Module, SimulationContext};
 
 /// Earth gravitational parameter \[m^3/s^2\] of the upstream tests
 /// (`earthGravBody.mu`, `simIncludeGravBody.createEarth().mu`).
@@ -147,6 +152,59 @@ pub(crate) fn run_logging_every_step(
         sample();
     }
     log
+}
+
+/// Steps `spacecraft` alone through `steps` integration steps, calling
+/// `inspect` at t = 0 and after every step, where it can read the effectors.
+pub(crate) fn run_inspecting_every_step(
+    spacecraft: &mut Spacecraft,
+    steps: usize,
+    mut inspect: impl FnMut(&Spacecraft),
+) {
+    let step_nanos = spacecraft.config.integration_step_nanos;
+    let start = Epoch::from_gregorian_utc_at_midnight(2025, 1, 1);
+    let context = |nanos: u64| SimulationContext {
+        current_sim_nanos: nanos,
+        current_epoch: start + Duration::from_total_nanoseconds(nanos as i128),
+    };
+    spacecraft.init();
+    spacecraft.update(&context(0));
+    inspect(spacecraft);
+    for step in 1..=steps as u64 {
+        spacecraft.update(&context(step * step_nanos));
+        inspect(spacecraft);
+    }
+}
+
+/// The 40 kg constant-volume tank of the slosh `MassDepletion` cases
+/// (`test_linearSpringMassDamper.py`, `test_sphericalPendulum.py`), fed by
+/// upstream `thFactory.create('MOOG_Monarc_445', [1, 0, 0], [0, 1, 0])`
+/// commanded on for `on_time_s` at t = 0.
+pub(crate) fn slosh_depletion_tank(on_time_s: f64) -> (FuelTank, ThrusterDynamicEffector) {
+    let mut model = FuelTankModel::new(
+        FuelTankShape::ConstantVolume {
+            radius_tank_init_m: 46.0 / 2.0 / 3.2808399 / 12.0,
+        },
+        40.0,
+    );
+    model.r_tct_t_init_m = Vector3::zeros();
+    let mut tank = FuelTank::new(FuelTankConfig::new("fuelTank", model));
+    let mut config = ThrusterDynamicEffectorConfig::simple(
+        "TH1",
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        445.0,
+    );
+    config.steady_isp_s = 234.0;
+    config.area_nozzle_m2 = 0.06881;
+    let mut thruster = ThrusterDynamicEffector::new(config);
+    Output::new(ThrusterCommandMsg {
+        on_time_s,
+        command_time_nanos: 0,
+    })
+    .connect_to(&mut thruster.command_in);
+    tank.add_thruster_set(&mut thruster);
+    (tank, thruster)
 }
 
 /// Upstream `unitTestSupport.isArrayEqualRelative`: every component of

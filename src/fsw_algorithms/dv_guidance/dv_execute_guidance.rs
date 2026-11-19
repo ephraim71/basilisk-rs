@@ -151,7 +151,10 @@ impl Module for DvExecuteGuidance {
 
         if self.burn_state == BurnState::Complete {
             for output in &self.thr_cmd_out_msgs {
-                output.write(ThrusterCommandMsg::default());
+                output.write(ThrusterCommandMsg {
+                    command_time_nanos: context.current_sim_nanos,
+                    ..Default::default()
+                });
             }
         }
         self.burn_exec_out_msg.write(DvExecutionDataMsg {
@@ -216,7 +219,10 @@ mod tests {
         }
         module.init();
         for output in &module.thr_cmd_out_msgs {
-            output.write(ThrusterCommandMsg { on_time_s: 0.5 });
+            output.write(ThrusterCommandMsg {
+                on_time_s: 0.5,
+                ..Default::default()
+            });
         }
         Fixture {
             module,

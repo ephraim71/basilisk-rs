@@ -89,12 +89,13 @@ impl Module for SunSafeAcs {
         SunSafeAcs::reset(self, context.current_sim_nanos);
     }
 
-    fn update(&mut self, _context: &SimulationContext) {
+    fn update(&mut self, context: &SimulationContext) {
         let torque_request_body_nm = self.cmd_torque_body_in_msg.read().torque_request_body_nm;
         let on_times = self.config.thr_data.on_time_command(torque_request_body_nm);
         for (index, output) in self.thr_on_time_out_msgs.iter().enumerate() {
             output.write(ThrusterCommandMsg {
                 on_time_s: on_times[index],
+                command_time_nanos: context.current_sim_nanos,
             });
         }
     }

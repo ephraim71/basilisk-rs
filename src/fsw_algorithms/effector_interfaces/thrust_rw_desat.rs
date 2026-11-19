@@ -137,7 +137,7 @@ impl ThrustRwDesat {
 
     /// Upstream `Reset_thrustRWDesat`: cache the wheel and thruster geometry,
     /// clear the firing history and zero every output.
-    pub fn reset(&mut self, _call_time_nanos: u64) {
+    pub fn reset(&mut self, call_time_nanos: u64) {
         if !self.rw_config_in_msg.is_connected() {
             log::error!("thrustRWDesat.rw_config_in_msg is not connected");
         }
@@ -182,7 +182,10 @@ impl ThrustRwDesat {
         self.accumulated_imp = Vector3::zeros();
         self.total_accum_firing_s = 0.0;
         for output in &self.thr_cmd_out_msgs {
-            output.write(ThrusterCommandMsg::default());
+            output.write(ThrusterCommandMsg {
+                command_time_nanos: call_time_nanos,
+                ..Default::default()
+            });
         }
     }
 
@@ -262,6 +265,7 @@ impl Module for ThrustRwDesat {
             for (index, output) in self.thr_cmd_out_msgs.iter().enumerate() {
                 output.write(ThrusterCommandMsg {
                     on_time_s: on_times[index],
+                    command_time_nanos: context.current_sim_nanos,
                 });
             }
         }

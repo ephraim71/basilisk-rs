@@ -182,7 +182,7 @@ impl DvAttEffect {
 
     /// Upstream `Reset_dvAttEffect`: check the input and zero every group's
     /// output.
-    pub fn reset(&mut self, _call_time_nanos: u64) {
+    pub fn reset(&mut self, call_time_nanos: u64) {
         if !self.cmd_torque_body_in_msg.is_connected() {
             log::error!("dvAttEffect.cmd_torque_body_in_msg is not connected");
         }
@@ -194,7 +194,10 @@ impl DvAttEffect {
         {
             group.check_capacity("dvAttEffect");
             for output in outputs {
-                output.write(ThrusterCommandMsg::default());
+                output.write(ThrusterCommandMsg {
+                    command_time_nanos: call_time_nanos,
+                    ..Default::default()
+                });
             }
         }
     }
@@ -212,7 +215,7 @@ impl Module for DvAttEffect {
         DvAttEffect::reset(self, context.current_sim_nanos);
     }
 
-    fn update(&mut self, _context: &SimulationContext) {
+    fn update(&mut self, context: &SimulationContext) {
         let torque_request_body_nm = self.cmd_torque_body_in_msg.read().torque_request_body_nm;
         for (group, outputs) in self
             .config
@@ -224,6 +227,7 @@ impl Module for DvAttEffect {
             for (index, output) in outputs.iter().enumerate() {
                 output.write(ThrusterCommandMsg {
                     on_time_s: on_times[index],
+                    command_time_nanos: context.current_sim_nanos,
                 });
             }
         }

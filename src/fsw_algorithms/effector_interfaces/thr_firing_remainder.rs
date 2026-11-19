@@ -186,7 +186,7 @@ impl ThrFiringRemainder {
     /// Upstream `Reset_thrFiringRemainder`: reads the thruster configuration,
     /// clears the remainders and the control-period history, and publishes
     /// zero on-times so that a disabled module leaves the thrusters off.
-    pub fn reset(&mut self, _call_time_nanos: u64) {
+    pub fn reset(&mut self, call_time_nanos: u64) {
         self.clock.reset();
 
         if !self.thr_conf_in_msg.is_connected() {
@@ -206,7 +206,10 @@ impl ThrFiringRemainder {
         self.pulse_remainder = vec![0.0; self.max_thrust_n.len()];
 
         for output in &self.on_time_out_msgs {
-            output.write(ThrusterCommandMsg::default());
+            output.write(ThrusterCommandMsg {
+                command_time_nanos: call_time_nanos,
+                ..Default::default()
+            });
         }
     }
 
@@ -260,6 +263,7 @@ impl Module for ThrFiringRemainder {
         for (index, output) in self.on_time_out_msgs.iter().enumerate() {
             output.write(ThrusterCommandMsg {
                 on_time_s: on_times[index],
+                command_time_nanos: context.current_sim_nanos,
             });
         }
     }

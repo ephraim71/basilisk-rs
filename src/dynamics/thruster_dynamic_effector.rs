@@ -111,7 +111,7 @@ pub struct ThrusterDynamicEffector {
     pub config: ThrusterDynamicEffectorConfig,
     pub command_in: Input<ThrusterCommandMsg>,
     pub operation: ThrusterOperation,
-    last_command_s: f64,
+    last_command: ThrusterCommandMsg,
 }
 
 impl ThrusterDynamicEffector {
@@ -120,16 +120,24 @@ impl ThrusterDynamicEffector {
             config,
             command_in: Input::default(),
             operation: ThrusterOperation::default(),
-            last_command_s: 0.0,
+            last_command: ThrusterCommandMsg::default(),
         }
     }
 
+    /// Upstream re-arms the thruster on every new write of its command (a
+    /// changed header `timeWritten`), so a producer repeating an on-time
+    /// restarts the firing each period. Ports carry no header: a command is
+    /// new when its `command_time_nanos` or its on-time differs from the last
+    /// one taken, so stamped writes re-arm every period and an unstamped,
+    /// hand-written command still takes effect when its value changes.
     pub fn pre_integration(&mut self, current_sim_nanos: u64) {
         let current_time_s = current_sim_nanos as f64 * 1.0e-9;
-        let command_on_time_s = self.command_in.read().on_time_s;
-        if (command_on_time_s - self.last_command_s).abs() > 1.0e-15 {
-            self.configure_thrust_request(command_on_time_s, current_time_s);
-            self.last_command_s = command_on_time_s;
+        let command = self.command_in.read();
+        if command.command_time_nanos != self.last_command.command_time_nanos
+            || (command.on_time_s - self.last_command.on_time_s).abs() > 1.0e-15
+        {
+            self.configure_thrust_request(command.on_time_s, current_time_s);
+            self.last_command = command;
         }
 
         self.compute_blowdown_decay();
@@ -437,7 +445,10 @@ mod tests {
         config.steady_isp_s = 226.7;
 
         let mut thr = ThrusterDynamicEffector::new(config);
-        let cmd = Output::new(ThrusterCommandMsg { on_time_s: 5.0 });
+        let cmd = Output::new(ThrusterCommandMsg {
+            on_time_s: 5.0,
+            ..Default::default()
+        });
         thr.command_in.connect(cmd.slot());
         thr.pre_integration(0); // fires immediately at t=0
         thr
@@ -490,6 +501,84 @@ mod tests {
             "torque mismatch: expected {expected_torque:?}, got {:?}",
             out.torque_body_nm
         );
+    }
+
+    /// Steps `thruster` every 0.1 s over `[start_s, stop_s)` and returns the
+    /// times at which it was firing.
+    fn firing_times(thruster: &mut ThrusterDynamicEffector, start_s: f64, stop_s: f64) -> Vec<f64> {
+        let mut firing = Vec::new();
+        let mut step = (start_s * 10.0).round() as u64;
+        while (step as f64) < stop_s * 10.0 {
+            thruster.pre_integration(step * 100_000_000);
+            if thruster.operation.thrust_factor > 0.0 {
+                firing.push(step as f64 / 10.0);
+            }
+            step += 1;
+        }
+        firing
+    }
+
+    fn simple_thruster(command: &Output<ThrusterCommandMsg>) -> ThrusterDynamicEffector {
+        let mut thruster = ThrusterDynamicEffector::new(ThrusterDynamicEffectorConfig::simple(
+            "thr",
+            Vector3::zeros(),
+            Vector3::x(),
+            1.0,
+        ));
+        command.connect_to(&mut thruster.command_in);
+        thruster
+    }
+
+    /// Upstream re-arms on every new write, so the same 0.5 s on-time issued
+    /// each 1 s period fires 0.5 s in every period, not only the first.
+    #[test]
+    fn a_repeated_on_time_with_a_new_command_time_fires_again() {
+        let command = Output::new(ThrusterCommandMsg::default());
+        let mut thruster = simple_thruster(&command);
+        for period in 0..3_u64 {
+            command.write(ThrusterCommandMsg {
+                on_time_s: 0.5,
+                command_time_nanos: period * 1_000_000_000,
+            });
+            let start_s = period as f64;
+            let firing = firing_times(&mut thruster, start_s, start_s + 1.0);
+            let expected: Vec<f64> = (0..=5).map(|tenth| start_s + tenth as f64 / 10.0).collect();
+            assert_eq!(firing.len(), expected.len(), "period {period}: {firing:?}");
+            for (actual, expected) in firing.iter().zip(&expected) {
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "period {period}: {firing:?}"
+                );
+            }
+        }
+        assert_eq!(thruster.operation.fire_counter, 3);
+    }
+
+    #[test]
+    fn a_command_seen_before_does_not_re_arm() {
+        let command = Output::new(ThrusterCommandMsg {
+            on_time_s: 0.5,
+            command_time_nanos: 0,
+        });
+        let mut thruster = simple_thruster(&command);
+        assert!(!firing_times(&mut thruster, 0.0, 1.0).is_empty());
+        // Nothing new was issued: the expired command stays expired.
+        assert!(firing_times(&mut thruster, 1.0, 2.0).is_empty());
+        assert_eq!(thruster.operation.fire_counter, 1);
+    }
+
+    /// A hand-written command that is never stamped still takes effect when
+    /// its on-time changes.
+    #[test]
+    fn an_unstamped_command_re_arms_when_its_on_time_changes() {
+        let command = Output::new(ThrusterCommandMsg::default());
+        let mut thruster = simple_thruster(&command);
+        assert!(firing_times(&mut thruster, 0.0, 1.0).is_empty());
+        command.write(ThrusterCommandMsg {
+            on_time_s: 0.3,
+            ..Default::default()
+        });
+        assert_eq!(firing_times(&mut thruster, 1.0, 2.0).len(), 4);
     }
 
     #[test]

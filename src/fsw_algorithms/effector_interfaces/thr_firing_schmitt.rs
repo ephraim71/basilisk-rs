@@ -103,7 +103,7 @@ impl ThrFiringSchmitt {
     /// turns every trigger off, clears the control-period history, and
     /// publishes zero on-times so that a disabled module leaves the thrusters
     /// off.
-    pub fn reset(&mut self, _call_time_nanos: u64) {
+    pub fn reset(&mut self, call_time_nanos: u64) {
         self.clock.reset();
 
         if !self.thr_conf_in_msg.is_connected() {
@@ -123,7 +123,10 @@ impl ThrFiringSchmitt {
         self.last_thrust_on = vec![false; self.max_thrust_n.len()];
 
         for output in &self.on_time_out_msgs {
-            output.write(ThrusterCommandMsg::default());
+            output.write(ThrusterCommandMsg {
+                command_time_nanos: call_time_nanos,
+                ..Default::default()
+            });
         }
     }
 
@@ -191,6 +194,7 @@ impl Module for ThrFiringSchmitt {
         for (index, output) in self.on_time_out_msgs.iter().enumerate() {
             output.write(ThrusterCommandMsg {
                 on_time_s: on_times[index],
+                command_time_nanos: context.current_sim_nanos,
             });
         }
     }
@@ -501,10 +505,6 @@ mod tests {
 
     /// Each per-thruster output drives its own thruster effector, which fires
     /// for the commanded on-time and then shuts down.
-    ///
-    /// The effector starts a firing only when its command changes, so every
-    /// control period here requests on-times that differ from the previous
-    /// ones.
     #[test]
     fn per_thruster_outputs_fire_thruster_effectors_for_the_commanded_on_time() {
         let cluster = Output::new(ThrusterArrayConfigMsg::from_active(
@@ -570,5 +570,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A saturated request is over-saturated to 1.1 control periods, the same
+    /// on-time every period. Each update is a new command that restarts the
+    /// firing, so the thruster stays on until the request drops, as upstream.
+    #[test]
+    fn a_saturated_request_keeps_the_thruster_effector_on_across_periods() {
+        let cluster = Output::new(ThrusterArrayConfigMsg::from_active(&[ThrusterConfigMsg {
+            max_thrust_n: 1.0,
+            ..Default::default()
+        }]));
+        let force_cmd = Output::new(ThrusterArrayForceCommandMsg::default());
+        let mut module = ThrFiringSchmitt::new(ThrFiringSchmittConfig {
+            level_on: 0.75,
+            level_off: 0.25,
+            thr_min_fire_time_s: 0.2,
+            ..Default::default()
+        });
+        cluster.connect_to(&mut module.thr_conf_in_msg);
+        force_cmd.connect_to(&mut module.thr_force_in_msg);
+        let mut thruster = ThrusterDynamicEffector::new(ThrusterDynamicEffectorConfig::simple(
+            "thr",
+            Vector3::zeros(),
+            Vector3::x(),
+            1.0,
+        ));
+        module
+            .add_thruster_command_output()
+            .connect_to(&mut thruster.command_in);
+        module.init();
+
+        // 1 N from 2 s to 4 s, nothing from 5 s; the update at 1 s only
+        // starts the control-period clock.
+        for step in 10..60_u64 {
+            let nanos = step * 100_000_000;
+            if nanos % 1_000_000_000 == 0 {
+                let force_n = if (2..=4).contains(&(nanos / 1_000_000_000)) {
+                    1.0
+                } else {
+                    0.0
+                };
+                force_cmd.write(ThrusterArrayForceCommandMsg::from_active(&[force_n]));
+                module.update(&context(nanos));
+            }
+            let time_s = nanos as f64 * 1e-9;
+            thruster.pre_integration(nanos);
+            assert_eq!(
+                thruster.operation.thrust_factor > 0.0,
+                (2.0..5.0).contains(&time_s),
+                "at {time_s} s: on-time {}",
+                module.on_time_out_msgs[0].read().on_time_s
+            );
+        }
+        assert_eq!(module.on_time_out_msgs[0].read().on_time_s, 0.0);
     }
 }

@@ -357,6 +357,7 @@ impl Module for SpacecraftReconfig {
             for (index, output) in self.on_time_out_msgs.iter().enumerate() {
                 output.write(ThrusterCommandMsg {
                     on_time_s: on_times[index],
+                    command_time_nanos: context.current_sim_nanos,
                 });
             }
         }
@@ -965,6 +966,7 @@ mod tests {
             for output in &module.on_time_out_msgs {
                 output.write(ThrusterCommandMsg {
                     on_time_s: marker_s,
+                    ..Default::default()
                 });
             }
             module.update(&context(first_nanos + step as u64 * STEP_NANOS));

@@ -284,6 +284,7 @@ impl Module for ThrMomentumDumping {
         for (index, output) in self.thruster_on_time_out_msgs.iter().enumerate() {
             output.write(ThrusterCommandMsg {
                 on_time_s: on_times[index],
+                command_time_nanos: context.current_sim_nanos,
             });
         }
     }

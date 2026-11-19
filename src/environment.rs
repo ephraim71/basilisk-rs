@@ -18,6 +18,8 @@ pub mod space_weather_data;
 pub mod spacecraft_charging_dynamics;
 pub mod spacecraft_charging_equilibrium;
 pub mod spacecraft_location;
+#[cfg(feature = "spice")]
+pub mod spice_interface;
 pub mod strip_location;
 #[cfg(test)]
 mod test_assets;

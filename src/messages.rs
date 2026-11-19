@@ -140,6 +140,8 @@ mod solar_flux;
 mod spacecraft_diagnostics;
 mod spacecraft_mass_props;
 mod spacecraft_state;
+#[cfg(feature = "spice")]
+mod spice_time;
 mod star_tracker;
 mod star_tracker_attitude;
 mod stepper_motor;
@@ -274,6 +276,8 @@ pub use solar_flux::SolarFluxMsg;
 pub use spacecraft_diagnostics::SpacecraftDiagnosticsMsg;
 pub use spacecraft_mass_props::SpacecraftMassPropsMsg;
 pub use spacecraft_state::SpacecraftStateMsg;
+#[cfg(feature = "spice")]
+pub use spice_time::SpiceTimeMsg;
 pub use star_tracker::StarTrackerMsg;
 pub use star_tracker_attitude::StarTrackerAttitudeMsg;
 pub use stepper_motor::StepperMotorMsg;

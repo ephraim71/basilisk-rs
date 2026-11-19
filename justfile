@@ -5,6 +5,8 @@ earth_bpc_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_l
 pck11_url := "https://public-data.nyxspace.com/anise/v0.4/pck11.pca"
 ggm03s_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData/LocalGravData/GGM03S.txt"
 support_data_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData"
+naif_generic_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
+hst_spk_url := "https://naif.jpl.nasa.gov/pub/naif/HST/kernels/spk/hst_edited.bsp"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
 default:
@@ -17,6 +19,18 @@ fetch-anise-assets:
     curl --fail --location --progress-bar --output assets/anise/de440s.bsp {{de440s_url}}
     curl --fail --location --progress-bar --output assets/anise/earth_latest_high_prec.bpc {{earth_bpc_url}}
     curl --fail --location --progress-bar --output assets/anise/pck11.pca {{pck11_url}} || curl --fail --location --progress-bar --insecure --output assets/anise/pck11.pca {{pck11_url}}
+
+# Upstream `supportData/EphemerisData` kernels for the `spice` feature's
+# `spiceInterface`: the text kernels its default set reads next to
+# `assets/anise/de440s.bsp`, the Hubble SPK, and DE430 (114 MB), against which
+# upstream's JPL Horizons truth was made.
+fetch-spice-kernels:
+    mkdir -p assets/spice
+    curl --fail --location --progress-bar --output assets/spice/naif0012.tls {{naif_generic_url}}/lsk/naif0012.tls
+    curl --fail --location --progress-bar --output assets/spice/pck00010.tpc {{naif_generic_url}}/pck/pck00010.tpc
+    curl --fail --location --progress-bar --output assets/spice/de-403-masses.tpc {{naif_generic_url}}/pck/de-403-masses.tpc
+    curl --fail --location --progress-bar --output assets/spice/hst_edited.bsp {{hst_spk_url}}
+    curl --fail --location --progress-bar --output assets/spice/de430.bsp {{naif_generic_url}}/spk/planets/de430.bsp
 
 fetch-gravity:
     mkdir -p assets/gravity

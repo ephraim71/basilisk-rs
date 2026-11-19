@@ -66,6 +66,20 @@ curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt \
 If the `pck11.pca` download fails on a TLS certificate error, retry that one
 command with `--insecure` (the `just` recipe falls back to this automatically).
 
+### Optional: the CSPICE interface
+
+`environment::spice_interface`, the port of upstream's `spiceInterface` on the
+NAIF CSPICE toolkit, is behind the `spice` cargo feature. Building it downloads
+the CSPICE package from
+`https://naif.jpl.nasa.gov/pub/naif/toolkit//C/PC_Linux_GCC_64bit/packages/cspice.tar.Z`
+(or uses the install `CSPICE_DIR` points at) and needs libclang. Its kernels
+are fetched by `just fetch-spice-kernels` into `assets/spice/`:
+
+```bash
+just fetch-anise-assets fetch-spice-kernels
+cargo test --features spice
+```
+
 ## Basic orbit scenario
 
 Run the simulation:

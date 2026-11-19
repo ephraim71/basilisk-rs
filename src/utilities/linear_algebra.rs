@@ -94,6 +94,12 @@ pub fn safe_asin(x: f64) -> f64 {
     x.clamp(-1.0, 1.0).asin()
 }
 
+/// `sqrt` of a negative argument taken as zero (upstream `safeSqrt`), so
+/// round-off just below zero yields 0 instead of NaN. NaN stays NaN.
+pub fn safe_sqrt(x: f64) -> f64 {
+    if x < 0.0 { 0.0 } else { x.sqrt() }
+}
+
 /// Unit vector along `v`, or the zero vector when `|v| <= DB0_EPS` or the norm
 /// is NaN (upstream `v3Normalize` / `vNormalize`, including their
 /// multiply-by-`1/norm` rounding).

@@ -4,8 +4,10 @@
 pub mod astro_constants;
 pub mod avs_eigen_support;
 pub mod bisection;
+pub mod brightness_temperature_solar_system;
 pub mod bspline;
 pub mod geodetic_conversion;
+pub mod itu_ref_atmosphere;
 pub mod lambert;
 pub mod linear_algebra;
 pub mod newton_raphson;

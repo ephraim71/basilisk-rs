@@ -13,6 +13,7 @@ anyhow = "1.0.100"
 hifitime = "4.2.6"
 igrf = "0.2.0"
 indicatif = "0.17.11"
+libm = "0.2.16"
 log = "0.4.29"
 nalgebra = { version = "0.33.2", default-features = false, features = ["std", "serde-serialize"] }
 rand = { version = "0.8.5", default-features = false, features = ["std", "std_rng"] }

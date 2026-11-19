@@ -9,6 +9,7 @@
 use hifitime::Epoch;
 
 pub mod clock_sync;
+pub mod communication;
 pub mod device_interface;
 pub mod dynamics;
 pub mod environment;
@@ -17,6 +18,7 @@ pub mod gauss_markov;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
+pub mod onboard_data_handling;
 pub mod overrides;
 pub mod power;
 pub mod sensors;

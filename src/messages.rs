@@ -43,6 +43,7 @@ mod accelerometer_packet;
 mod access;
 mod albedo;
 mod antenna_log;
+mod antenna_state;
 mod array_effector_lock;
 mod array_motor_torque;
 mod array_motor_voltage;
@@ -60,10 +61,13 @@ mod classic_elements;
 mod cm_estimation_data;
 mod const_dyn_effector;
 mod current;
+mod data_node_usage;
+mod data_storage_status;
 mod desired_velocity;
 mod device_command;
 mod device_status;
 mod dipole_request_body;
+mod downlink_handling;
 mod dv_burn_command;
 mod dv_execution_data;
 mod earth_radiation;
@@ -92,6 +96,7 @@ mod lambert_solution;
 mod lambert_validator;
 mod landmark;
 mod linear_translation_rigid_body;
+mod link_budget;
 mod magnetic_dipole_command;
 mod magnetic_field;
 mod mass_flow_rate;
@@ -167,6 +172,7 @@ pub use accelerometer_packet::AccelerometerPacket;
 pub use access::AccessMsg;
 pub use albedo::AlbedoMsg;
 pub use antenna_log::{AntennaEnvironment, AntennaLogMsg, AntennaState};
+pub use antenna_state::AntennaStateMsg;
 pub use array_effector_lock::{ArrayEffectorLockMsg, EffectorLock};
 pub use array_motor_torque::ArrayMotorTorqueMsg;
 pub use array_motor_voltage::ArrayMotorVoltageMsg;
@@ -184,10 +190,13 @@ pub use classic_elements::ClassicElementsMsg;
 pub use cm_estimation_data::CmEstimationDataMsg;
 pub use const_dyn_effector::ConstDynEffectorMsg;
 pub use current::CurrentMsg;
+pub use data_node_usage::DataNodeUsageMsg;
+pub use data_storage_status::DataStorageStatusMsg;
 pub use desired_velocity::DesiredVelocityMsg;
 pub use device_command::DeviceCommandMsg;
 pub use device_status::{DeviceState, DeviceStatusMsg};
 pub use dipole_request_body::DipoleRequestBodyMsg;
+pub use downlink_handling::{DownlinkHandlingMsg, RemovalPolicy};
 pub use dv_burn_command::DvBurnCommandMsg;
 pub use dv_execution_data::DvExecutionDataMsg;
 pub use earth_radiation::EarthRadiationMsg;
@@ -217,6 +226,7 @@ pub use lambert_solution::{
 pub use lambert_validator::LambertValidatorMsg;
 pub use landmark::LandmarkMsg;
 pub use linear_translation_rigid_body::LinearTranslationRigidBodyMsg;
+pub use link_budget::LinkBudgetMsg;
 pub use magnetic_dipole_command::MagneticDipoleCommandMsg;
 pub use magnetic_field::MagneticFieldMsg;
 pub use mass_flow_rate::MassFlowRateMsg;
@@ -370,6 +380,14 @@ pub const MAX_STRING_LENGTH: usize = 256;
 /// Upstream `MAX_PLASMA_FLUX_SIZE` (`PlasmaFluxMsgPayload.h`): capacity of
 /// [`PlasmaFluxMsg`].
 pub const MAX_PLASMA_FLUX_SIZE: usize = 50;
+/// Upstream `char dataName[128]` (`DataNodeUsageMsgPayload.h`): size of a
+/// data or partition name buffer, terminator included. The data-handling
+/// modules reject names of this many characters or more, as upstream does.
+pub const DATA_NAME_SIZE: usize = 128;
+/// Upstream `char antennaName[20]` (`AntennaLogMsgPayload.h`): size of an
+/// antenna name buffer, terminator included. `SimpleAntenna` rejects names
+/// of this many characters or more, as upstream does.
+pub const ANTENNA_NAME_SIZE: usize = 20;
 
 /// Copies the entries in use into the front of a fixed upstream array, leaving
 /// the tail at its default as upstream's zeroed payload does.

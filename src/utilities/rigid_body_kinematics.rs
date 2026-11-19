@@ -35,6 +35,7 @@
 //! | `MRP2C`, `MRP2EP`, `MRP2PRV`, `MRP2Euler321/123/313` | [`mrp_to_dcm`], [`mrp_to_ep`], [`mrp_to_prv`], [`mrp_to_euler321`] ... |
 //! | `PRV2C`, `PRV2EP`, `PRV2MRP`, `PRV2Euler321/123/313` | [`prv_to_dcm`], [`prv_to_ep`], [`prv_to_mrp`], [`prv_to_euler321`] ... |
 //! | `Euler3212C/EP/MRP/PRV` (likewise `1232`, `3132`) | [`euler321_to_dcm`], [`euler321_to_ep`], [`euler321_to_mrp`], [`euler321_to_prv`] ... |
+//! | `Euler3232C` | [`euler323_to_dcm`] |
 //! | `PRV2elem`, `elem2PRV` | [`prv_to_elem`], [`elem_to_prv`] |
 //! | `addEP`/`subEP`, `addMRP`/`subMRP`, `addPRV`/`subPRV` | [`add_ep`]/[`sub_ep`], [`add_mrp`]/[`sub_mrp`], [`add_prv`]/[`sub_prv`] |
 //! | `addEuler321`/`subEuler321` (likewise `123`, `313`) | [`add_euler321`]/[`sub_euler321`] ... |
@@ -47,8 +48,8 @@
 //! | `Mi`, `Euler1`, `Euler2`, `Euler3`, `tilde` | [`mi`], [`euler1`], [`euler2`], [`euler3`], [`tilde`] |
 //!
 //! Gibbs vectors and the other nine Euler sequences (1-2-1, 1-3-2, ...) are not
-//! ported; the private sequence helpers below cover them, so adding one is a
-//! three-line wrapper.
+//! ported, apart from the 3-2-3 DCM; the private sequence helpers below cover
+//! them, so adding one is a three-line wrapper.
 
 use std::f64::consts::PI;
 
@@ -965,6 +966,30 @@ pub fn b_inv_euler313(angles: Vector3<f64>) -> Matrix3<f64> {
 /// `dEuler313`).
 pub fn d_omega_to_euler313(angles: Vector3<f64>, omega: Vector3<f64>) -> Vector3<f64> {
     b_mat_euler313(angles) * omega
+}
+
+// ---------------------------------------------------------------------------
+// Euler angles: 3-2-3
+// ---------------------------------------------------------------------------
+
+/// DCM of 3-2-3 Euler angles \[rad\] (upstream `Euler3232C`), as
+/// `planetEphemeris` builds a planet's `[PN]` from its pole and sidereal
+/// angle.
+pub fn euler323_to_dcm(angles: Vector3<f64>) -> Matrix3<f64> {
+    let (st1, ct1) = (angles[0].sin(), angles[0].cos());
+    let (st2, ct2) = (angles[1].sin(), angles[1].cos());
+    let (st3, ct3) = (angles[2].sin(), angles[2].cos());
+    Matrix3::new(
+        ct1 * ct2 * ct3 - st1 * st3,
+        ct2 * ct3 * st1 + ct1 * st3,
+        -ct3 * st2,
+        -ct3 * st1 - ct1 * ct2 * st3,
+        ct1 * ct3 - ct2 * st1 * st3,
+        st2 * st3,
+        ct1 * st2,
+        st1 * st2,
+        ct2,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2545,5 +2570,22 @@ mod tests {
             &(euler3(e[2]) * euler2(e[1]) * euler1(e[0])),
             "123",
         );
+    }
+
+    /// Upstream has no unit test of `Euler3232C`; its definition is the
+    /// composition of the three elementary rotations.
+    #[test]
+    fn euler323_is_the_composed_3_2_3_rotation() {
+        for e in [
+            Vector3::new(0.4, -0.3, 1.2),
+            Vector3::new(272.76 * D2R, 22.84 * D2R, 30.0 * D2R),
+            Vector3::new(-2.0, 3.0, 0.0),
+        ] {
+            assert_vectors_near(
+                &euler323_to_dcm(e),
+                &(euler3(e[2]) * euler2(e[1]) * euler3(e[0])),
+                "323",
+            );
+        }
     }
 }

@@ -3,6 +3,7 @@
 
 pub mod astro_constants;
 pub mod bspline;
+pub mod geodetic_conversion;
 pub mod lambert;
 pub mod linear_algebra;
 pub mod orbital_motion;

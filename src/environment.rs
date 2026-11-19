@@ -1,8 +1,16 @@
+mod access_geometry;
 pub mod anise_planet_ephemeris;
 pub mod anise_sun_ephemeris;
 pub mod atmosphere;
 pub mod eclipse;
+pub mod ephemeris_converter;
+pub mod ground_location;
+pub mod ground_mapping;
 pub mod igrf_field;
+pub mod magnetic_field_centered_dipole;
+pub mod planet_ephemeris;
 pub mod solar_flux;
+pub mod spacecraft_location;
+pub mod strip_location;
 mod wmm_coefficients;
 pub mod wmm_field;

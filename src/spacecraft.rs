@@ -526,6 +526,16 @@ impl Module for Spacecraft {
 
         let omega_dot_radps2 = (new_state.omega_radps - integrated_state.omega_radps) / dt_seconds;
 
+        // Upstream `modifyStates`: effectors may re-parameterize their states
+        // once the step is complete, e.g. away from a coordinate singularity.
+        let mut new_state = new_state;
+        for (effector, state) in self
+            .state_effectors
+            .iter_mut()
+            .zip(new_state.effector_states.iter_mut())
+        {
+            effector.modify_states(context.current_sim_nanos, state);
+        }
         self.integrated_state = Some(new_state);
 
         self.sync_effectors_from_integrated_state();

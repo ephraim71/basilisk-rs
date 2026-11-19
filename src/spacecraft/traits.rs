@@ -44,6 +44,11 @@ pub trait StateEffector: Send {
         0.0
     }
     fn write_outputs(&mut self, _current_sim_nanos: u64, _hub_state: &SpacecraftStateMsg) {}
+    /// Rewrites the effector's committed state into a different but equivalent
+    /// form once an integration step is complete (upstream
+    /// `StateEffector::modifyStates`), for example to move a parameterization
+    /// away from a coordinate singularity. The default leaves the state as is.
+    fn modify_states(&mut self, _current_sim_nanos: u64, _effector_state: &mut [f64]) {}
     fn as_any(&self) -> &dyn Any;
 
     /// Number of independent Wiener processes driving this effector's states

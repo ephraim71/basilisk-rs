@@ -2,6 +2,7 @@
 //! from upstream Basilisk's `architecture/utilities`.
 
 pub mod astro_constants;
+pub mod avs_eigen_support;
 pub mod bisection;
 pub mod bspline;
 pub mod geodetic_conversion;

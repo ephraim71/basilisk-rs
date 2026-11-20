@@ -26,7 +26,9 @@
 //! when those three inputs are connected — what upstream sees when their
 //! producers run before the filter on every tick. The update logic itself
 //! takes that decision as an explicit argument, and the tests replay
-//! upstream's header timeline.
+//! upstream's header timeline. A caller that knows when the producers ran
+//! passes that decision through
+//! [`SmallBodyNavEkf::update_with_measurement_status`].
 //!
 //! # Upstream behaviour kept
 //!
@@ -228,6 +230,17 @@ impl SmallBodyNavEkf {
                 log::error!("{name}.{input} is not connected");
             }
         }
+    }
+
+    /// Upstream `UpdateState` with the header check made by the caller:
+    /// `new_measurements` says whether the translational navigation,
+    /// attitude navigation and small-body ephemeris messages were written at
+    /// `call_time_nanos`. For a wrapper module that knows when the
+    /// measurement producers ran, such as a scenario that disables their
+    /// task (upstream `disableTask`), where the connected-inputs stand-in of
+    /// [`Module::update`] would take the stale messages as new.
+    pub fn update_with_measurement_status(&mut self, call_time_nanos: u64, new_measurements: bool) {
+        self.step(call_time_nanos, new_measurements);
     }
 
     /// Upstream `UpdateState`, with upstream's header check explicit:

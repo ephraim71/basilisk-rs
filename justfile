@@ -48,6 +48,14 @@ fetch-orbit-scenario-data:
     curl --fail --location --progress-bar --output assets/gravity/GGM2BData.txt {{support_data_url}}/LocalGravData/GGM2BData.txt
     curl --fail --location --progress-bar --output assets/spice/nh_pred_od077.bsp {{nh_spk_url}}
 
+# Small-body data the formation and small-body example scenarios read:
+# upstream's Vesta spherical-harmonic field (`VESTA20H.txt`) and the Eros
+# polyhedral shape (`eros007790.tab`).
+fetch-small-body-data:
+    mkdir -p assets/gravity
+    curl --fail --location --progress-bar --output assets/gravity/VESTA20H.txt {{support_data_url}}/LocalGravData/VESTA20H.txt
+    curl --fail --location --progress-bar --output assets/gravity/eros007790.tab {{support_data_url}}/LocalGravData/eros007790.tab
+
 # Albedo maps, Denton GEO plasma flux tables and tabulated atmospheres from
 # upstream supportData, for the albedo, Earth radiation, Denton flux and
 # tabular atmosphere modules.
@@ -112,7 +120,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -228,3 +236,38 @@ plot-traj-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_stochastic_drag_spacecraft.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_debris_reorbit_et.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_impact.py --generated-dir "{{generated_dir}}"
+# Run the formation-flying, rendezvous, small-body and attitude-guidance
+# example scenarios in every parametrization of upstream's `test_scenario*.py`
+# and write their CSV files. Reads the assets of `fetch-assets`,
+# `fetch-small-body-data` and `fetch-spice-kernels`;
+# `scenario_vesta_orientation` needs the `mujoco` and `spice` features.
+run-formation-scenarios:
+    cargo run --release --example scenario_formation_basic
+    cargo run --release --example scenario_formation_mean_oe_feedback -- --all
+    cargo run --release --example scenario_formation_reconfig -- --all
+    cargo run --release --example scenario_rendez_vous
+    cargo run --release --example scenario_asteroid_arrival
+    cargo run --release --example scenario_small_body_landmarks -- --all
+    cargo run --release --example scenario_small_body_nav
+    cargo run --release --example scenario_small_body_nav_ukf
+    cargo run --release --example scenario_small_body_feedback_control
+    cargo run --release --features mujoco,spice --example scenario_vesta_orientation
+    cargo run --release --example scenario_att_guide_hyperbolic -- --all
+    cargo run --release --example scenario_att_loc_point
+    cargo run --release --example scenario_inertial_spiral
+# Render the formation, small-body and attitude-guidance scenarios' figures
+# from their CSV files.
+plot-formation-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_formation_basic.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_formation_mean_oe_feedback.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_formation_reconfig.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_rendez_vous.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_asteroid_arrival.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_small_body_landmarks.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_small_body_nav.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_small_body_nav_ukf.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_small_body_feedback_control.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_vesta_orientation.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_att_guide_hyperbolic.py --variant all --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_att_loc_point.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_inertial_spiral.py --generated-dir "{{generated_dir}}"

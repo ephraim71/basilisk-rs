@@ -120,7 +120,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -271,3 +271,33 @@ plot-formation-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_att_guide_hyperbolic.py --variant all --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_att_loc_point.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_inertial_spiral.py --generated-dir "{{generated_dir}}"
+# Run the ground-access, onboard data, power and multi-spacecraft example
+# scenarios in every parametrization of upstream's `test_scenario*.py` and
+# write their CSV files. Reads the assets of `fetch-assets` and
+# `fetch-orbit-scenario-data`; `scenario_quad_maps` needs the `vizard`
+# feature (`-- --save <file.bin>` also writes its Vizard file).
+run-ground-scenarios:
+    cargo run --release --example scenario_data_demo
+    cargo run --release --example scenario_power_demo
+    cargo run --release --example scenario_ground_downlink
+    cargo run --release --example scenario_ground_location_imaging
+    cargo run --release --example scenario_ground_mapping -- --all
+    cargo run --release --example scenario_ground_tracks
+    cargo run --release --example scenario_strip_imaging
+    cargo run --release --example scenario_spacecraft_location
+    cargo run --release --example scenario_satellite_constellation -- --all
+    cargo run --release --features vizard --example scenario_quad_maps
+    cargo run --release --example scenario_two_charged_sc
+# Render the ground scenarios' figures from their CSV files
+# (`scenario_quad_maps` has none, as upstream).
+plot-ground-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_data_demo.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_power_demo.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_ground_downlink.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_ground_location_imaging.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_ground_mapping.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_ground_tracks.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_strip_imaging.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_spacecraft_location.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_satellite_constellation.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_two_charged_sc.py --generated-dir "{{generated_dir}}"

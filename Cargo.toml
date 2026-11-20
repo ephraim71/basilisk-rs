@@ -74,3 +74,7 @@ required-features = ["vizard"]
 [[example]]
 name = "scenario_vesta_orientation"
 required-features = ["mujoco", "spice"]
+
+[[example]]
+name = "scenario_quad_maps"
+required-features = ["vizard"]

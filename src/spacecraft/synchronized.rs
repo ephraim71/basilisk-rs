@@ -78,7 +78,7 @@ impl Coupling<Spacecraft> for SpacecraftCoupling {
             .collect();
         let mut loads = vec![EffectorOutput::default(); members.len()];
         for effector in &mut self.effectors {
-            effector.add_loads(&stage_states, &mut loads);
+            effector.add_member_loads(members, states, &stage_states, &mut loads);
         }
         members
             .iter_mut()

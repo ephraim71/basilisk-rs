@@ -40,9 +40,14 @@
 //!   positions are relative to the central body when one is set. Here the
 //!   constraint gets inertial states; the two agree when both spacecraft
 //!   share the central body.
-//! - Upstream can also attach the constraint to a state effector (a branch)
-//!   through its inertial properties. basilisk-rs attaches dynamic effectors
-//!   to hubs only, so both ends here are spacecraft hubs.
+//! - Upstream attaches the constraint to a state effector (a branch) through
+//!   the effector's inertial properties. Here an end can attach to a
+//!   [`LinearTranslationOneDofStateEffector`] of its spacecraft
+//!   ([`ConstraintDynamicEffectorConfig::parent_effectors`]): the end's frame
+//!   is then the body's frame F, read at every stage from the group
+//!   ([`CouplingEffector::add_member_loads`]), and its load goes to the body
+//!   ([`LinearTranslationOneDofStateEffector::set_attached_load`]). Other
+//!   state effectors are not supported as branches.
 //! - The setters return a [`ConstraintEffectorError`] where upstream raises a
 //!   `BasiliskError`, keeping the previous value as upstream does. A group
 //!   panics with that error when it initializes with an invalid constraint.
@@ -52,10 +57,13 @@ use std::fmt;
 
 use nalgebra::Vector3;
 
+use crate::dynamics::linear_translation_one_dof_state_effector::{
+    LinearTranslationOneDofStateEffector, TranslatingBodyLoad,
+};
 use crate::messages::{
     ConstDynEffectorMsg, DeviceState, DeviceStatusMsg, Input, Output, SpacecraftStateMsg,
 };
-use crate::spacecraft::{CouplingEffector, EffectorOutput};
+use crate::spacecraft::{CouplingEffector, EffectorOutput, IntegratedState, Spacecraft};
 use crate::utilities::rigid_body_kinematics::{b_mat_mrp, dcm_to_mrp, mrp_to_dcm};
 
 /// A configuration the constraint rejects: upstream's `BasiliskError`s.
@@ -125,6 +133,14 @@ pub struct ConstraintDynamicEffectorConfig {
     /// Upstream `sigma_B2B1Init`: the prescribed attitude of B2 relative to
     /// B1 (MRP). Default zero, the frames aligned.
     pub sigma_b2b1: Vector3<f64>,
+    /// The parent of each end within its spacecraft: `None` for the hub, or
+    /// the index in the spacecraft's `state_effectors` of a
+    /// [`LinearTranslationOneDofStateEffector`] mounted on the hub, for
+    /// upstream's `translatingBody.addDynamicEffector(constraintEffector)`
+    /// (branching). The end's frame (B1 or B2) is then the body's frame F,
+    /// and its connection point is relative to the F origin. Default
+    /// `[None, None]`.
+    pub parent_effectors: [Option<usize>; 2],
 }
 
 impl ConstraintDynamicEffectorConfig {
@@ -138,6 +154,7 @@ impl ConstraintDynamicEffectorConfig {
             connection_point_2_m: Vector3::zeros(),
             separation_m: Vector3::zeros(),
             sigma_b2b1: Vector3::zeros(),
+            parent_effectors: [None, None],
         }
     }
 }
@@ -424,36 +441,11 @@ impl ConstraintDynamicEffector {
     }
 }
 
-impl CouplingEffector for ConstraintDynamicEffector {
-    fn name(&self) -> &str {
-        &self.config.name
-    }
-
-    /// Upstream `linkInStates` (`validateConfiguration` and
-    /// `initializeGains`) for both parents.
-    ///
-    /// # Panics
-    ///
-    /// If [`reset`](ConstraintDynamicEffector::reset) fails, or the two
-    /// spacecraft indices are equal or outside the group.
-    fn init(&mut self, spacecraft_count: usize) {
-        if let Err(error) = self.reset() {
-            panic!("ConstraintDynamicEffector '{}': {error}", self.config.name);
-        }
-        let [first, second] = self.config.spacecraft;
-        assert!(
-            first != second && first < spacecraft_count && second < spacecraft_count,
-            "ConstraintDynamicEffector '{}' connects spacecraft {first} and {second} of a group of \
-             {spacecraft_count}",
-            self.config.name
-        );
-    }
-
-    /// Upstream `computeForceTorque`: the violations, and while the
-    /// constraint is on, the loads on both spacecraft.
-    fn add_loads(&mut self, states: &[SpacecraftStateMsg], loads: &mut [EffectorOutput]) {
-        let [first, second] = self.config.spacecraft;
-        let (body_1, body_2) = (&states[first], &states[second]);
+impl ConstraintDynamicEffector {
+    /// Upstream `computeForceTorque` for the parents' inertial states
+    /// `body_1` and `body_2`: the violations, and while the constraint is
+    /// on, the force on parent 1 and both torques (zero while it is off).
+    fn evaluate(&mut self, body_1: &SpacecraftStateMsg, body_2: &SpacecraftStateMsg) {
         let r_p1b1_b1 = self.config.connection_point_1_m;
         let r_p2b2_b2 = self.config.connection_point_2_m;
         let omega_b1n_b1 = body_1.omega_radps;
@@ -494,11 +486,121 @@ impl CouplingEffector for ConstraintDynamicEffector {
         let torque_1_attitude_b1 = -(dcm_b1n * dcm_nb2) * torque_2_attitude_b2;
         self.torque_1_b1 = torque_1_length_b1 + torque_1_attitude_b1;
         self.torque_2_b2 = torque_2_length_b2 + torque_2_attitude_b2;
+    }
 
+    /// The translating body that hosts end `end`.
+    ///
+    /// # Panics
+    ///
+    /// If that parent is not a [`LinearTranslationOneDofStateEffector`].
+    fn branch<'m>(
+        &self,
+        end: usize,
+        members: &'m [Spacecraft],
+    ) -> &'m LinearTranslationOneDofStateEffector {
+        let spacecraft = self.config.spacecraft[end];
+        let index = self.config.parent_effectors[end].expect("a branch end");
+        members[spacecraft]
+            .state_effectors
+            .get(index)
+            .and_then(|effector| effector.as_any().downcast_ref())
+            .unwrap_or_else(|| {
+                panic!(
+                    "ConstraintDynamicEffector '{}': state effector {index} of spacecraft \
+                     {spacecraft} is not a LinearTranslationOneDofStateEffector",
+                    self.config.name
+                )
+            })
+    }
+}
+
+impl CouplingEffector for ConstraintDynamicEffector {
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    /// Upstream `linkInStates` (`validateConfiguration` and
+    /// `initializeGains`) for both parents.
+    ///
+    /// # Panics
+    ///
+    /// If [`reset`](ConstraintDynamicEffector::reset) fails, or the two
+    /// spacecraft indices are equal or outside the group.
+    fn init(&mut self, spacecraft_count: usize) {
+        if let Err(error) = self.reset() {
+            panic!("ConstraintDynamicEffector '{}': {error}", self.config.name);
+        }
+        let [first, second] = self.config.spacecraft;
+        assert!(
+            first != second && first < spacecraft_count && second < spacecraft_count,
+            "ConstraintDynamicEffector '{}' connects spacecraft {first} and {second} of a group of \
+             {spacecraft_count}",
+            self.config.name
+        );
+    }
+
+    /// Upstream `computeForceTorque` for two hub parents: the violations,
+    /// and while the constraint is on, the loads on both spacecraft.
+    ///
+    /// # Panics
+    ///
+    /// If an end attaches to a state effector
+    /// ([`ConstraintDynamicEffectorConfig::parent_effectors`]), which needs
+    /// [`add_member_loads`](CouplingEffector::add_member_loads).
+    fn add_loads(&mut self, states: &[SpacecraftStateMsg], loads: &mut [EffectorOutput]) {
+        assert!(
+            self.config.parent_effectors.iter().all(Option::is_none),
+            "ConstraintDynamicEffector '{}' attaches to a state effector: it needs the \
+             spacecraft (add_member_loads)",
+            self.config.name
+        );
+        let [first, second] = self.config.spacecraft;
+        self.evaluate(&states[first], &states[second]);
         loads[first].force_inertial_n += self.force_n;
         loads[first].torque_body_nm += self.torque_1_b1;
         loads[second].force_inertial_n -= self.force_n;
         loads[second].torque_body_nm += self.torque_2_b2;
+    }
+
+    /// Upstream `computeForceTorque` with each end's parent: a hub, whose
+    /// spacecraft takes the end's load, or a translating body, whose frame
+    /// state the constraint reads from the stage and which takes the load
+    /// at its frame origin.
+    fn add_member_loads(
+        &mut self,
+        members: &[Spacecraft],
+        stage: &[IntegratedState],
+        states: &[SpacecraftStateMsg],
+        loads: &mut [EffectorOutput],
+    ) {
+        let parent_state = |end: usize| -> SpacecraftStateMsg {
+            let spacecraft = self.config.spacecraft[end];
+            match self.config.parent_effectors[end] {
+                None => states[spacecraft].clone(),
+                Some(index) => self.branch(end, members).frame_inertial_state(
+                    &stage[spacecraft].effector_states[index],
+                    &states[spacecraft],
+                ),
+            }
+        };
+        let parents = [parent_state(0), parent_state(1)];
+        self.evaluate(&parents[0], &parents[1]);
+        for (end, force_n, torque_nm) in [
+            (0, self.force_n, self.torque_1_b1),
+            (1, -self.force_n, self.torque_2_b2),
+        ] {
+            let spacecraft = self.config.spacecraft[end];
+            if self.config.parent_effectors[end].is_some() {
+                self.branch(end, members)
+                    .set_attached_load(TranslatingBodyLoad {
+                        force_translating_n: mrp_to_dcm(parents[end].sigma_bn) * force_n,
+                        torque_translating_nm: torque_nm,
+                    });
+            } else {
+                loads[spacecraft].force_inertial_n += force_n;
+                loads[spacecraft].torque_body_nm += torque_nm;
+            }
+        }
     }
 
     /// Upstream `UpdateState`: reads the status, filters the load magnitudes
@@ -547,9 +649,9 @@ mod tests {
     //! `-r_BcB_B`.
     //!
     //! The validation cases that attach the constraint to a spinning-body
-    //! branch (`attachToBranch`, path `"branch"`) are not ported: basilisk-rs
-    //! attaches dynamic effectors to hubs only and has no
-    //! `spinningBodyOneDOFStateEffector`. Upstream's single-spacecraft hub case
+    //! branch (`attachToBranch`, path `"branch"`) are not ported: the
+    //! constraint attaches to translating bodies only, checked by
+    //! `a_constraint_on_a_translating_arm`. Upstream's single-spacecraft hub case
     //! runs here with a group of two spacecraft, the smallest a constraint
     //! connects.
 
@@ -1580,5 +1682,113 @@ mod tests {
             },
         ));
         constraint.init(2);
+    }
+
+    /// The constraint on a chaser's arm, a translating body (upstream
+    /// `translatingBody.addDynamicEffector(constraintEffector)`): the target,
+    /// grappled at the arm tip, drifts into the arm and pushes it in against
+    /// its spring. The connection holds, and the constraint's forces are
+    /// internal: the pair's linear momentum (hubs and arm) is conserved, and
+    /// so is its angular momentum about the origin, but for the moment of the
+    /// small violation's force couple. A hub-mounted constraint would leave
+    /// the arm's extension alone.
+    #[test]
+    fn a_constraint_on_a_translating_arm() {
+        use crate::dynamics::linear_translation_one_dof_state_effector::{
+            LinearTranslationOneDofConfig, LinearTranslationOneDofStateEffector,
+        };
+        let spacecraft =
+            |position_m: Vector3<f64>, velocity_mps: Vector3<f64>, sigma_bn: Vector3<f64>| {
+                Spacecraft::new(SpacecraftConfig {
+                    mass_kg: HUB_MASS_KG,
+                    hub_center_of_mass_body_m: Vector3::zeros(),
+                    inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(900.0, 800.0, 600.0)),
+                    integration_step_nanos: STEP_NANOS,
+                    initial_position_m: position_m,
+                    initial_velocity_mps: velocity_mps,
+                    initial_sigma_bn: sigma_bn,
+                    initial_omega_radps: Vector3::zeros(),
+                    integrator: None,
+                })
+            };
+        let arm_mass_kg = 20.0;
+        let mut arm = LinearTranslationOneDofStateEffector::new(LinearTranslationOneDofConfig {
+            mass_kg: arm_mass_kg,
+            spring_constant_n_per_m: 100.0,
+            damping_n_s_per_m: 50.0,
+            rho_init_m: 1.0,
+            axis_body: Vector3::x(),
+            origin0_body_m: Vector3::x(),
+            inertia_about_com_translating_kg_m2: Matrix3::from_diagonal(&Vector3::new(
+                50.0, 80.0, 60.0,
+            )),
+            ..LinearTranslationOneDofConfig::new("arm")
+        });
+        arm.rho_ref_m = 1.0;
+        let arm_out = arm.translating_body_out.clone();
+        let arm_state_out = arm.translating_body_state_out.clone();
+        let mut chaser = spacecraft(Vector3::zeros(), Vector3::zeros(), Vector3::zeros());
+        chaser.add_state_effector(arm);
+
+        // The target turned 90° about y, its grapple point on the arm tip.
+        let sigma_b2n = Vector3::new(0.0, (std::f64::consts::PI / 8.0).tan(), 0.0);
+        let r_p2b2_b2 = Vector3::new(0.0, 0.75, -1.1);
+        let arm_tip_n = Vector3::new(2.0, 0.0, 0.0);
+        let r_b2n_n = arm_tip_n - mrp_to_dcm(sigma_b2n).transpose() * r_p2b2_b2;
+        let target_velocity_mps = Vector3::new(-0.01, 0.0, 0.0);
+        let target = spacecraft(r_b2n_n, target_velocity_mps, sigma_b2n);
+
+        let constraint = tuned(ConstraintDynamicEffector::new(
+            ConstraintDynamicEffectorConfig {
+                connection_point_2_m: r_p2b2_b2,
+                sigma_b2b1: sigma_b2n,
+                parent_effectors: [Some(0), None],
+                ..ConstraintDynamicEffectorConfig::new("grapple")
+            },
+        ));
+        let constraint_out = constraint.constraint_elements_out.clone();
+        let mut group = SpacecraftGroup::new(vec![chaser, target]);
+        group.integrator = Some(Box::new(upstream_rkf45()));
+        group.add_coupling_effector(constraint);
+        group.init();
+
+        let momentum = |group: &SpacecraftGroup| {
+            let [chaser, target] = group.spacecraft() else {
+                unreachable!()
+            };
+            let linear = HUB_MASS_KG * chaser.state_out.read().velocity_mps
+                + arm_mass_kg * arm_state_out.read().velocity_mps
+                + HUB_MASS_KG * target.state_out.read().velocity_mps;
+            let angular: Vector3<f64> = [chaser, target]
+                .iter()
+                .map(|spacecraft| {
+                    let diagnostics = spacecraft.diagnostics_out.read();
+                    diagnostics.orbital_angular_momentum_inertial_kg_m2ps
+                        + diagnostics.rotational_angular_momentum_inertial_kg_m2ps
+                })
+                .sum();
+            (linear, angular)
+        };
+        group.update(&context(0));
+        let (linear_0, angular_0) = momentum(&group);
+        let mut largest_violation_m: f64 = 0.0;
+        for tick in 1..=STEP_COUNT {
+            group.update(&context(tick));
+            largest_violation_m = largest_violation_m
+                .max(constraint_out.read().direction_violation_inertial_m.norm());
+        }
+        let (linear, angular) = momentum(&group);
+
+        let rho_m = arm_out.read().rho_m;
+        assert!(rho_m < 1.0 - 1.0e-3, "arm extension {rho_m} m");
+        assert!(largest_violation_m < 1.0e-4, "{largest_violation_m:e} m");
+        assert!(
+            (linear - linear_0).norm() < 1.0e-9 * linear_0.norm(),
+            "linear momentum {linear:?} from {linear_0:?}"
+        );
+        assert!(
+            (angular - angular_0).norm() < 1.0e-6 * angular_0.norm(),
+            "angular momentum {angular:?} from {angular_0:?}"
+        );
     }
 }

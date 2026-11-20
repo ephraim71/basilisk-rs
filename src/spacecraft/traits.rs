@@ -1,6 +1,6 @@
 use crate::messages::SpacecraftStateMsg;
 use crate::spacecraft::structs::BackSubMatrices;
-use crate::spacecraft::{EffectorOutput, StateEffectorMassProps};
+use crate::spacecraft::{EffectorOutput, IntegratedState, Spacecraft, StateEffectorMassProps};
 use nalgebra::Vector3;
 use std::any::Any;
 
@@ -131,6 +131,23 @@ pub trait CouplingEffector: Send {
     /// them. `states[i]` and `loads[i]` belong to group member `i`; the states
     /// are inertial, as [`DynamicEffector::compute_output`] sees them.
     fn add_loads(&mut self, states: &[SpacecraftStateMsg], loads: &mut [EffectorOutput]);
+
+    /// [`add_loads`](Self::add_loads) with the group's spacecraft and their
+    /// integrated stage states, for an effector that also acts on the
+    /// spacecraft's state effectors (upstream's dynamic effectors attached to
+    /// a state effector, "branching"): it reads an effector's stage state
+    /// from `members[i].state_effectors[k]` and `stage[i].effector_states[k]`
+    /// and hands it its load before the group evaluates `members[i]`. The
+    /// group calls this one; the default is `add_loads`.
+    fn add_member_loads(
+        &mut self,
+        _members: &[Spacecraft],
+        _stage: &[IntegratedState],
+        states: &[SpacecraftStateMsg],
+        loads: &mut [EffectorOutput],
+    ) {
+        self.add_loads(states, loads);
+    }
 
     /// Called once per group update after the spacecraft have integrated and
     /// published, and at `t = 0` after they publish their initial outputs:

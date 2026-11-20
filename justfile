@@ -120,7 +120,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -301,3 +301,36 @@ plot-ground-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_spacecraft_location.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_satellite_constellation.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_two_charged_sc.py --generated-dir "{{generated_dir}}"
+
+# Run the constrained-dynamics, prescribed-motion and robotic-arm example
+# write their CSV files. `scenario_robotic_arm` reads the ANISE assets of
+# `fetch-anise-assets`. `scenario_robotic_grappling` runs both upstream's
+# default (journal-paper) configuration and its test configuration.
+run-multibody-b-scenarios:
+    cargo run --release --example scenario_constrained_dynamics -- --all
+    cargo run --release --example scenario_constrained_dynamics_component_analysis -- --all
+    cargo run --release --example scenario_constrained_dynamics_frequency_analysis
+    cargo run --release --example scenario_constrained_dynamics_maneuver_analysis -- --all
+    cargo run --release --example scenario_prescribed_motion_with_rotation_branching
+    cargo run --release --example scenario_prescribed_motion_with_translation_branching
+    cargo run --release --example scenario_prescribed_screw_motion
+    cargo run --release --example scenario_rot_trans_array_deployment
+    cargo run --release --example scenario_robotic_arm
+    cargo run --release --example scenario_robotic_grappling
+    cargo run --release --example scenario_robotic_grappling -- --test
+
+# Render the constrained-dynamics, prescribed-motion and robotic-arm
+# scenarios' figures from their CSV files.
+plot-multibody-b-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_constrained_dynamics.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_constrained_dynamics_component_analysis.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_constrained_dynamics_frequency_analysis.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_constrained_dynamics_maneuver_analysis.py --generated-dir "{{generated_dir}}" --maneuver attitude
+    python3 examples/plot_scenario_constrained_dynamics_maneuver_analysis.py --generated-dir "{{generated_dir}}" --maneuver orbit
+    python3 examples/plot_scenario_prescribed_motion_with_rotation_branching.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_prescribed_motion_with_translation_branching.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_prescribed_screw_motion.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_rot_trans_array_deployment.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_robotic_arm.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_robotic_grappling.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_robotic_grappling.py --generated-dir "{{generated_dir}}" --variant Test

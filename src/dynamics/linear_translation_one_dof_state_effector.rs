@@ -16,10 +16,19 @@
 //! written. The body can ride on a
 //! [`PrescribedMotionStateEffector`](super::prescribed_motion_state_effector::PrescribedMotionStateEffector).
 //!
+//! Upstream's `addDynamicEffector` attaches a dynamic effector to the body:
+//! its force and torque act on the body, at the F origin, and through the
+//! joint on the hub (upstream `computeBackSubContributions`). Here the body
+//! takes such a load as a [`TranslatingBodyLoad`] set at every derivative
+//! evaluation by the effector that computes it
+//! ([`LinearTranslationOneDofStateEffector::set_attached_load`]), from the
+//! body frame's inertial state
+//! ([`LinearTranslationOneDofStateEffector::frame_inertial_state`], upstream
+//! `computeTranslatingBodyInertialStates`). The
+//! [`ConstraintDynamicEffector`](super::constraint_dynamic_effector::ConstraintDynamicEffector)
+//! attaches to a translating body this way.
+//!
 //! Differences from upstream:
-//! - `addDynamicEffector` is not ported, as in
-//!   [`super::hinged_rigid_body_state_effector`]: the attached-load terms are
-//!   zero.
 //! - A locked axis is evaluated with ρ̇ = 0 throughout the step and the
 //!   committed ρ̇ is zeroed in `modify_states` (and, if locked at
 //!   initialization, in the initial state). Upstream zeroes the ρ̇ state
@@ -35,7 +44,7 @@
 
 use nalgebra::{Matrix3, Vector3};
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use crate::dynamics::prescribed_motion_state_effector::{
     PrescribedFrameMotion, PrescribedMotionAttachment,
@@ -52,6 +61,20 @@ use crate::utilities::avs_eigen_support::{
     DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
 };
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, tilde};
+
+/// The load of the dynamic effectors attached to the body (upstream
+/// `addDynamicEffector`): a force at the F origin and a torque about it, both
+/// in F components, as upstream sums `forceExternal_B + [FB][BN]
+/// forceExternal_N` and `torqueExternalPntB_B` of each attached effector.
+/// The translating-body counterpart of
+/// [`SpinnerLoad`](super::spinning_body_n_dof_state_effector::SpinnerLoad).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TranslatingBodyLoad {
+    /// \[N\] force at the F origin, F components.
+    pub force_translating_n: Vector3<f64>,
+    /// \[N m\] torque about the F origin, F components.
+    pub torque_translating_nm: Vector3<f64>,
+}
 
 /// User-settable parameters of [`LinearTranslationOneDofStateEffector`].
 #[derive(Clone, Debug, PartialEq)]
@@ -186,6 +209,8 @@ pub struct LinearTranslationOneDofStateEffector {
     pub rho_dot_ref_mps: f64,
     /// Last loaded `[ρ, ρ̇]`.
     state: [f64; 2],
+    /// The attached effectors' load at the current derivative evaluation.
+    attached_load: Cell<TranslatingBodyLoad>,
     back_sub: RefCell<LinearOneDofTerms>,
     kinematics: KinematicsCache<LinearTranslationOneDofConfig, LinearOneDofKinematics>,
 }
@@ -205,8 +230,55 @@ impl LinearTranslationOneDofStateEffector {
             rho_ref_m: 0.0,
             rho_dot_ref_mps: 0.0,
             state,
+            attached_load: Cell::new(TranslatingBodyLoad::default()),
             back_sub: RefCell::new(LinearOneDofTerms::default()),
             kinematics: KinematicsCache::default(),
+        }
+    }
+
+    /// Sets the load the dynamic effectors attached to the body apply
+    /// (upstream `addDynamicEffector`); it acts from the next derivative
+    /// evaluation on, until set again, as
+    /// [`SpinningBodyNDofStateEffector::set_attached_load`](super::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector::set_attached_load)
+    /// does for a spinner. Unlike that one it takes `&self`: an effector whose
+    /// load depends on the body's state sets it before every evaluation from
+    /// the spacecraft it reads, as a
+    /// [`CouplingEffector`](crate::spacecraft::CouplingEffector) of a
+    /// [`SpacecraftGroup`](crate::spacecraft::SpacecraftGroup) does through
+    /// [`CouplingEffector::add_member_loads`](crate::spacecraft::CouplingEffector::add_member_loads).
+    pub fn set_attached_load(&self, load: TranslatingBodyLoad) {
+        self.attached_load.set(load);
+    }
+
+    /// The load set with [`set_attached_load`](Self::set_attached_load)
+    /// (zero when none was set).
+    pub fn attached_load(&self) -> TranslatingBodyLoad {
+        self.attached_load.get()
+    }
+
+    /// Inertial state of the body's frame F at `effector_state` (upstream
+    /// `computeTranslatingBodyInertialStates`: `r_FN_N`, `v_FN_N`,
+    /// `sigma_FN`, `omega_FN_F`), with `hub_state` the inertial state of the
+    /// frame the body is mounted on: the F origin as position, F as body
+    /// frame. What an attached dynamic effector sees as its parent's state.
+    pub fn frame_inertial_state(
+        &self,
+        effector_state: &[f64],
+        hub_state: &SpacecraftStateMsg,
+    ) -> SpacecraftStateMsg {
+        let k = self.kinematics(effector_state);
+        let dcm_bn = mrp_to_dcm(hub_state.sigma_bn);
+        let dcm_nb = dcm_bn.transpose();
+        let omega_bn_b = hub_state.omega_radps;
+        let dcm_fb = self.config.body_to_translating_dcm;
+        let r_fb_b = k.r_fcb_b - dcm_fb.transpose() * self.config.center_of_mass_translating_m;
+        SpacecraftStateMsg {
+            position_m: hub_state.position_m + dcm_nb * r_fb_b,
+            velocity_mps: hub_state.velocity_mps
+                + dcm_nb * (k.r_prime_fcb_b + omega_bn_b.cross(&r_fb_b)),
+            sigma_bn: dcm_to_mrp(dcm_fb * dcm_bn),
+            omega_radps: dcm_fb * omega_bn_b,
+            ..Default::default()
         }
     }
 
@@ -249,15 +321,28 @@ impl LinearTranslationOneDofStateEffector {
         })
     }
 
-    /// Upstream `computeBackSubContributions`.
+    /// Upstream `computeBackSubContributions`, with the attached load.
     fn back_sub_terms(
         &self,
         k: &LinearOneDofKinematics,
         omega_bn_b: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
     ) -> LinearOneDofTerms {
+        let load = self.attached_load.get();
+        let dcm_bf = self.config.body_to_translating_dcm.transpose();
+        let attached_force_b = dcm_bf * load.force_translating_n;
+        let attached_torque_b = dcm_bf * load.torque_translating_nm
+            + (self.config.origin0_body_m + k.rho * k.f_hat_b).cross(&attached_force_b);
         if self.locked {
-            return LinearOneDofTerms::default();
+            // The load passes through the locked joint to the hub.
+            return LinearOneDofTerms {
+                back_sub: BackSubMatrices {
+                    vec_trans: attached_force_b,
+                    vec_rot: attached_torque_b,
+                    ..BackSubMatrices::default()
+                },
+                ..LinearOneDofTerms::default()
+            };
         }
         let m = self.config.mass_kg;
         let f_hat = k.f_hat_b;
@@ -268,7 +353,7 @@ impl LinearTranslationOneDofStateEffector {
             - self.config.spring_constant_n_per_m * (k.rho - self.rho_ref_m)
             - self.config.damping_n_s_per_m * (k.rho_dot - self.rho_dot_ref_mps)
             + f_hat.dot(
-                &(gravity_force
+                &(gravity_force + attached_force_b
                     - m * (2.0 * omega_bn_b.cross(&k.r_prime_fcb_b)
                         + omega_bn_b.cross(&omega_bn_b.cross(&k.r_fcb_b)))),
             ))
@@ -280,9 +365,10 @@ impl LinearTranslationOneDofStateEffector {
                 matrix_b: m * f_hat * b_rho.transpose(),
                 matrix_c: m * r_cross_f_hat * a_rho.transpose(),
                 matrix_d: m * r_cross_f_hat * b_rho.transpose(),
-                vec_trans: -m * c_rho * f_hat,
+                vec_trans: -m * c_rho * f_hat + attached_force_b,
                 vec_rot: -m * omega_bn_b.cross(&k.r_fcb_b.cross(&k.r_prime_fcb_b))
-                    - m * c_rho * r_cross_f_hat,
+                    - m * c_rho * r_cross_f_hat
+                    + attached_torque_b,
             },
             a_rho,
             b_rho,
@@ -716,5 +802,110 @@ mod tests {
         let expected = Matrix3::identity()
             + 2.0 * (r.norm_squared() * Matrix3::identity() - r * r.transpose());
         assert!((props.inertia_about_point_b_body_kg_m2 - expected).norm() < 1e-12);
+    }
+
+    /// A free slider on the hub's x axis, its frame origin on that axis, with
+    /// `load` attached and `locked` set, after 1 s of 1 ms steps from rest:
+    /// the hub's velocity and rate, and the slider's `[ρ, ρ̇]`.
+    fn slider_under_attached_load(
+        load: super::TranslatingBodyLoad,
+        locked: bool,
+    ) -> (Vector3<f64>, Vector3<f64>, [f64; 2]) {
+        let mut config = LinearTranslationOneDofConfig::new("slider");
+        config.mass_kg = 20.0;
+        config.rho_init_m = 1.0;
+        config.origin0_body_m = Vector3::new(1.0, 0.0, 0.0);
+        config.inertia_about_com_translating_kg_m2 =
+            Matrix3::from_diagonal(&Vector3::new(50.0, 80.0, 60.0));
+        let mut effector = LinearTranslationOneDofStateEffector::new(config);
+        effector.locked = locked;
+        effector.set_attached_load(load);
+        assert_eq!(effector.attached_load(), load);
+        let slider_out = effector.translating_body_out.clone();
+        let hub = HubSetup::hinged_body_hub();
+        let mut spacecraft = spacecraft_with_effectors(&hub, 1_000_000, vec![Box::new(effector)]);
+        let state_out = spacecraft.state_out.clone();
+        run_logging_every_step(&mut spacecraft, 1_000, || {});
+        let state = state_out.read();
+        let slider = slider_out.read();
+        (
+            state.velocity_mps,
+            state.omega_radps,
+            [slider.rho_m, slider.rho_dot_mps],
+        )
+    }
+
+    /// A force attached along the free axis at the frame origin (upstream
+    /// `addDynamicEffector`) drives only the slider: the hub feels nothing
+    /// through the frictionless joint, and `ρ̈ = F / m`.
+    #[test]
+    fn attached_axial_load_drives_the_free_axis() {
+        let force_n = 5.0;
+        let (hub_velocity, hub_rate, [rho, rho_dot]) = slider_under_attached_load(
+            super::TranslatingBodyLoad {
+                force_translating_n: Vector3::new(force_n, 0.0, 0.0),
+                torque_translating_nm: Vector3::zeros(),
+            },
+            false,
+        );
+        let acceleration = force_n / 20.0;
+        assert!(hub_velocity.norm() < 1e-12, "{hub_velocity:?}");
+        assert!(hub_rate.norm() < 1e-12, "{hub_rate:?}");
+        assert!((rho_dot - acceleration).abs() < 1e-12, "{rho_dot}");
+        assert!((rho - (1.0 + 0.5 * acceleration)).abs() < 1e-12, "{rho}");
+    }
+
+    /// A locked axis passes the attached load to the hub: an axial force
+    /// accelerates the whole spacecraft, and an attached torque turns it.
+    #[test]
+    fn locked_axis_passes_the_attached_load_to_the_hub() {
+        let force_n = 7.7;
+        let (hub_velocity, hub_rate, [rho, rho_dot]) = slider_under_attached_load(
+            super::TranslatingBodyLoad {
+                force_translating_n: Vector3::new(force_n, 0.0, 0.0),
+                torque_translating_nm: Vector3::zeros(),
+            },
+            true,
+        );
+        let velocity = force_n / (750.0 + 20.0);
+        assert!((hub_velocity - Vector3::new(velocity, 0.0, 0.0)).norm() < 1e-12);
+        assert!(hub_rate.norm() < 1e-12, "{hub_rate:?}");
+        assert_eq!([rho, rho_dot], [1.0, 0.0]);
+
+        let (_, hub_rate, _) = slider_under_attached_load(
+            super::TranslatingBodyLoad {
+                force_translating_n: Vector3::zeros(),
+                torque_translating_nm: Vector3::new(0.0, 0.0, 1.0),
+            },
+            true,
+        );
+        assert!(
+            hub_rate.z > 0.0 && hub_rate.xy().norm() < 1e-12,
+            "{hub_rate:?}"
+        );
+    }
+
+    /// The frame's inertial state places the F origin, not the center of
+    /// mass, and moves it with ρ̇ and the hub rate.
+    #[test]
+    fn frame_inertial_state_is_the_frame_origin() {
+        let mut config = upstream_translating_body();
+        config.axis_body = Vector3::x();
+        let effector = LinearTranslationOneDofStateEffector::new(config.clone());
+        let hub = crate::messages::SpacecraftStateMsg {
+            position_m: Vector3::new(10.0, 0.0, 0.0),
+            velocity_mps: Vector3::new(0.0, 1.0, 0.0),
+            omega_radps: Vector3::new(0.0, 0.0, 0.1),
+            ..Default::default()
+        };
+        let frame = effector.frame_inertial_state(&[2.0, 0.5], &hub);
+        let r_fb_b: Vector3<f64> = config.origin0_body_m + 2.0 * Vector3::x();
+        assert!((frame.position_m - (hub.position_m + r_fb_b)).norm() < 1e-12);
+        let expected_velocity: Vector3<f64> =
+            hub.velocity_mps + 0.5 * Vector3::x() + hub.omega_radps.cross(&r_fb_b);
+        assert!((frame.velocity_mps - expected_velocity).norm() < 1e-12);
+        assert!(
+            (frame.omega_radps - config.body_to_translating_dcm * hub.omega_radps).norm() < 1e-12
+        );
     }
 }

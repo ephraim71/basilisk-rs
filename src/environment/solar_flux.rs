@@ -4,7 +4,7 @@ use crate::messages::{
 use crate::{Module, SimulationContext};
 
 const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
-const SOLAR_FLUX_AT_EARTH_W_PER_M2: f64 = 1372.5398;
+const SOLAR_FLUX_AT_EARTH_W_PER_M2: f64 = 1361.0;
 
 #[derive(Clone, Debug)]
 pub struct SolarFluxConfig {

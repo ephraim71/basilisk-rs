@@ -127,7 +127,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -377,3 +377,36 @@ plot-misc-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_viz_point.py --variant all --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_moving_camera.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_data_to_viz.py --variant all --generated-dir "{{generated_dir}}"
+
+# Run the scenarios of upstream's BskSim framework (`examples/BskSim`) and
+# write their CSV files. Reads the ANISE assets of `fetch-anise-assets`.
+run-bsksim-scenarios:
+    cargo run --release --example bsk_sim_basic_orbit
+    cargo run --release --example bsk_sim_att_feedback
+    cargo run --release --example bsk_sim_att_guidance
+    cargo run --release --example bsk_sim_att_guid_hyperbolic
+    cargo run --release --example bsk_sim_att_steering
+    cargo run --release --example bsk_sim_att_eclipse
+    cargo run --release --example bsk_sim_att_modes
+    cargo run --release --example bsk_sim_feedback_rw
+    cargo run --release --example bsk_sim_add_rw_fault
+    cargo run --release --example bsk_sim_fault_list
+    cargo run --release --example bsk_sim_lambert_guidance
+    cargo run --release --example bsk_sim_basic_orbit_formation
+    cargo run --release --example bsk_sim_relative_pointing_formation
+
+# Render the BskSim scenarios' figures from their CSV files.
+plot-bsksim-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_bsk_sim_basic_orbit.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_feedback.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_guidance.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_guid_hyperbolic.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_steering.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_eclipse.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_att_modes.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_feedback_rw.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_add_rw_fault.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_fault_list.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_lambert_guidance.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_basic_orbit_formation.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_bsk_sim_relative_pointing_formation.py --generated-dir "{{generated_dir}}"

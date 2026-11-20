@@ -1,5 +1,5 @@
 //! Upstream `supportData` files the environment tests read, fetched into the
-//! git-ignored `assets/` directory by `just fetch-environment-data`.
+//! git-ignored `assets/` directory by `just fetch-assets`.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,7 @@ pub(crate) fn asset_or_skip(relative: &str) -> Option<PathBuf> {
         Some(path)
     } else {
         eprintln!(
-            "skipping: {} is missing; run `just fetch-environment-data` to fetch it",
+            "skipping: {} is missing; run `just fetch-assets` to fetch it",
             path.display()
         );
         None

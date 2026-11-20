@@ -9,13 +9,14 @@
 //! * Single planet: a 500 km, near-circular equatorial Earth orbit starting
 //!   on the sunlit side (`f = 180 deg`), spinning at 0.5 deg/s, for half an
 //!   orbit. Earth's albedo is either the CERES 5x5 deg map
-//!   (`Earth_ALB_2018_CERES_All_5x5.csv`, `just fetch-environment-data`) or
-//!   a uniform 0.5 on a 200 x 200 grid. With `useEclipse`, an `eclipse`
+//!   (`Earth_ALB_2018_CERES_All_5x5.csv`, `just fetch-albedo`) or a uniform
+//!   0.5 on a 200 x 200 grid. With `useEclipse`, an `eclipse`
 //!   module shadows the sensors and the albedo module shadows each patch.
 //! * `multiplePlanet`: no gravity; the spacecraft starts 500 km above Earth
 //!   (on inertial +y) at rest spinning at 1 deg/s, flies towards the Moon at
 //!   375 300 m/s from 500 s to 1500 s, and stops 485 km above it until
-//!   2000 s. The Moon has its average albedo on the default grid.
+//!   2000 s. The Moon has its average albedo (upstream `getAlbedoAverage`,
+//!   0.123) on upstream's default 180 x 360 grid.
 //!
 //! Upstream `run(show_plots, albedoData, multipleInstrument,
 //! multiplePlanet, useEclipse, simTimeStep)` maps to the flags
@@ -55,7 +56,7 @@ use std::path::PathBuf;
 use attitude::{HUB_MASS_KG, bit, hub_inertia_kg_m2, scenario_recorder};
 use basilisk_rs::dynamics::gravity::GravBodyData;
 use basilisk_rs::environment::albedo::{
-    Albedo, AlbedoConfig, AlbedoInstrumentConfig, AlbedoPlanet,
+    Albedo, AlbedoConfig, AlbedoInstrument, AlbedoPlanet, load_albedo_map,
 };
 use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
 use basilisk_rs::messages::{
@@ -66,7 +67,7 @@ use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorCo
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
-use basilisk_rs::utilities::astro_constants::{AU, D2R, MU_EARTH, REQ_EARTH};
+use basilisk_rs::utilities::astro_constants::{AU, D2R, MU_EARTH, REQ_EARTH, REQ_MOON};
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{Module, connect};
 use cli::Cli;
@@ -265,21 +266,55 @@ fn run(config: Config) -> Results {
         ..PlanetStateMsg::default()
     });
 
-    let mut albedo = Albedo::new(AlbedoConfig {
-        name: "AlbedoModule".to_string(),
-        eclipse_case: config.use_eclipse,
-        ..AlbedoConfig::default()
-    });
     let mut eclipse = Eclipse::new(EclipseConfig {
         name: "eclipse".to_string(),
         occulting_body_radius_m: REQ_EARTH * 1e3,
     });
-    let normals = [-Vector3::x(), -Vector3::y()];
-    let mut sensors = vec![css("CSS1", Vector3::x())];
+    let normals = [Vector3::x(), -Vector3::x(), -Vector3::y()];
+    let mut sensors = vec![css("CSS1", normals[0])];
     if config.multiple_instrument {
-        sensors.push(css("CSS2", normals[0]));
-        sensors.push(css("CSS3", normals[1]));
+        sensors.push(css("CSS2", normals[1]));
+        sensors.push(css("CSS3", normals[2]));
     }
+
+    // Upstream `addPlanetandAlbedoDataModel` (the CERES map) or
+    // `addPlanetandAlbedoAverageModel(planet, 0.5, 200, 200)` for Earth, and
+    // `addPlanetandAlbedoAverageModel(moon)`; one instrument per sensor.
+    let mut albedo_config = AlbedoConfig {
+        albedo_avg: 0.5,
+        num_lat: 200,
+        num_lon: 200,
+        eclipse_case: config.use_eclipse,
+        ..AlbedoConfig::earth(
+            "AlbedoModule",
+            sensors
+                .iter()
+                .zip(normals)
+                .map(|(sensor, normal)| AlbedoInstrument {
+                    fov_half_angle_rad: sensor.config.fov_half_angle_rad,
+                    normal_body: normal,
+                    position_body_m: Vector3::zeros(),
+                })
+                .collect(),
+        )
+    };
+    if config.albedo_data {
+        albedo_config.albedo_map = Some(
+            load_albedo_map("assets/albedo/Earth_ALB_2018_CERES_All_5x5.csv")
+                .expect("readable CERES albedo map (just fetch-albedo)"),
+        );
+    }
+    if config.multiple_planet {
+        albedo_config.other_planets.push(AlbedoPlanet {
+            albedo_avg: 0.123,
+            albedo_map: None,
+            num_lat: 180,
+            num_lon: 360,
+            equatorial_radius_m: REQ_MOON * 1e3,
+            polar_radius_m: -1.0,
+        });
+    }
+    let mut albedo = Albedo::new(albedo_config);
 
     let mut css_logs: Vec<MessageLog<SunSensorMsg>> =
         sensors.iter().map(|_| MessageLog::default()).collect();
@@ -291,52 +326,30 @@ fn run(config: Config) -> Results {
 
     let mut simulation = Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
     let state_out = spacecraft.module.state_out.clone();
-    let earth_input = if config.albedo_data {
-        albedo
-            .add_planet_data_model(
-                AlbedoPlanet::Earth,
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/albedo"),
-                "Earth_ALB_2018_CERES_All_5x5.csv",
-            )
-            .expect("readable CERES albedo map (just fetch-environment-data)")
-    } else {
-        albedo
-            .add_planet_average_model_explicit(AlbedoPlanet::Earth, 0.5, 200, 200)
-            .expect("valid average albedo grid")
-    };
-    connect!(&simulation, &earth => earth_input);
+    connect!(&simulation, &earth => &mut albedo.input_planet_msg);
     if config.multiple_planet {
-        let moon_input = albedo
-            .add_planet_average_model(AlbedoPlanet::Moon)
-            .expect("valid average albedo grid");
-        connect!(&simulation, &moon => moon_input);
+        connect!(&simulation, &moon => &mut albedo.input_other_planet_msgs[0]);
     }
-    for (index, (sensor, (css_log, albedo_log))) in sensors
-        .iter_mut()
-        .zip(css_logs.iter_mut().zip(&mut albedo_logs))
-        .enumerate()
-    {
-        let albedo_out = albedo
-            .add_instrument_config(AlbedoInstrumentConfig {
-                fov_rad: sensor.config.fov_half_angle_rad,
-                nhat_b: [Vector3::x(), normals[0], normals[1]][index],
-                r_ib_b_m: Vector3::zeros(),
-            })
-            .clone();
+    for (sensor, (albedo_out, (css_log, albedo_log))) in sensors.iter_mut().zip(
+        albedo
+            .output_albedo_msgs
+            .iter()
+            .zip(css_logs.iter_mut().zip(&mut albedo_logs)),
+    ) {
         connect!(&simulation,
             &state_out => &mut sensor.input_state_msg,
             &sun => &mut sensor.input_sun_msg,
-            &albedo_out => &mut sensor.input_albedo_msg,
+            albedo_out => &mut sensor.input_albedo_msg,
             &sensor.output_sun_sensor_msg => &mut css_log.input,
-            &albedo_out => &mut albedo_log.input,
+            albedo_out => &mut albedo_log.input,
         );
         if config.use_eclipse {
             connect!(&simulation, &eclipse.output_eclipse_msg => &mut sensor.input_eclipse_msg);
         }
     }
     connect!(&simulation,
-        &state_out => &mut albedo.spacecraft_state_in_msg,
-        &sun => &mut albedo.sun_position_in_msg,
+        &state_out => &mut albedo.input_state_msg,
+        &sun => &mut albedo.input_sun_msg,
         &state_out => &mut eclipse.input_state_msg,
         &sun => &mut eclipse.input_sun_msg,
         &state_out => &mut state_log.input,
@@ -353,7 +366,7 @@ fn run(config: Config) -> Results {
                     format!("css{}Signal", index + 1),
                 )]),
             ),
-            &albedo.albedo_out_msgs[index] => recorder.add_source::<AlbedoMsg>(
+            &albedo.output_albedo_msgs[index] => recorder.add_source::<AlbedoMsg>(
                 CsvSourceConfig::columns([(
                     "albedo_at_instrument".to_string(),
                     format!("albedo{index}"),

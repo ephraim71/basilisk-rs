@@ -1,557 +1,586 @@
 //! Planetary albedo at instruments: port of upstream Basilisk
-//! `simulation/environment/albedo`.
+//! `simulation/environment/albedo` and of the patch grid of its
+//! `planetRadiationBase` (`PlanetGrid`, shared with
+//! [`EarthRadiationModel`](super::earth_radiation_model::EarthRadiationModel)).
 //!
-//! Each registered planet is a [`PlanetGrid`] of Lambertian patches; the
-//! module sums the sunlight they reflect towards each instrument. Per
-//! instrument it publishes an [`AlbedoMsg`] holding the albedo from every
-//! visible patch ("max") and from the patches inside the instrument's field
-//! of view, cosine weighted by its normal, both as ratios of the solar flux
-//! at the planet and as fluxes at the instrument.
-//!
-//! A planet uses either a uniform average albedo or a CSV albedo map
-//! (upstream `supportData/AlbedoData`, fetched by `just
-//! fetch-environment-data`). Optionally each patch is shadowed by the
-//! planet's penumbra model ([`AlbedoConfig::eclipse_case`]).
-//!
-//! # Differences from upstream
-//!
-//! * Upstream reads a planet's name from its `SpicePlanetStateMsg`; the
-//!   planet messages here carry none, so each planet is registered with an
-//!   [`AlbedoPlanet`].
-//! * Upstream builds the planet grids at `Reset`; here they are built when the
-//!   planet is added, with the grid defaults then in
-//!   [`AlbedoConfig`], and an unreadable albedo map is an error of
-//!   [`Albedo::add_planet_data_model`].
-//! * Upstream's single-planet `planetInMsg` of the radiation base is unused
-//!   by albedo and not ported.
+//! Upstream's `altitudeRateLimit`, `illuminationFactorAtdA` and settable
+//! instrument defaults (`fov_default`, `nHat_B_default`) are not ported.
 
-use std::fmt;
-use std::path::PathBuf;
+use std::f64::consts::{FRAC_1_PI, FRAC_PI_2, PI};
+use std::path::{Path, PathBuf};
 
 use nalgebra::{Matrix3, Vector3};
 
-use super::planet_radiation::{
-    AlbedoDataFile, PlanetGrid, PlanetGridConfig, PlanetRadiationError, authalic_radius,
-    compute_illumination_at_da, planet_inertial_to_fixed, solar_flux_at,
-};
 use crate::messages::{
     AlbedoMsg, Input, Output, PlanetStateMsg, SpacecraftStateMsg, SunEphemerisMsg,
 };
-use crate::utilities::astro_constants::{
-    D2R, REQ_EARTH, REQ_JUPITER, REQ_MARS, REQ_MERCURY, REQ_MOON, REQ_NEPTUNE, REQ_SATURN,
-    REQ_URANUS, REQ_VENUS, RP_EARTH, RP_MARS,
-};
-use crate::utilities::rigid_body_kinematics::mrp_to_dcm;
+use crate::utilities::astro_constants::REQ_SUN;
+use crate::utilities::linear_algebra::{safe_acos, safe_asin};
 use crate::{Module, SimulationContext};
 
-/// The planets albedo knows radii and average albedos for (upstream's
-/// planet-name look-ups `lookupPlanetRadius` and `getAlbedoAverage`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AlbedoPlanet {
-    Mercury,
-    Venus,
-    Earth,
-    Moon,
-    /// Mars, also upstream's "mars barycenter".
-    Mars,
-    Jupiter,
-    Saturn,
-    Uranus,
-    Neptune,
+const ASTRONOMICAL_UNIT_M: f64 = 149_597_870_693.0;
+const SOLAR_FLUX_AT_EARTH_WPM2: f64 = 1361.0;
+
+#[derive(Clone, Debug)]
+pub struct AlbedoInstrument {
+    pub fov_half_angle_rad: f64,
+    pub normal_body: Vector3<f64>,
+    pub position_body_m: Vector3<f64>,
 }
 
-impl AlbedoPlanet {
-    /// The planet with upstream's SPICE name `name` ("earth", "mars
-    /// barycenter", ...), if albedo knows it.
-    pub fn from_spice_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "mercury" => Self::Mercury,
-            "venus" => Self::Venus,
-            "earth" => Self::Earth,
-            "moon" => Self::Moon,
-            "mars" | "mars barycenter" => Self::Mars,
-            "jupiter" => Self::Jupiter,
-            "saturn" => Self::Saturn,
-            "uranus" => Self::Uranus,
-            "neptune" => Self::Neptune,
-            _ => return None,
-        })
-    }
-
-    /// Upstream `lookupPlanetRadius`: equatorial and, for Earth and Mars,
-    /// polar radius \[m\].
-    pub fn radii_m(self) -> (f64, Option<f64>) {
-        match self {
-            Self::Mercury => (REQ_MERCURY * 1000.0, None),
-            Self::Venus => (REQ_VENUS * 1000.0, None),
-            Self::Earth => (REQ_EARTH * 1000.0, Some(RP_EARTH * 1000.0)),
-            Self::Moon => (REQ_MOON * 1000.0, None),
-            Self::Mars => (REQ_MARS * 1000.0, Some(RP_MARS * 1000.0)),
-            Self::Jupiter => (REQ_JUPITER * 1000.0, None),
-            Self::Saturn => (REQ_SATURN * 1000.0, None),
-            Self::Uranus => (REQ_URANUS * 1000.0, None),
-            Self::Neptune => (REQ_NEPTUNE * 1000.0, None),
-        }
-    }
-
-    /// Upstream `getAlbedoAverage` \[-\]: the planet's average Bond albedo.
-    pub fn average_albedo(self) -> f64 {
-        match self {
-            Self::Mercury => 0.119,
-            Self::Venus => 0.75,
-            Self::Earth => 0.29,
-            Self::Moon => 0.123,
-            Self::Mars => 0.16,
-            Self::Jupiter | Self::Saturn => 0.34,
-            Self::Uranus => 0.29,
-            Self::Neptune => 0.31,
-        }
-    }
+/// A planet's surface: its reflectivity and shape.
+#[derive(Clone, Debug)]
+pub struct AlbedoPlanet {
+    pub albedo_avg: f64,
+    /// Per-patch albedo, rows south to north, columns from -180 deg longitude.
+    /// Replaces `albedo_avg`, `num_lat` and `num_lon` when set.
+    pub albedo_map: Option<Vec<Vec<f64>>>,
+    pub num_lat: usize,
+    pub num_lon: usize,
+    pub equatorial_radius_m: f64,
+    /// Zero or negative means a spherical planet.
+    pub polar_radius_m: f64,
 }
 
-/// User-settable parameters of [`Albedo`].
 #[derive(Clone, Debug)]
 pub struct AlbedoConfig {
-    /// Module name (upstream `ModelTag`).
     pub name: String,
-    /// Upstream `nHat_B_default` \[-\]: instrument normal used when an
-    /// instrument is added with a zero normal.
-    pub nhat_b_default: Vector3<f64>,
-    /// Upstream `fov_default` \[rad\]: field-of-view half angle used when an
-    /// instrument is added with a negative one.
-    pub fov_default_rad: f64,
-    /// Upstream `illuminationFactorAtdA` \[-\]: constant illumination of every
-    /// patch when `eclipse_case` is off.
-    pub illumination_factor_at_da: f64,
-    /// Upstream `altitudeRateLimit` \[-\]: a planet contributes nothing to an
-    /// instrument whose altitude exceeds this multiple of the planet radius;
-    /// negative disables the limit.
-    pub altitude_rate_limit: f64,
-    /// Upstream `eclipseCase`: shadow each patch with the penumbra model.
+    pub albedo_avg: f64,
+    /// Per-patch albedo, rows south to north, columns from -180 deg longitude.
+    /// Replaces `albedo_avg`, `num_lat` and `num_lon` when set.
+    pub albedo_map: Option<Vec<Vec<f64>>>,
+    pub num_lat: usize,
+    pub num_lon: usize,
+    pub equatorial_radius_m: f64,
+    /// Zero or negative means a spherical planet.
+    pub polar_radius_m: f64,
+    pub instruments: Vec<AlbedoInstrument>,
+    /// Upstream `eclipseCase`: dims each patch by the fraction of the solar
+    /// disk its planet leaves visible from it (the penumbra model of
+    /// `illumination_at_patch`). Off, every sunlit patch is fully lit.
     pub eclipse_case: bool,
-    /// Upstream `defaultNumLat`: latitude bands of an average-albedo grid
-    /// added without an explicit size.
-    pub default_num_lat: usize,
-    /// Upstream `defaultNumLon`: longitude zones of an average-albedo grid
-    /// added without an explicit size.
-    pub default_num_lon: usize,
+    /// Further planets, each read from the matching entry of
+    /// [`Albedo::input_other_planet_msgs`]. Their albedo adds to the planet
+    /// above at every instrument, as upstream sums every planet added with
+    /// `addPlanetandAlbedo*Model`.
+    pub other_planets: Vec<AlbedoPlanet>,
 }
 
-impl Default for AlbedoConfig {
-    fn default() -> Self {
+impl AlbedoConfig {
+    pub fn earth(name: &str, instruments: Vec<AlbedoInstrument>) -> Self {
         Self {
-            name: "albedo".to_string(),
-            nhat_b_default: Vector3::new(1.0, 0.0, 0.0),
-            fov_default_rad: 90.0 * D2R,
-            illumination_factor_at_da: 1.0,
-            altitude_rate_limit: -1.0,
+            name: name.to_string(),
+            albedo_avg: 0.29,
+            albedo_map: None,
+            num_lat: 180,
+            num_lon: 360,
+            equatorial_radius_m: 6_378_136.6,
+            polar_radius_m: 6_356_751.9,
+            instruments,
             eclipse_case: false,
-            default_num_lat: 180,
-            default_num_lon: 360,
+            other_planets: Vec::new(),
         }
     }
 }
 
-/// One instrument (upstream `instConfig_t`). The defaults are upstream's
-/// unset values, which [`Albedo::add_instrument_config`] replaces by the
-/// module defaults.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AlbedoInstrumentConfig {
-    /// Upstream `fov` \[rad\]: field-of-view half angle; negative selects
-    /// [`AlbedoConfig::fov_default_rad`].
-    pub fov_rad: f64,
-    /// Upstream `nHat_B` \[-\]: instrument normal, body components (need not
-    /// be unit); zero selects [`AlbedoConfig::nhat_b_default`].
-    pub nhat_b: Vector3<f64>,
-    /// Upstream `r_IB_B` \[m\]: instrument position relative to the body
-    /// origin, body components.
-    pub r_ib_b_m: Vector3<f64>,
-}
-
-impl Default for AlbedoInstrumentConfig {
-    fn default() -> Self {
-        Self {
-            fov_rad: -1.0,
-            nhat_b: Vector3::zeros(),
-            r_ib_b_m: Vector3::zeros(),
-        }
-    }
-}
-
-/// A configuration problem upstream's `Reset` reports with `bskError`; each
-/// is logged at [`Module::init`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AlbedoConfigError {
-    /// No planet was added.
-    NoPlanets,
-    /// No instrument was added.
-    NoInstruments,
-    /// A required input is not connected.
-    InputNotConnected(&'static str),
-}
-
-impl fmt::Display for AlbedoConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoPlanets => write!(
-                f,
-                "no planets registered; call add_planet_average_model or add_planet_data_model"
-            ),
-            Self::NoInstruments => {
-                write!(f, "no instruments configured; call add_instrument_config")
-            }
-            Self::InputNotConnected(port) => write!(f, "{port} is not connected"),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Instrument {
-    fov_rad: f64,
-    nhat_b: Vector3<f64>,
-    r_ib_b_m: Vector3<f64>,
-}
-
-#[derive(Clone, Debug)]
-struct PlanetEntry {
-    planet: AlbedoPlanet,
-    grid: PlanetGrid,
-    /// \[m\] authalic radius.
-    r_planet_m: f64,
-}
-
-/// Per-instrument sums over the planets of one update.
-#[derive(Clone, Copy, Debug, Default)]
-struct InstrumentAlbedo {
-    albedo_max: f64,
-    albedo: f64,
-    flux_max_w_per_m2: f64,
-    flux_w_per_m2: f64,
-}
-
-/// Albedo seen by a spacecraft's instruments (upstream `Albedo`).
-#[derive(Clone, Debug)]
+/// Port of Basilisk's `albedo`, average or lookup-table model. The planet input is
+/// optional: unconnected means the planet sits at the origin with no rotation.
+/// The inputs of [`AlbedoConfig::other_planets`] must be connected.
 pub struct Albedo {
-    /// Module configuration.
     pub config: AlbedoConfig,
-    /// Upstream `spacecraftStateInMsg`: spacecraft position and attitude.
-    pub spacecraft_state_in_msg: Input<SpacecraftStateMsg>,
-    /// Upstream `sunPositionInMsg`: Sun position.
-    pub sun_position_in_msg: Input<SunEphemerisMsg>,
-    /// One planet state input per added planet, in the order added.
-    pub planet_state_in_msgs: Vec<Input<PlanetStateMsg>>,
-    /// Upstream `albOutMsgs`: one output per added instrument.
-    pub albedo_out_msgs: Vec<Output<AlbedoMsg>>,
-    instruments: Vec<Instrument>,
-    planets: Vec<PlanetEntry>,
-}
-
-impl Albedo {
-    pub fn new(config: AlbedoConfig) -> Self {
-        Self {
-            config,
-            spacecraft_state_in_msg: Input::default(),
-            sun_position_in_msg: Input::default(),
-            planet_state_in_msgs: Vec::new(),
-            albedo_out_msgs: Vec::new(),
-            instruments: Vec::new(),
-            planets: Vec::new(),
-        }
-    }
-
-    /// Upstream `addInstrumentConfig`: adds an instrument and returns its
-    /// output. A negative field of view or a zero normal is replaced by the
-    /// module default (with a warning, as upstream); the normal is
-    /// normalized.
-    pub fn add_instrument_config(&mut self, config: AlbedoInstrumentConfig) -> &Output<AlbedoMsg> {
-        let index = self.albedo_out_msgs.len();
-        let fov_rad = if config.fov_rad < 0.0 {
-            log::warn!(
-                "{}: instrument {index}'s half field of view angle is negative; the default is \
-                 used",
-                self.config.name
-            );
-            self.config.fov_default_rad
-        } else {
-            config.fov_rad
-        };
-        let nhat_b = if config.nhat_b == Vector3::zeros() {
-            log::warn!(
-                "{}: instrument {index}'s unit normal is zero; the default is used",
-                self.config.name
-            );
-            self.config.nhat_b_default
-        } else {
-            config.nhat_b / config.nhat_b.norm()
-        };
-        self.instruments.push(Instrument {
-            fov_rad,
-            nhat_b,
-            r_ib_b_m: config.r_ib_b_m,
-        });
-        self.albedo_out_msgs.push(Output::default());
-        &self.albedo_out_msgs[index]
-    }
-
-    /// Upstream `addPlanetandAlbedoAverageModel(msg)`: adds `planet` with its
-    /// average albedo on the default grid, and returns its state input.
-    pub fn add_planet_average_model(
-        &mut self,
-        planet: AlbedoPlanet,
-    ) -> Result<&mut Input<PlanetStateMsg>, PlanetRadiationError> {
-        let (num_lat, num_lon) = (self.config.default_num_lat, self.config.default_num_lon);
-        self.add_planet(planet, planet.average_albedo(), num_lat, num_lon, None)
-    }
-
-    /// Upstream `addPlanetandAlbedoAverageModel(msg, ALB_avg, numLat,
-    /// numLon)`: adds `planet` with a uniform albedo on a
-    /// `num_lat` x `num_lon` grid. As upstream, a negative albedo selects the
-    /// planet's average and a zero size the default one.
-    pub fn add_planet_average_model_explicit(
-        &mut self,
-        planet: AlbedoPlanet,
-        albedo_avg: f64,
-        num_lat: usize,
-        num_lon: usize,
-    ) -> Result<&mut Input<PlanetStateMsg>, PlanetRadiationError> {
-        let albedo_avg = if albedo_avg < 0.0 {
-            planet.average_albedo()
-        } else {
-            albedo_avg
-        };
-        let num_lat = if num_lat == 0 {
-            self.config.default_num_lat
-        } else {
-            num_lat
-        };
-        let num_lon = if num_lon == 0 {
-            self.config.default_num_lon
-        } else {
-            num_lon
-        };
-        self.add_planet(planet, albedo_avg, num_lat, num_lon, None)
-    }
-
-    /// Upstream `addPlanetandAlbedoDataModel`: adds `planet` with the albedo
-    /// map `data_path/file_name`, whose shape sets the grid.
-    pub fn add_planet_data_model(
-        &mut self,
-        planet: AlbedoPlanet,
-        data_path: impl Into<PathBuf>,
-        file_name: impl Into<String>,
-    ) -> Result<&mut Input<PlanetStateMsg>, PlanetRadiationError> {
-        let data = AlbedoDataFile {
-            data_path: data_path.into(),
-            file_name: file_name.into(),
-        };
-        let (num_lat, num_lon) = (self.config.default_num_lat, self.config.default_num_lon);
-        self.add_planet(
-            planet,
-            planet.average_albedo(),
-            num_lat,
-            num_lon,
-            Some(data),
-        )
-    }
-
-    fn add_planet(
-        &mut self,
-        planet: AlbedoPlanet,
-        albedo_avg: f64,
-        num_lat: usize,
-        num_lon: usize,
-        albedo_data: Option<AlbedoDataFile>,
-    ) -> Result<&mut Input<PlanetStateMsg>, PlanetRadiationError> {
-        let (req_m, rp_m) = planet.radii_m();
-        let grid = PlanetGrid::new(&PlanetGridConfig {
-            num_lat,
-            num_lon,
-            albedo_avg,
-            albedo_data,
-            req_m,
-            rp_m,
-            ..Default::default()
-        })?;
-        self.planets.push(PlanetEntry {
-            planet,
-            grid,
-            r_planet_m: authalic_radius(req_m, rp_m),
-        });
-        self.planet_state_in_msgs.push(Input::default());
-        Ok(self
-            .planet_state_in_msgs
-            .last_mut()
-            .expect("planet input was just added"))
-    }
-
-    /// Upstream `customReset`'s and the radiation base `Reset`'s checks.
-    pub fn configuration_errors(&self) -> Vec<AlbedoConfigError> {
-        let mut errors = Vec::new();
-        if self.planets.is_empty() {
-            errors.push(AlbedoConfigError::NoPlanets);
-        }
-        if self.instruments.is_empty() {
-            errors.push(AlbedoConfigError::NoInstruments);
-        }
-        if !self.spacecraft_state_in_msg.is_connected() {
-            errors.push(AlbedoConfigError::InputNotConnected(
-                "spacecraft_state_in_msg",
-            ));
-        }
-        if !self.sun_position_in_msg.is_connected() {
-            errors.push(AlbedoConfigError::InputNotConnected("sun_position_in_msg"));
-        }
-        errors
-    }
-
-    /// Upstream `evaluatePlanet`: adds one planet's albedo to every
-    /// instrument's sums.
-    #[allow(clippy::too_many_arguments)]
-    fn evaluate_planet(
-        &self,
-        entry: &PlanetEntry,
-        planet: &PlanetStateMsg,
-        r_bn_n_m: Vector3<f64>,
-        dcm_bn: &Matrix3<f64>,
-        r_sn_n_m: Vector3<f64>,
-        s_sun_w_per_m2: f64,
-        sums: &mut [InstrumentAlbedo],
-    ) {
-        let r_pn_n_m = planet.position_inertial_m;
-        let r_sp_n_m = r_sn_n_m - r_pn_n_m;
-        let inertial_to_fixed = planet_inertial_to_fixed(planet);
-
-        for (instrument, sum) in self.instruments.iter().zip(sums.iter_mut()) {
-            let r_ib_n_m = dcm_bn.transpose() * instrument.r_ib_b_m;
-            let r_ip_n_m = r_ib_n_m + r_bn_n_m - r_pn_n_m;
-
-            if self.config.altitude_rate_limit >= 0.0 {
-                let altitude_m = r_ip_n_m.norm() - entry.r_planet_m;
-                if altitude_m / entry.r_planet_m > self.config.altitude_rate_limit {
-                    log::warn!(
-                        "{}: the altitude to planet radius limit is exceeded for {:?}; its \
-                         albedo is set to zero",
-                        self.config.name,
-                        entry.planet
-                    );
-                    continue;
-                }
-            }
-
-            // Solar flux at the instrument, corrected for its distance.
-            let r_si_n_m = r_sp_n_m - r_ip_n_m;
-            let solar_flux_at_instrument = solar_flux_at(r_si_n_m.norm());
-
-            let patches = entry.grid.compute_patches(
-                r_ib_n_m + r_bn_n_m,
-                r_sn_n_m,
-                r_pn_n_m,
-                &inertial_to_fixed,
-                entry.r_planet_m,
-                s_sun_w_per_m2,
-            );
-            let nhat_n = dcm_bn.transpose() * instrument.nhat_b;
-            let cos_fov = instrument.fov_rad.cos();
-
-            let mut albedo = 0.0;
-            let mut albedo_max = 0.0;
-            for patch in patches {
-                if patch.albedo_flux_w_per_m2 <= 0.0 {
-                    continue;
-                }
-                let ratio = patch.albedo_flux_w_per_m2 / s_sun_w_per_m2;
-                let illumination = if self.config.eclipse_case {
-                    compute_illumination_at_da(entry.r_planet_m, patch.r_dap_n_m, r_sp_n_m)
-                } else {
-                    self.config.illumination_factor_at_da
-                };
-                albedo_max += ratio * illumination;
-
-                // Cosine between the instrument normal and the patch direction.
-                let f3 = nhat_n.dot(&(-patch.r_hat_ida_n));
-                if f3 >= cos_fov {
-                    albedo += ratio * f3 * illumination;
-                }
-            }
-
-            sum.albedo += albedo;
-            sum.albedo_max += albedo_max;
-            sum.flux_max_w_per_m2 += solar_flux_at_instrument * albedo_max;
-            sum.flux_w_per_m2 += solar_flux_at_instrument * albedo;
-        }
-    }
+    pub input_state_msg: Input<SpacecraftStateMsg>,
+    pub input_sun_msg: Input<SunEphemerisMsg>,
+    pub input_planet_msg: Input<PlanetStateMsg>,
+    /// One per [`AlbedoConfig::other_planets`] entry, in the same order.
+    pub input_other_planet_msgs: Vec<Input<PlanetStateMsg>>,
+    pub output_albedo_msgs: Vec<Output<AlbedoMsg>>,
+    /// The planet's grid, then one per other planet.
+    grids: Vec<PlanetGrid>,
 }
 
 impl Module for Albedo {
     fn init(&mut self) {
-        for error in self.configuration_errors() {
-            log::error!("{}: {error}", self.config.name);
+        assert!(
+            self.input_state_msg.is_connected() && self.input_sun_msg.is_connected(),
+            "albedo {}: state and sun inputs must be connected",
+            self.config.name
+        );
+        assert_eq!(
+            self.config.instruments.len(),
+            self.output_albedo_msgs.len(),
+            "albedo {}: instruments changed after construction",
+            self.config.name
+        );
+        assert_eq!(
+            self.config.other_planets.len(),
+            self.input_other_planet_msgs.len(),
+            "albedo {}: other planets changed after construction",
+            self.config.name
+        );
+        assert!(
+            self.input_other_planet_msgs
+                .iter()
+                .all(|input| input.is_connected()),
+            "albedo {}: every other planet input must be connected",
+            self.config.name
+        );
+        for (i, instrument) in self.config.instruments.iter_mut().enumerate() {
+            if instrument.fov_half_angle_rad.is_nan() || instrument.fov_half_angle_rad < 0.0 {
+                log::warn!("albedo instrument {i}: invalid FOV, using 90 deg");
+                instrument.fov_half_angle_rad = FRAC_PI_2;
+            }
+            if !instrument.normal_body.iter().all(|x| x.is_finite())
+                || instrument.normal_body.norm() == 0.0
+            {
+                log::warn!("albedo instrument {i}: zero normal, using +x");
+                instrument.normal_body = Vector3::x();
+            }
         }
-        for output in &self.albedo_out_msgs {
+        self.build_grids();
+        for output in &self.output_albedo_msgs {
             output.write(AlbedoMsg::default());
         }
     }
 
     fn update(&mut self, _context: &SimulationContext) {
-        let spacecraft = self.spacecraft_state_in_msg.read();
-        let r_bn_n_m = spacecraft.position_m;
-        let dcm_bn = mrp_to_dcm(spacecraft.sigma_bn);
-        let r_sn_n_m = self.sun_position_in_msg.read().sun_position_inertial_m;
+        let state = self.input_state_msg.read();
+        let sun = self.input_sun_msg.read();
+        let planet = if self.input_planet_msg.is_connected() {
+            self.input_planet_msg.read()
+        } else {
+            PlanetStateMsg::default()
+        };
+        let planets =
+            std::iter::once(planet).chain(self.input_other_planet_msgs.iter().map(Input::read));
+        let body_to_inertial = state.body_to_inertial();
 
-        let mut sums = vec![InstrumentAlbedo::default(); self.instruments.len()];
-        for (entry, input) in self.planets.iter().zip(&self.planet_state_in_msgs) {
-            let planet = input.read();
-            let sun_distance_m = (r_sn_n_m - planet.position_inertial_m).norm();
-            if sun_distance_m <= 0.0 {
-                log::error!(
-                    "{}: Sun-planet ({:?}) distance <= 0 m",
-                    self.config.name,
-                    entry.planet
-                );
-                continue;
-            }
-            let s_sun_w_per_m2 = solar_flux_at(sun_distance_m);
-            self.evaluate_planet(
-                entry,
-                &planet,
-                r_bn_n_m,
-                &dcm_bn,
-                r_sn_n_m,
-                s_sun_w_per_m2,
-                &mut sums,
+        // Per instrument: ratio and flux from every visible lit patch, then
+        // inside the field of view.
+        let mut sums = vec![[0.0; 4]; self.config.instruments.len()];
+        for (grid, planet) in self.grids.iter().zip(planets) {
+            let fixed_to_inertial = planet_fixed_to_inertial(&planet);
+            let sun_from_planet = sun.sun_position_inertial_m - planet.position_inertial_m;
+            assert!(
+                sun_from_planet.norm() > 0.0,
+                "albedo {}: sun and planet positions coincide",
+                self.config.name
             );
+            let patches: Vec<Vector3<f64>> = grid
+                .patch_dirs_fixed
+                .iter()
+                .map(|dir| grid.radius_m * (fixed_to_inertial * dir))
+                .collect();
+
+            for (instrument, sum) in self.config.instruments.iter().zip(&mut sums) {
+                let instrument_from_planet = state.position_m
+                    + body_to_inertial.transform_vector(&instrument.position_body_m)
+                    - planet.position_inertial_m;
+                let normal = body_to_inertial.transform_vector(&instrument.normal_body.normalize());
+                let cos_fov = instrument.fov_half_angle_rad.cos();
+
+                let (mut ratio_max, mut ratio) = (0.0, 0.0);
+                for (k, patch) in patches.iter().enumerate() {
+                    let patch_normal = patch.normalize();
+                    let to_instrument = instrument_from_planet - patch;
+                    let distance_m = to_instrument.norm();
+                    let to_instrument_hat = to_instrument / distance_m;
+                    let f2 = patch_normal.dot(&to_instrument_hat);
+                    let f1 = patch_normal.dot(&(sun_from_planet - patch).normalize());
+                    if f2 <= 0.0 || f1 <= 0.0 {
+                        continue;
+                    }
+                    let mut patch_ratio =
+                        FRAC_1_PI * f1 * f2 * grid.patch_albedo_area_sr(k) * grid.radius_m.powi(2)
+                            / distance_m.powi(2);
+                    if self.config.eclipse_case {
+                        patch_ratio *=
+                            illumination_at_patch(grid.radius_m, *patch, sun_from_planet);
+                    }
+                    ratio_max += patch_ratio;
+                    let f3 = -normal.dot(&to_instrument_hat);
+                    if f3 >= cos_fov {
+                        ratio += patch_ratio * f3;
+                    }
+                }
+
+                let solar_flux = SOLAR_FLUX_AT_EARTH_WPM2 * ASTRONOMICAL_UNIT_M.powi(2)
+                    / (sun_from_planet - instrument_from_planet).norm_squared();
+                sum[0] += ratio_max;
+                sum[1] += solar_flux * ratio_max;
+                sum[2] += ratio;
+                sum[3] += solar_flux * ratio;
+            }
         }
 
-        for (output, sum) in self.albedo_out_msgs.iter().zip(sums) {
+        for (sum, output) in sums.iter().zip(&self.output_albedo_msgs) {
             output.write(AlbedoMsg {
-                albedo_at_instrument_max: sum.albedo_max,
-                albedo_flux_at_instrument_max_w_per_m2: sum.flux_max_w_per_m2,
-                albedo_at_instrument: sum.albedo,
-                albedo_flux_at_instrument_w_per_m2: sum.flux_w_per_m2,
+                albedo_at_instrument_max: sum[0],
+                albedo_flux_at_instrument_max_wpm2: sum[1],
+                albedo_at_instrument: sum[2],
+                albedo_flux_at_instrument_wpm2: sum[3],
             });
         }
     }
 }
 
-/// Ports of upstream `test_albedo.py` (the `PlanetGrid` tests are in
-/// [`super::planet_radiation`]).
+impl Albedo {
+    pub fn new(config: AlbedoConfig) -> Self {
+        let output_albedo_msgs = config
+            .instruments
+            .iter()
+            .map(|_| Output::default())
+            .collect();
+        let input_other_planet_msgs = config
+            .other_planets
+            .iter()
+            .map(|_| Input::default())
+            .collect();
+        Self {
+            config,
+            input_state_msg: Input::default(),
+            input_sun_msg: Input::default(),
+            input_planet_msg: Input::default(),
+            input_other_planet_msgs,
+            output_albedo_msgs,
+            grids: Vec::new(),
+        }
+    }
+
+    fn build_grids(&mut self) {
+        let c = &self.config;
+        let first = PlanetGrid::new(
+            c.albedo_avg,
+            c.albedo_map.as_deref(),
+            c.num_lat,
+            c.num_lon,
+            c.equatorial_radius_m,
+            c.polar_radius_m,
+        );
+        let others = c.other_planets.iter().map(|p| {
+            PlanetGrid::new(
+                p.albedo_avg,
+                p.albedo_map.as_deref(),
+                p.num_lat,
+                p.num_lon,
+                p.equatorial_radius_m,
+                p.polar_radius_m,
+            )
+        });
+        self.grids = std::iter::once(first).chain(others).collect();
+    }
+}
+
+/// A planet as latitude/longitude patches on its authalic sphere (upstream
+/// `PlanetGrid`), shared with
+/// [`EarthRadiationModel`](super::earth_radiation_model::EarthRadiationModel).
+#[derive(Clone, Debug)]
+pub(crate) struct PlanetGrid {
+    /// \[m\] authalic radius.
+    pub(crate) radius_m: f64,
+    /// Patch centres, unit vectors in planet-fixed axes, south to north and
+    /// from -180 deg longitude.
+    pub(crate) patch_dirs_fixed: Vec<Vector3<f64>>,
+    /// \[sr\] patch areas on the unit sphere.
+    pub(crate) patch_area_sr: Vec<f64>,
+    /// \[-\] patch albedos.
+    pub(crate) patch_albedo: Vec<f64>,
+}
+
+impl PlanetGrid {
+    /// The grid of a planet with `albedo_avg` on `num_lat` x `num_lon`
+    /// patches, or with the patches and albedos of `albedo_map`; a zero or
+    /// negative `polar_radius_m` is a sphere.
+    ///
+    /// # Panics
+    ///
+    /// On an empty, ragged or non-finite grid, a non-positive equatorial
+    /// radius, or a polar radius above the equatorial one.
+    pub(crate) fn new(
+        albedo_avg: f64,
+        albedo_map: Option<&[Vec<f64>]>,
+        num_lat: usize,
+        num_lon: usize,
+        equatorial_radius_m: f64,
+        polar_radius_m: f64,
+    ) -> Self {
+        let (num_lat, num_lon) = match albedo_map {
+            Some(map) => (map.len(), map.first().map_or(0, Vec::len)),
+            None => (num_lat, num_lon),
+        };
+        assert!(num_lat > 0 && num_lon > 0, "albedo grid must be non-empty");
+        if let Some(map) = albedo_map {
+            assert!(
+                map.iter()
+                    .all(|row| row.len() == num_lon && row.iter().all(|a| a.is_finite())),
+                "albedo map must be rectangular and finite"
+            );
+        }
+        assert!(
+            equatorial_radius_m > 0.0,
+            "equatorial radius must be positive"
+        );
+        let oblate = polar_radius_m > 0.0 && polar_radius_m != equatorial_radius_m;
+        assert!(
+            !oblate || polar_radius_m < equatorial_radius_m,
+            "polar radius must be less than equatorial radius"
+        );
+
+        // Authalic sphere: equal-area latitudes and radius.
+        let (mut t, mut radius_m) = ([0.0; 3], equatorial_radius_m);
+        if oblate {
+            let e2 = 1.0 - (polar_radius_m / equatorial_radius_m).powi(2);
+            let e = e2.sqrt();
+            let (e4, e6) = (e2 * e2, e2 * e2 * e2);
+            t = [
+                e2 / 3.0 + 31.0 * e4 / 180.0 + 59.0 * e6 / 560.0,
+                17.0 * e4 / 360.0 + 61.0 * e6 / 1260.0,
+                383.0 * e6 / 45360.0,
+            ];
+            radius_m = (equatorial_radius_m.powi(2)
+                * 0.5
+                * (1.0 + (1.0 - e2) / (2.0 * e) * ((1.0 + e) / (1.0 - e)).ln()))
+            .sqrt();
+        }
+        let authalic = |lat: f64| {
+            lat - (t[0] * (2.0 * lat).sin() - t[1] * (4.0 * lat).sin() + t[2] * (6.0 * lat).sin())
+        };
+
+        let lat_step = PI / num_lat as f64;
+        let lon_step = 2.0 * PI / num_lon as f64;
+        // Basilisk uses integer halves, which shifts odd grids by half a cell.
+        let (half_lat, half_lon) = (num_lat as f64 / 2.0, num_lon as f64 / 2.0);
+        let mut grid = Self {
+            radius_m,
+            patch_dirs_fixed: Vec::with_capacity(num_lat * num_lon),
+            patch_area_sr: Vec::with_capacity(num_lat * num_lon),
+            patch_albedo: Vec::with_capacity(num_lat * num_lon),
+        };
+        for i in 0..num_lat {
+            let lat = (i as f64 - half_lat + 0.5) * lat_step;
+            let area_sr = lon_step
+                * (authalic(lat + 0.5 * lat_step).sin() - authalic(lat - 0.5 * lat_step).sin())
+                    .abs();
+            for j in 0..num_lon {
+                let lon = (j as f64 - half_lon + 0.5) * lon_step;
+                grid.patch_dirs_fixed.push(Vector3::new(
+                    lat.cos() * lon.cos(),
+                    lat.cos() * lon.sin(),
+                    lat.sin(),
+                ));
+                grid.patch_area_sr.push(area_sr);
+                grid.patch_albedo
+                    .push(albedo_map.map_or(albedo_avg, |map| map[i][j]));
+            }
+        }
+        grid
+    }
+
+    /// Albedo times area \[sr\] of patch `k`.
+    pub(crate) fn patch_albedo_area_sr(&self, k: usize) -> f64 {
+        self.patch_albedo[k] * self.patch_area_sr[k]
+    }
+}
+
+/// The planet's `[NP]`: the transpose of its orientation, the identity when
+/// it has none or a singular one.
+pub(crate) fn planet_fixed_to_inertial(planet: &PlanetStateMsg) -> Matrix3<f64> {
+    planet
+        .orientation
+        .as_ref()
+        .map(|o| o.inertial_to_fixed)
+        .filter(|m| m.determinant() != 0.0)
+        .unwrap_or_else(Matrix3::identity)
+        .transpose()
+}
+
+/// Upstream `PlanetRadiationBase::computeIlluminationAtdA`: the fraction of
+/// the solar disk visible from a surface patch, 1 in full sunlight, 0 in the
+/// umbra and in between in the penumbra (the overlap of the apparent Sun and
+/// planet disks).
 ///
-/// `test_eclipseCase_cutoff_notice.py` has no counterpart: it reminds
-/// upstream to retire its deprecated public `eclipseCase` member, which this
-/// port does not have.
+/// * `radius_m` \[m\]: planet radius.
+/// * `patch_from_planet_m` \[m\]: patch position relative to the planet center.
+/// * `sun_from_planet_m` \[m\]: Sun position relative to the planet center.
+pub(crate) fn illumination_at_patch(
+    radius_m: f64,
+    patch_from_planet_m: Vector3<f64>,
+    sun_from_planet_m: Vector3<f64>,
+) -> f64 {
+    let req_sun_m = REQ_SUN * 1000.0;
+    let r_dap = patch_from_planet_m;
+    let r_sp = sun_from_planet_m;
+
+    let r_sda = r_sp - r_dap;
+    let s = r_dap.norm();
+    let f_1 = safe_asin((req_sun_m + radius_m) / r_sp.norm());
+    let f_2 = safe_asin((req_sun_m - radius_m) / r_sp.norm());
+    let s_0 = (-r_dap.dot(&r_sp)) / r_sp.norm();
+    let c_1 = s_0 + radius_m / f_1.sin();
+    let c_2 = s_0 - radius_m / f_2.sin();
+    let l = (s.powi(2) - s_0.powi(2)).max(0.0).sqrt();
+    let l_1 = c_1 * f_1.tan();
+    let l_2 = c_2 * f_2.tan();
+
+    let a = safe_asin(req_sun_m / r_sda.norm());
+    let b = safe_asin(radius_m / r_dap.norm());
+    let c = safe_acos((-r_dap.dot(&r_sda)) / (r_dap.norm() * r_sda.norm()));
+
+    let mut illumination_factor = 1.0;
+    if l.abs() < l_2.abs() || l.abs() < l_1.abs() {
+        if c < b - a {
+            illumination_factor = 0.0;
+        } else if c < a - b {
+            // Annular: the planet disk is inside the solar disk.
+            let area_sun = PI * a.powi(2);
+            let area_body = PI * b.powi(2);
+            illumination_factor = 1.0 - area_body / area_sun;
+        } else if c < a + b {
+            let x = (c.powi(2) + a.powi(2) - b.powi(2)) / (2.0 * c);
+            let y = (a.powi(2) - x.powi(2)).max(0.0).sqrt();
+            let area = a.powi(2) * safe_acos(x / a) + b.powi(2) * safe_acos((c - x) / b) - c * y;
+            illumination_factor = 1.0 - area / (PI * a.powi(2));
+        }
+    }
+    illumination_factor.clamp(0.0, 1.0)
+}
+
+/// Reads a Basilisk albedo CSV (`supportData/AlbedoData`), e.g. from `just fetch-albedo`.
+pub fn load_albedo_map(path: impl AsRef<Path>) -> Result<Vec<Vec<f64>>, String> {
+    let path = resolve_repo_relative_path(path.as_ref());
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let map: Vec<Vec<f64>> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.trim()
+                .trim_end_matches(',')
+                .split(',')
+                .map(|v| {
+                    v.trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|x| x.is_finite())
+                        .ok_or_else(|| format!("{}: invalid albedo {v:?}", path.display()))
+                })
+                .collect()
+        })
+        .collect::<Result<_, _>>()?;
+    if map.is_empty() || map.iter().any(|row| row.len() != map[0].len()) {
+        return Err(format!("{}: empty or ragged albedo table", path.display()));
+    }
+    Ok(map)
+}
+
+fn resolve_repo_relative_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+
     use hifitime::Epoch;
     use nalgebra::{Matrix3, Vector3};
 
-    use super::{Albedo, AlbedoConfig, AlbedoConfigError, AlbedoInstrumentConfig, AlbedoPlanet};
-    use crate::environment::planet_radiation::PlanetRadiationError;
-    use crate::environment::test_assets::asset_or_skip;
     use crate::messages::{
         AlbedoMsg, Output, PlanetOrientation, PlanetStateMsg, SpacecraftStateMsg, SunEphemerisMsg,
     };
-    use crate::utilities::astro_constants::{AU, D2R, REQ_EARTH, REQ_MARS};
     use crate::{Module, SimulationContext};
+
+    use super::{
+        Albedo, AlbedoConfig, AlbedoInstrument, AlbedoPlanet, PlanetGrid, illumination_at_patch,
+        load_albedo_map,
+    };
+
+    struct Case {
+        config: AlbedoConfig,
+        planet_m: Vector3<f64>,
+        inertial_to_fixed: Option<Matrix3<f64>>,
+        spacecraft_from_planet_m: Vector3<f64>,
+    }
+
+    fn instruments() -> Vec<AlbedoInstrument> {
+        vec![
+            AlbedoInstrument {
+                fov_half_angle_rad: 80.0_f64.to_radians(),
+                normal_body: Vector3::new(-1.0, 0.0, 0.0),
+                position_body_m: Vector3::new(0.5, 0.2, -0.1),
+            },
+            AlbedoInstrument {
+                fov_half_angle_rad: 30.0_f64.to_radians(),
+                normal_body: Vector3::new(-0.6, -0.5, -0.3),
+                position_body_m: Vector3::zeros(),
+            },
+        ]
+    }
+
+    fn earth(inertial_to_fixed: Option<Matrix3<f64>>, table: bool) -> Case {
+        let mut config = AlbedoConfig::earth("albedo", instruments());
+        if table {
+            config.albedo_map = Some(map("Earth_ALB_2018_CERES_All_5x5.csv"));
+        }
+        Case {
+            config,
+            planet_m: Vector3::zeros(),
+            inertial_to_fixed,
+            spacecraft_from_planet_m: Vector3::new(5.0e6, 4.0e6, 2.0e6),
+        }
+    }
+
+    fn map(file: &str) -> Vec<Vec<f64>> {
+        load_albedo_map(format!("assets/albedo/{file}")).expect("run `just fetch-albedo`")
+    }
+
+    /// Basilisk's `J20002Pfix` for a z rotation by `a` after an x rotation by `b`.
+    fn rotation(a: f64, b: f64) -> Matrix3<f64> {
+        let (sa, ca) = a.sin_cos();
+        let (sb, cb) = b.sin_cos();
+        Matrix3::new(ca, sa, 0.0, -sa, ca, 0.0, 0.0, 0.0, 1.0)
+            * Matrix3::new(1.0, 0.0, 0.0, 0.0, cb, sb, 0.0, -sb, cb)
+    }
+
+    fn run(case: Case) -> Vec<[f64; 4]> {
+        let mut albedo = Albedo::new(case.config);
+        let state = Output::new(SpacecraftStateMsg {
+            position_m: case.planet_m + case.spacecraft_from_planet_m,
+            sigma_bn: Vector3::new(0.1, -0.2, 0.3),
+            ..Default::default()
+        });
+        let sun = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: Vector3::new(1.4e11, 3.0e10, 1.2e10),
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+        let planet = Output::new(PlanetStateMsg {
+            position_inertial_m: case.planet_m,
+            orientation: case.inertial_to_fixed.map(|m| PlanetOrientation {
+                inertial_to_fixed: m,
+                inertial_to_fixed_dot: Matrix3::zeros(),
+            }),
+            ..Default::default()
+        });
+        albedo.input_state_msg.connect(state.slot());
+        albedo.input_sun_msg.connect(sun.slot());
+        albedo.input_planet_msg.connect(planet.slot());
+        albedo.init();
+        albedo.update(&context());
+        albedo
+            .output_albedo_msgs
+            .iter()
+            .map(|o| {
+                let m = o.read();
+                [
+                    m.albedo_at_instrument_max,
+                    m.albedo_flux_at_instrument_max_wpm2,
+                    m.albedo_at_instrument,
+                    m.albedo_flux_at_instrument_wpm2,
+                ]
+            })
+            .collect()
+    }
 
     fn context() -> SimulationContext {
         SimulationContext {
@@ -560,194 +589,406 @@ mod tests {
         }
     }
 
-    fn planet_at(position_m: Vector3<f64>) -> PlanetStateMsg {
-        PlanetStateMsg {
-            position_inertial_m: position_m,
-            velocity_inertial_mps: Vector3::zeros(),
-            orientation: Some(PlanetOrientation::identity()),
+    // References come from a Basilisk build that predates upstream's switch to
+    // 1361 W/m^2, so its fluxes use 1372.5398.
+    fn assert_close(actual: Vec<[f64; 4]>, expected: [[f64; 4]; 2]) {
+        assert_close_to(actual, expected, 1.0e-13);
+    }
+
+    fn assert_close_to(actual: Vec<[f64; 4]>, expected: [[f64; 4]; 2], tolerance: f64) {
+        for (a, e) in actual.iter().zip(&expected) {
+            for k in 0..4 {
+                let e = if k % 2 == 1 {
+                    e[k] * 1361.0 / 1372.5398
+                } else {
+                    e[k]
+                };
+                assert!(
+                    ((a[k] - e) / e).abs() < tolerance,
+                    "got {}, Basilisk {e}",
+                    a[k]
+                );
+            }
         }
     }
 
-    /// Wires the inputs, runs one update and returns the first instrument's
-    /// output. `planets` are in the order the module added them.
-    fn run_once(
-        albedo: &mut Albedo,
-        sun_position_m: Vector3<f64>,
-        planets: &[PlanetStateMsg],
-        spacecraft_position_m: Vector3<f64>,
+    #[test]
+    fn matches_basilisk_without_planet_rotation() {
+        assert_close(
+            run(earth(None, false)),
+            [
+                [
+                    0.3461328262838361,
+                    515.0628426311036,
+                    0.18028158435788924,
+                    268.26795456051144,
+                ],
+                [
+                    0.34613291144419045,
+                    515.0629693534131,
+                    0.01629851307194263,
+                    24.252997219635205,
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn matches_basilisk_with_planet_rotation() {
+        assert_close(
+            run(earth(Some(rotation(0.7, 0.0)), false)),
+            [
+                [
+                    0.346131853285857,
+                    515.0613947617686,
+                    0.17984862134079602,
+                    267.6236840799205,
+                ],
+                [
+                    0.3461319384729301,
+                    515.061521523837,
+                    0.016560134494855185,
+                    24.64230289521969,
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn matches_basilisk_with_albedo_table() {
+        assert_close(
+            run(earth(None, true)),
+            [
+                [
+                    0.29200436448511863,
+                    434.51700217841363,
+                    0.16857246456200076,
+                    250.84420255314487,
+                ],
+                [
+                    0.2920045775825069,
+                    434.5173192774687,
+                    0.010856416124623423,
+                    16.15488657912962,
+                ],
+            ],
+        );
+        assert_close(
+            run(earth(Some(rotation(0.7, 0.0)), true)),
+            [
+                [
+                    0.4186413682562449,
+                    622.9591555705781,
+                    0.24036077548183857,
+                    357.6687759027309,
+                ],
+                [
+                    0.41864175989621,
+                    622.9597383496647,
+                    0.012015562494176936,
+                    17.879753967574203,
+                ],
+            ],
+        );
+    }
+
+    /// Far from the origin one ulp of position moves the output by ~1e-12.
+    const OFFSET_TOLERANCE: f64 = 1.0e-11;
+
+    #[test]
+    fn matches_basilisk_for_offset_rotated_oblate_mars_table() {
+        let mut config = AlbedoConfig::earth("albedo", instruments());
+        config.albedo_map = Some(map("Mars_ALB_TES_10x10.csv"));
+        config.equatorial_radius_m = 3_396_190.0;
+        config.polar_radius_m = 3_376_200.0;
+        assert_close_to(
+            run(Case {
+                config,
+                planet_m: Vector3::new(-2.0e10, 1.0e10, 5.0e9),
+                inertial_to_fixed: Some(rotation(1.1, 0.4)),
+                spacecraft_from_planet_m: Vector3::new(3.0e6, 2.0e6, 1.5e6),
+            }),
+            [
+                [
+                    0.16190964252220383,
+                    190.93041575121475,
+                    0.09927786429051681,
+                    117.07248319865566,
+                ],
+                [
+                    0.16190970802321736,
+                    190.9304929926143,
+                    0.002376136961800661,
+                    2.802037055551462,
+                ],
+            ],
+            OFFSET_TOLERANCE,
+        );
+    }
+
+    #[test]
+    fn matches_basilisk_for_offset_rotated_spherical_moon_grid() {
+        let mut config = AlbedoConfig::earth("albedo", instruments());
+        config.albedo_avg = 0.123;
+        (config.num_lat, config.num_lon) = (36, 72);
+        config.equatorial_radius_m = 1_737_400.0;
+        config.polar_radius_m = -1.0;
+        assert_close_to(
+            run(Case {
+                config,
+                planet_m: Vector3::new(3.0e8, -2.0e8, 1.0e8),
+                inertial_to_fixed: Some(rotation(-0.5, 0.2)),
+                spacecraft_from_planet_m: Vector3::new(1.5e6, 0.8e6, 0.5e6),
+            }),
+            [
+                [
+                    0.10194873427673944,
+                    152.24355860510343,
+                    0.036839319630295374,
+                    55.01342568788178,
+                ],
+                [
+                    0.10194853829918336,
+                    152.24326594490634,
+                    0.0015381843746845219,
+                    2.2970237409403933,
+                ],
+            ],
+            OFFSET_TOLERANCE,
+        );
+    }
+
+    #[test]
+    fn odd_grid_covers_the_sphere_once() {
+        for polar_radius_m in [-1.0, 6_356_751.9] {
+            let mut config = AlbedoConfig::earth("albedo", instruments());
+            (config.num_lat, config.num_lon) = (11, 7);
+            config.polar_radius_m = polar_radius_m;
+            let mut albedo = Albedo::new(config);
+            albedo.build_grids();
+            let grid = &albedo.grids[0];
+            let area: f64 = grid.patch_area_sr.iter().sum();
+            let centroid: Vector3<f64> = grid.patch_dirs_fixed.iter().sum();
+            assert!((area - 4.0 * PI).abs() < 1.0e-12, "area {area}");
+            assert!(centroid.norm() < 1.0e-12, "centroid {centroid}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "rectangular")]
+    fn ragged_map_is_rejected() {
+        let mut config = AlbedoConfig::earth("albedo", instruments());
+        config.albedo_map = Some(vec![vec![0.3, 0.3], vec![0.3]]);
+        Albedo::new(config).build_grids();
+    }
+
+    #[test]
+    #[should_panic(expected = "must be connected")]
+    fn unconnected_inputs_are_rejected() {
+        Albedo::new(AlbedoConfig::earth("albedo", instruments())).init();
+    }
+
+    /// Upstream `test_albedo_instConfig_defaults_fallback`, with upstream's
+    /// default `fov_default` (90 deg) and `nHat_B_default` (`+x`), which are
+    /// fixed here.
+    #[test]
+    fn invalid_instrument_falls_back_to_basilisk_defaults() {
+        let mut case = earth(None, false);
+        case.config.instruments = vec![AlbedoInstrument {
+            fov_half_angle_rad: -1.0,
+            normal_body: Vector3::zeros(),
+            position_body_m: Vector3::zeros(),
+        }];
+        let mut fixed = earth(None, false);
+        fixed.config.instruments = vec![AlbedoInstrument {
+            fov_half_angle_rad: PI / 2.0,
+            normal_body: Vector3::x(),
+            position_body_m: Vector3::zeros(),
+        }];
+        assert_eq!(run(case), run(fixed));
+    }
+
+    /// Also upstream `test_albedo_invalid_file` and
+    /// `test_planet_grid_initialize_invalid_albedo_file_raises`: a missing
+    /// table is an error.
+    #[test]
+    fn loader_accepts_trailing_commas_and_rejects_non_finite_values() {
+        let path = std::env::temp_dir().join(format!("albedo_{}.csv", std::process::id()));
+        std::fs::write(&path, "0.1,0.2,\n0.3,0.4,\n").unwrap();
+        assert_eq!(
+            load_albedo_map(&path),
+            Ok(vec![vec![0.1, 0.2], vec![0.3, 0.4]])
+        );
+        std::fs::write(&path, "0.1,nan\n0.3,0.4\n").unwrap();
+        assert!(load_albedo_map(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(load_albedo_map(std::env::temp_dir().join("does_not_exist.file")).is_err());
+    }
+
+    // Ports of upstream `test_albedo.py`. Not ported: the tests of
+    // `altitudeRateLimit` and `illuminationFactorAtdA`, which this module
+    // does not have; `test_planet_grid_compute_patches_requires_initialize`,
+    // as a [`PlanetGrid`] only exists built; and
+    // `test_eclipseCase_cutoff_notice.py`, a reminder to retire upstream's
+    // deprecated public `eclipseCase` member. `test_ir_flux_conservation` is
+    // in `earth_radiation_model`, which has the infrared.
+
+    /// Upstream's planets: `(albedo_avg, radii)` of `getAlbedoAverage` and
+    /// `lookupPlanetRadius`.
+    fn upstream_planet(mars: bool) -> AlbedoConfig {
+        let mut config = AlbedoConfig::earth("Albedo_0", Vec::new());
+        if mars {
+            config.albedo_avg = 0.16;
+            config.equatorial_radius_m = 3_396_190.0;
+            config.polar_radius_m = 3_376_200.0;
+        }
+        config
+    }
+
+    const ALPHA_DEG: f64 = 71.0;
+
+    /// Upstream's instrument: an 80 deg field of view looking back at the
+    /// planet centre from 71 deg off the Sun line.
+    fn upstream_instrument() -> AlbedoInstrument {
+        let alpha = ALPHA_DEG.to_radians();
+        AlbedoInstrument {
+            fov_half_angle_rad: 80.0_f64.to_radians(),
+            normal_body: Vector3::new(-alpha.cos(), -alpha.sin(), 0.0),
+            position_body_m: Vector3::zeros(),
+        }
+    }
+
+    /// One update of `config` with the Sun at `sun_m`, the planet at
+    /// `planet_m` and the other planets at `others_m`, the spacecraft at
+    /// `spacecraft_m` with zero attitude. Returns the first instrument's
+    /// output.
+    fn run_scene(
+        config: AlbedoConfig,
+        sun_m: Vector3<f64>,
+        planet_m: Vector3<f64>,
+        others_m: &[Vector3<f64>],
+        spacecraft_m: Vector3<f64>,
     ) -> AlbedoMsg {
+        let at = |position_inertial_m| PlanetStateMsg {
+            position_inertial_m,
+            orientation: Some(PlanetOrientation::identity()),
+            ..Default::default()
+        };
+        let mut albedo = Albedo::new(config);
+        let state = Output::new(SpacecraftStateMsg {
+            position_m: spacecraft_m,
+            ..Default::default()
+        });
         let sun = Output::new(SunEphemerisMsg {
-            sun_position_inertial_m: sun_position_m,
+            sun_position_inertial_m: sun_m,
             ..Default::default()
         });
-        let spacecraft = Output::new(SpacecraftStateMsg {
-            position_m: spacecraft_position_m,
-            ..Default::default()
-        });
-        let planet_outputs: Vec<_> = planets.iter().cloned().map(Output::new).collect();
-        albedo.sun_position_in_msg.connect(sun.slot());
-        albedo.spacecraft_state_in_msg.connect(spacecraft.slot());
-        for (input, output) in albedo.planet_state_in_msgs.iter_mut().zip(&planet_outputs) {
+        let planet = Output::new(at(planet_m));
+        let others: Vec<_> = others_m.iter().map(|&p| Output::new(at(p))).collect();
+        albedo.input_state_msg.connect(state.slot());
+        albedo.input_sun_msg.connect(sun.slot());
+        albedo.input_planet_msg.connect(planet.slot());
+        for (input, output) in albedo.input_other_planet_msgs.iter_mut().zip(&others) {
             input.connect(output.slot());
         }
         albedo.init();
         albedo.update(&context());
-        albedo.albedo_out_msgs[0].read()
+        albedo.output_albedo_msgs[0].read()
     }
 
-    fn standard_instrument(alpha: f64) -> AlbedoInstrumentConfig {
-        AlbedoInstrumentConfig {
-            fov_rad: 80.0 * D2R,
-            nhat_b: Vector3::new(-alpha.cos(), -alpha.sin(), 0.0),
-            r_ib_b_m: Vector3::zeros(),
-        }
+    /// Upstream's geometry: the Sun along `-x` (1 AU for Earth, 1.5 AU for
+    /// Mars), the spacecraft 6000 km above the equator 71 deg from `+x`, the
+    /// scene shifted by `offset_m`.
+    fn upstream_scene(config: AlbedoConfig, mars: bool, offset_m: Vector3<f64>) -> AlbedoMsg {
+        let au_m = crate::utilities::astro_constants::AU * 1000.0;
+        let sun_m = Vector3::new(if mars { -1.5 * au_m } else { -au_m }, 0.0, 0.0);
+        let r_sc = config.equatorial_radius_m + 6000.0e3;
+        let alpha = ALPHA_DEG.to_radians();
+        run_scene(
+            config,
+            offset_m + sun_m,
+            offset_m,
+            &[],
+            offset_m + r_sc * Vector3::new(alpha.cos(), alpha.sin(), 0.0),
+        )
     }
 
-    #[derive(Clone, Copy, Debug)]
-    enum ModelType {
-        AverageImplicit,
-        AverageExplicit,
-        Data,
+    /// Upstream `ALBEDO_AVG_EXPLICIT`: albedo 0.5 on 200 x 400 patches.
+    fn explicit(mut config: AlbedoConfig) -> AlbedoConfig {
+        config.albedo_avg = 0.5;
+        (config.num_lat, config.num_lon) = (200, 400);
+        config
     }
 
-    /// Upstream `test_unitAlbedo`: one instrument looking at the planet from
-    /// 6000 km altitude, 71 deg from the Sun line.
-    fn unit_albedo(planet: AlbedoPlanet, model: ModelType, use_eclipse: bool) -> Option<f64> {
-        let mut albedo = Albedo::new(AlbedoConfig {
-            name: "Albedo_0".to_string(),
-            eclipse_case: use_eclipse,
-            ..Default::default()
-        });
-        match model {
-            ModelType::Data => {
-                let file = match planet {
-                    AlbedoPlanet::Earth => "albedo/Earth_ALB_2018_CERES_All_10x10.csv",
-                    _ => "albedo/Mars_ALB_TES_10x10.csv",
-                };
-                let path = asset_or_skip(file)?;
-                albedo
-                    .add_planet_data_model(
-                        planet,
-                        path.parent().unwrap(),
-                        path.file_name().unwrap().to_str().unwrap(),
-                    )
-                    .expect("albedo map");
-            }
-            ModelType::AverageExplicit => {
-                albedo
-                    .add_planet_average_model_explicit(planet, 0.5, 200, 400)
-                    .expect("valid grid");
-            }
-            ModelType::AverageImplicit => {
-                albedo.add_planet_average_model(planet).expect("valid grid");
-            }
-        }
-
-        let (sun_position, req_m) = match planet {
-            AlbedoPlanet::Earth => (Vector3::new(-AU * 1000.0, 0.0, 0.0), REQ_EARTH * 1000.0),
-            _ => (
-                Vector3::new(-1.5 * AU * 1000.0, 0.0, 0.0),
-                REQ_MARS * 1000.0,
-            ),
-        };
-        let r_sc = req_m + 6000.0 * 1000.0;
-        let alpha = 71.0 * D2R;
-        albedo.add_instrument_config(standard_instrument(alpha));
-
-        let out = run_once(
-            &mut albedo,
-            sun_position,
-            &[planet_at(Vector3::zeros())],
-            r_sc * Vector3::new(alpha.cos(), alpha.sin(), 0.0),
-        );
-        Some(out.albedo_at_instrument)
-    }
-
+    /// Upstream `test_unitAlbedo`: Earth and Mars, with the planet's
+    /// average albedo on the default 180 x 360 grid (`ALBEDO_AVG_IMPLICIT`),
+    /// 0.5 on 200 x 400 (`ALBEDO_AVG_EXPLICIT`) or the 10 x 10 deg table
+    /// (`ALBEDO_DATA`), with and without eclipses, to 1e-12.
     #[test]
     fn albedo_at_instrument_matches_upstream_truth() {
-        use AlbedoPlanet::{Earth, Mars};
-        use ModelType::{AverageExplicit, AverageImplicit, Data};
         let cases = [
-            (Earth, Data, true, 0.0022055492477917),
-            (Earth, Data, false, 0.0022055492477917),
-            (Earth, AverageExplicit, true, 0.0041742091531996),
-            (Earth, AverageExplicit, false, 0.004174209177079),
-            (Earth, AverageImplicit, true, 0.002421222716229847),
-            (Earth, AverageImplicit, false, 0.002421222716229847),
-            (Mars, Data, true, 0.0014001432717662),
-            (Mars, Data, false, 0.0014001432717662),
-            (Mars, AverageExplicit, true, 0.0035681407388827),
-            (Mars, AverageExplicit, false, 0.0035681407390035),
-            (Mars, AverageImplicit, true, 0.0011418311186365906),
-            (Mars, AverageImplicit, false, 0.0011418311186365906),
+            (false, "data", true, 0.0022055492477917),
+            (false, "data", false, 0.0022055492477917),
+            (false, "explicit", true, 0.0041742091531996),
+            (false, "explicit", false, 0.004174209177079),
+            (false, "implicit", true, 0.002421222716229847),
+            (false, "implicit", false, 0.002421222716229847),
+            (true, "data", true, 0.0014001432717662),
+            (true, "data", false, 0.0014001432717662),
+            (true, "explicit", true, 0.0035681407388827),
+            (true, "explicit", false, 0.0035681407390035),
+            (true, "implicit", true, 0.0011418311186365906),
+            (true, "implicit", false, 0.0011418311186365906),
         ];
-        for (planet, model, use_eclipse, truth) in cases {
-            let Some(albedo) = unit_albedo(planet, model, use_eclipse) else {
-                continue;
-            };
+        for (mars, model, eclipse_case, truth) in cases {
+            let mut config = upstream_planet(mars);
+            match model {
+                "data" => {
+                    config.albedo_map = Some(map(if mars {
+                        "Mars_ALB_TES_10x10.csv"
+                    } else {
+                        "Earth_ALB_2018_CERES_All_10x10.csv"
+                    }));
+                }
+                "explicit" => config = explicit(config),
+                _ => {}
+            }
+            config.eclipse_case = eclipse_case;
+            config.instruments = vec![upstream_instrument()];
+            let albedo = upstream_scene(config, mars, Vector3::zeros()).albedo_at_instrument;
             assert!(
                 (albedo - truth).abs() < 1e-12,
-                "{planet:?} {model:?} eclipse={use_eclipse}: got {albedo:.16}, expected {truth}"
+                "mars={mars} {model} eclipse={eclipse_case}: got {albedo:.16}, expected {truth}"
             );
         }
     }
 
-    /// Upstream `test_albedo_invalid_file`.
-    #[test]
-    fn a_missing_albedo_map_is_an_error() {
-        let mut albedo = Albedo::new(AlbedoConfig::default());
-        let result = albedo.add_planet_data_model(
-            AlbedoPlanet::Earth,
-            std::env::temp_dir(),
-            "does_not_exist.file",
-        );
-        assert!(matches!(
-            result,
-            Err(PlanetRadiationError::AlbedoData { .. })
-        ));
-        assert!(albedo.planet_state_in_msgs.is_empty());
+    /// Upstream `_albedo_run_earth`: the explicit Earth, no eclipses, one
+    /// instrument.
+    fn earth_with(instrument: AlbedoInstrument) -> AlbedoMsg {
+        let mut config = explicit(upstream_planet(false));
+        config.instruments = vec![instrument];
+        upstream_scene(config, false, Vector3::zeros())
     }
 
-    #[test]
-    fn missing_planets_instruments_and_inputs_are_configuration_errors() {
-        assert_eq!(
-            Albedo::new(AlbedoConfig::default()).configuration_errors(),
-            vec![
-                AlbedoConfigError::NoPlanets,
-                AlbedoConfigError::NoInstruments,
-                AlbedoConfigError::InputNotConnected("spacecraft_state_in_msg"),
-                AlbedoConfigError::InputNotConnected("sun_position_in_msg"),
-            ]
+    fn assert_relative(actual: f64, expected: f64, rel: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() <= rel * expected.abs(),
+            "{what}: {actual:.15e} vs {expected:.15e}"
         );
-    }
-
-    /// Upstream `_run_albedo_at_planet_offset`: the explicit 200 x 400 Earth
-    /// with eclipses, the whole scene shifted by `offset`.
-    fn albedo_at_planet_offset(offset: Vector3<f64>) -> f64 {
-        let mut albedo = Albedo::new(AlbedoConfig {
-            eclipse_case: true,
-            ..Default::default()
-        });
-        albedo
-            .add_planet_average_model_explicit(AlbedoPlanet::Earth, 0.5, 200, 400)
-            .unwrap();
-        let alpha = 71.0 * D2R;
-        albedo.add_instrument_config(standard_instrument(alpha));
-        let r_sc = REQ_EARTH * 1e3 + 6000e3;
-        run_once(
-            &mut albedo,
-            offset + Vector3::new(-AU * 1000.0, 0.0, 0.0),
-            &[planet_at(offset)],
-            offset + r_sc * Vector3::new(alpha.cos(), alpha.sin(), 0.0),
-        )
-        .albedo_at_instrument
     }
 
     /// Upstream `test_albedo_eclipse_uses_planet_relative_sun_vector`.
     #[test]
     fn eclipse_output_is_translation_invariant() {
-        let at_origin = albedo_at_planet_offset(Vector3::zeros());
-        let offset = albedo_at_planet_offset(Vector3::new(1e12, 0.0, 0.0));
+        let shifted = |offset_m| {
+            let mut config = explicit(upstream_planet(false));
+            config.eclipse_case = true;
+            config.instruments = vec![upstream_instrument()];
+            upstream_scene(config, false, offset_m).albedo_at_instrument
+        };
+        let at_origin = shifted(Vector3::zeros());
+        let offset = shifted(Vector3::new(1e12, 0.0, 0.0));
         assert!(
             at_origin > 0.0,
             "reference albedo at origin must be positive"
@@ -759,82 +1000,14 @@ mod tests {
         );
     }
 
-    /// Upstream `_albedo_run_earth`: the explicit 200 x 400 Earth, no
-    /// eclipses, one instrument.
-    fn albedo_run_earth(config: AlbedoConfig, instrument: AlbedoInstrumentConfig) -> AlbedoMsg {
-        let mut albedo = Albedo::new(config);
-        albedo
-            .add_planet_average_model_explicit(AlbedoPlanet::Earth, 0.5, 200, 400)
-            .unwrap();
-        albedo.add_instrument_config(instrument);
-        let r_sc = REQ_EARTH * 1000.0 + 6000.0 * 1000.0;
-        let alpha = 71.0 * D2R;
-        run_once(
-            &mut albedo,
-            Vector3::new(-AU * 1000.0, 0.0, 0.0),
-            &[planet_at(Vector3::zeros())],
-            r_sc * Vector3::new(alpha.cos(), alpha.sin(), 0.0),
-        )
-    }
-
-    fn assert_relative(actual: f64, expected: f64, rel: f64, what: &str) {
-        assert!(
-            (actual - expected).abs() <= rel * expected.abs(),
-            "{what}: {actual:.15e} vs {expected:.15e}"
-        );
-    }
-
-    #[test]
-    fn altitude_rate_limit_suppresses_output() {
-        let instrument = standard_instrument(71.0 * D2R);
-        let free = albedo_run_earth(AlbedoConfig::default(), instrument);
-        let limited = albedo_run_earth(
-            AlbedoConfig {
-                altitude_rate_limit: 0.0,
-                ..Default::default()
-            },
-            instrument,
-        );
-        assert!(
-            free.albedo_at_instrument > 0.0,
-            "baseline albedo must be positive"
-        );
-        assert_eq!(limited.albedo_at_instrument, 0.0);
-    }
-
-    #[test]
-    fn unset_instrument_values_fall_back_to_the_module_defaults() {
-        let alpha = 71.0 * D2R;
-        let explicit = albedo_run_earth(AlbedoConfig::default(), standard_instrument(alpha));
-        assert!(explicit.albedo_at_instrument > 0.0);
-
-        let defaults = albedo_run_earth(
-            AlbedoConfig {
-                nhat_b_default: Vector3::new(-alpha.cos(), -alpha.sin(), 0.0),
-                fov_default_rad: 80.0 * D2R,
-                ..Default::default()
-            },
-            AlbedoInstrumentConfig::default(),
-        );
-        assert_relative(
-            defaults.albedo_at_instrument,
-            explicit.albedo_at_instrument,
-            1e-10,
-            "default instrument",
-        );
-    }
-
+    /// Upstream `test_albedo_nHat_B_normalization`.
     #[test]
     fn instrument_normal_is_normalized() {
-        let instrument = standard_instrument(71.0 * D2R);
-        let unit = albedo_run_earth(AlbedoConfig::default(), instrument);
-        let scaled = albedo_run_earth(
-            AlbedoConfig::default(),
-            AlbedoInstrumentConfig {
-                nhat_b: 5.0 * instrument.nhat_b,
-                ..instrument
-            },
-        );
+        let unit = earth_with(upstream_instrument());
+        let scaled = earth_with(AlbedoInstrument {
+            normal_body: 5.0 * upstream_instrument().normal_body,
+            ..upstream_instrument()
+        });
         assert!(unit.albedo_at_instrument > 0.0);
         assert_relative(
             scaled.albedo_at_instrument,
@@ -844,66 +1017,47 @@ mod tests {
         );
     }
 
-    #[test]
-    fn illumination_factor_scales_albedo_linearly() {
-        let instrument = standard_instrument(71.0 * D2R);
-        let full = albedo_run_earth(AlbedoConfig::default(), instrument);
-        let half = albedo_run_earth(
-            AlbedoConfig {
-                illumination_factor_at_da: 0.5,
-                ..Default::default()
-            },
-            instrument,
-        );
-        assert!(full.albedo_at_instrument > 0.0);
-        assert_relative(
-            half.albedo_at_instrument,
-            0.5 * full.albedo_at_instrument,
-            1e-10,
-            "half illumination",
-        );
-        assert_relative(
-            half.albedo_flux_at_instrument_w_per_m2,
-            0.5 * full.albedo_flux_at_instrument_w_per_m2,
-            1e-10,
-            "half illumination flux",
-        );
-    }
-
+    /// Upstream `test_albedo_AfluxAtInstrument_positive_and_consistent`.
     #[test]
     fn albedo_flux_is_positive_and_bounded_by_the_unfiltered_flux() {
-        let out = albedo_run_earth(AlbedoConfig::default(), standard_instrument(71.0 * D2R));
-        assert!(out.albedo_flux_at_instrument_w_per_m2 > 0.0);
-        assert!(out.albedo_flux_at_instrument_max_w_per_m2 > 0.0);
+        let out = earth_with(upstream_instrument());
+        assert!(out.albedo_flux_at_instrument_wpm2 > 0.0);
+        assert!(out.albedo_flux_at_instrument_max_wpm2 > 0.0);
         assert!(
-            out.albedo_flux_at_instrument_max_w_per_m2
-                >= out.albedo_flux_at_instrument_w_per_m2 - 1e-12
+            out.albedo_flux_at_instrument_max_wpm2 >= out.albedo_flux_at_instrument_wpm2 - 1e-12
         );
     }
 
     /// Upstream `_run_albedo_multi_planet_scene`: 120 x 240 "earths" at
-    /// `planet_positions`, one wide instrument along `+x`.
-    fn multi_planet_scene(planet_positions: &[Vector3<f64>]) -> AlbedoMsg {
-        let mut albedo = Albedo::new(AlbedoConfig::default());
-        albedo.add_instrument_config(AlbedoInstrumentConfig {
-            fov_rad: 120.0 * D2R,
-            nhat_b: Vector3::new(1.0, 0.0, 0.0),
-            r_ib_b_m: Vector3::zeros(),
-        });
-        for _ in planet_positions {
-            albedo
-                .add_planet_average_model_explicit(AlbedoPlanet::Earth, 0.5, 120, 240)
-                .unwrap();
-        }
-        let planets: Vec<_> = planet_positions.iter().copied().map(planet_at).collect();
-        run_once(
-            &mut albedo,
+    /// `planets_m`, one wide instrument along `+x`.
+    fn multi_planet_scene(planets_m: &[Vector3<f64>]) -> AlbedoMsg {
+        let mut config = upstream_planet(false);
+        config.albedo_avg = 0.5;
+        (config.num_lat, config.num_lon) = (120, 240);
+        let earth = AlbedoPlanet {
+            albedo_avg: config.albedo_avg,
+            albedo_map: None,
+            num_lat: config.num_lat,
+            num_lon: config.num_lon,
+            equatorial_radius_m: config.equatorial_radius_m,
+            polar_radius_m: config.polar_radius_m,
+        };
+        config.other_planets = vec![earth; planets_m.len() - 1];
+        config.instruments = vec![AlbedoInstrument {
+            fov_half_angle_rad: 120.0_f64.to_radians(),
+            normal_body: Vector3::x(),
+            position_body_m: Vector3::zeros(),
+        }];
+        run_scene(
+            config,
             Vector3::new(-1.0e8, 0.0, 0.0),
-            &planets,
+            planets_m[0],
+            &planets_m[1..],
             Vector3::new(0.0, 8.0e7, 0.0),
         )
     }
 
+    /// Upstream `test_albedo_two_planet_superposition_ratio_max`.
     #[test]
     fn two_planets_superpose() {
         let p_a = Vector3::new(-2.0e7, 0.0, 0.0);
@@ -915,6 +1069,7 @@ mod tests {
         assert_relative(ab, a + b, 5e-3, "superposition");
     }
 
+    /// Upstream `test_albedo_two_planet_order_invariance_max_fields`.
     #[test]
     fn planet_order_does_not_matter() {
         let p_a = Vector3::new(-2.0e7, 0.0, 0.0);
@@ -928,72 +1083,56 @@ mod tests {
             "ratio",
         );
         assert_relative(
-            ab.albedo_flux_at_instrument_max_w_per_m2,
-            ba.albedo_flux_at_instrument_max_w_per_m2,
+            ab.albedo_flux_at_instrument_max_wpm2,
+            ba.albedo_flux_at_instrument_max_wpm2,
             1e-10,
             "flux",
         );
     }
 
-    /// The instrument offset and the attitude move the instrument and turn
-    /// its normal: a body rotated 180 deg about `z` with the normal along
-    /// `+x` looks where the unrotated `-x` normal does.
     #[test]
-    fn instrument_normal_follows_the_attitude() {
-        let alpha = 71.0 * D2R;
-        let reference = albedo_run_earth(AlbedoConfig::default(), standard_instrument(alpha));
-
-        let mut albedo = Albedo::new(AlbedoConfig::default());
-        albedo
-            .add_planet_average_model_explicit(AlbedoPlanet::Earth, 0.5, 200, 400)
-            .unwrap();
-        let normal = standard_instrument(alpha).nhat_b;
-        albedo.add_instrument_config(AlbedoInstrumentConfig {
-            fov_rad: 80.0 * D2R,
-            nhat_b: -normal,
-            r_ib_b_m: Vector3::zeros(),
+    #[should_panic(expected = "every other planet input must be connected")]
+    fn unconnected_other_planet_is_rejected() {
+        let mut config = AlbedoConfig::earth("albedo", instruments());
+        config.other_planets.push(AlbedoPlanet {
+            albedo_avg: 0.123,
+            albedo_map: None,
+            num_lat: 18,
+            num_lon: 36,
+            equatorial_radius_m: 1_737_400.0,
+            polar_radius_m: -1.0,
         });
-        let sun = Output::new(SunEphemerisMsg {
-            sun_position_inertial_m: Vector3::new(-AU * 1000.0, 0.0, 0.0),
-            ..Default::default()
-        });
-        let r_sc = REQ_EARTH * 1000.0 + 6000.0 * 1000.0;
-        // MRP of a 180 deg rotation about z.
-        let spacecraft = Output::new(SpacecraftStateMsg {
-            position_m: r_sc * Vector3::new(alpha.cos(), alpha.sin(), 0.0),
-            sigma_bn: Vector3::new(0.0, 0.0, 1.0),
-            ..Default::default()
-        });
-        let planet = Output::new(PlanetStateMsg {
-            orientation: Some(PlanetOrientation {
-                inertial_to_fixed: Matrix3::zeros(),
-                inertial_to_fixed_dot: Matrix3::zeros(),
-            }),
-            ..Default::default()
-        });
-        albedo.sun_position_in_msg.connect(sun.slot());
-        albedo.spacecraft_state_in_msg.connect(spacecraft.slot());
-        albedo.planet_state_in_msgs[0].connect(planet.slot());
+        let mut albedo = Albedo::new(config);
+        let state = Output::new(SpacecraftStateMsg::default());
+        let sun = Output::new(SunEphemerisMsg::default());
+        albedo.input_state_msg.connect(state.slot());
+        albedo.input_sun_msg.connect(sun.slot());
         albedo.init();
-        albedo.update(&context());
-
-        // A singular planet orientation is replaced by the identity.
-        assert_relative(
-            albedo.albedo_out_msgs[0].read().albedo_at_instrument,
-            reference.albedo_at_instrument,
-            1e-12,
-            "rotated body",
-        );
     }
 
     #[test]
-    fn planet_names_and_constants() {
-        assert_eq!(
-            AlbedoPlanet::from_spice_name("mars barycenter"),
-            Some(AlbedoPlanet::Mars)
-        );
-        assert_eq!(AlbedoPlanet::from_spice_name("pluto"), None);
-        assert_eq!(AlbedoPlanet::Earth.average_albedo(), 0.29);
-        assert_eq!(AlbedoPlanet::Venus.radii_m(), (6_051_800.0, None));
+    fn authalic_radius_lies_between_the_polar_and_equatorial_radii() {
+        let (req, rp) = (6_378_136.6, 6_356_751.9);
+        let radius = PlanetGrid::new(0.3, None, 2, 4, req, rp).radius_m;
+        assert!(rp < radius && radius < req, "{radius}");
+        // A sphere, given or implied, keeps its radius.
+        assert_eq!(PlanetGrid::new(0.3, None, 2, 4, req, req).radius_m, req);
+        assert_eq!(PlanetGrid::new(0.3, None, 2, 4, req, -1.0).radius_m, req);
+    }
+
+    #[test]
+    #[should_panic(expected = "polar radius must be less than equatorial radius")]
+    fn prolate_planet_is_rejected() {
+        PlanetGrid::new(0.3, None, 2, 4, 6.0e6, 7.0e6);
+    }
+
+    #[test]
+    fn illumination_is_full_on_the_day_side_and_zero_behind_the_planet() {
+        let r_planet = 6_371_000.0;
+        let r_sp = Vector3::new(1.496e11, 0.0, 0.0);
+        let day = illumination_at_patch(r_planet, Vector3::new(r_planet, 0.0, 0.0), r_sp);
+        let night = illumination_at_patch(r_planet, Vector3::new(-r_planet, 0.0, 0.0), r_sp);
+        assert_eq!(day, 1.0);
+        assert_eq!(night, 0.0);
     }
 }

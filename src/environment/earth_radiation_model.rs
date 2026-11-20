@@ -1,36 +1,42 @@
 //! Earth radiation at a spacecraft: port of upstream Basilisk
 //! `simulation/environment/earthRadiationModel`.
 //!
-//! The Earth is a [`PlanetGrid`] of Lambertian patches. The module sums the
+//! The Earth is a grid of Lambertian patches, the albedo module's
+//! `PlanetGrid`. The module sums the
 //! reflected sunlight (albedo) and the infrared every visible patch sends to
 //! the spacecraft, and the flux-weighted directions of both, which are the
 //! net force directions of an extended source (neither parallel rays nor
 //! anti-nadir). The albedo is uniform ([`EarthRadiationModelConfig::albedo_avg`])
-//! or a CSV albedo map (upstream `supportData/AlbedoData`, fetched by `just
-//! fetch-environment-data`). Optionally each patch is shadowed by the
-//! penumbra model; the infrared is emitted regardless.
+//! or an albedo map read by [`load_albedo_map`] (upstream
+//! `supportData/AlbedoData`, fetched by `just fetch-albedo`). Optionally each
+//! patch is shadowed by the penumbra model; the infrared is emitted
+//! regardless.
 //!
 //! # Differences from upstream
 //!
-//! * Upstream builds the grid at `Reset`, where an unreadable albedo map is a
-//!   `bskError`; here [`EarthRadiationModel::new`] builds it and returns the
-//!   error.
+//! * Upstream builds the grid at `Reset` from an albedo file, where an
+//!   unreadable file is a `bskError`; here the map is read beforehand by
+//!   [`load_albedo_map`], which returns the error, and
+//!   [`EarthRadiationModel::new`] builds the grid, panicking on an unusable
+//!   one as [`Albedo`](super::albedo::Albedo) does.
+//! * Odd grid sizes are centred, as the albedo module's, where upstream
+//!   shifts them by half a cell.
 //! * The Earth is `planet_state_in_msg`, upstream's `planetInMsg` (the
 //!   radiation base's single-planet fallback, the only planet upstream's
 //!   model uses).
 
+use std::f64::consts::FRAC_1_PI;
 use std::fmt;
 
 use nalgebra::Vector3;
 
-use super::planet_radiation::{
-    AlbedoDataFile, PlanetGrid, PlanetGridConfig, PlanetRadiationError, authalic_radius,
-    compute_illumination_at_da, planet_inertial_to_fixed, solar_flux_at,
-};
+#[cfg(doc)]
+use super::albedo::load_albedo_map;
+use super::albedo::{PlanetGrid, illumination_at_patch, planet_fixed_to_inertial};
 use crate::messages::{
     EarthRadiationMsg, Input, Output, PlanetStateMsg, SpacecraftStateMsg, SunEphemerisMsg,
 };
-use crate::utilities::astro_constants::{REQ_EARTH, RP_EARTH};
+use crate::utilities::astro_constants::{AU2M, REQ_EARTH, RP_EARTH, SOLAR_FLUX_EARTH};
 use crate::{Module, SimulationContext};
 
 /// User-settable parameters of [`EarthRadiationModel`]: upstream's scalar
@@ -47,8 +53,11 @@ pub struct EarthRadiationModelConfig {
     pub ir_flux_mean_w_per_m2: f64,
     /// Upstream `albedoAvg` \[-\]: Bond albedo when there is no albedo map.
     pub albedo_avg: f64,
-    /// Upstream `albedoDataPath`/`albedoDataFile`: an albedo map.
-    pub albedo_data: Option<AlbedoDataFile>,
+    /// Upstream `albedoDataPath`/`albedoDataFile`: an albedo map (rows
+    /// south to north, columns from -180 deg longitude, as
+    /// [`load_albedo_map`] reads it), which replaces `albedo_avg` and the
+    /// grid size.
+    pub albedo_map: Option<Vec<Vec<f64>>>,
     /// Upstream `REQ_m` \[m\]: equatorial radius; `None` (upstream -1) is
     /// Earth's.
     pub req_m: Option<f64>,
@@ -67,7 +76,7 @@ impl Default for EarthRadiationModelConfig {
             num_lon: 360,
             ir_flux_mean_w_per_m2: 237.0,
             albedo_avg: 0.30,
-            albedo_data: None,
+            albedo_map: None,
             req_m: None,
             rp_m: None,
             eclipse_case: false,
@@ -101,13 +110,15 @@ pub struct EarthRadiationModel {
     /// Upstream `earthRadiationOutMsg`: total fluxes and directions.
     pub earth_radiation_out_msg: Output<EarthRadiationMsg>,
     grid: PlanetGrid,
-    /// \[m\] authalic Earth radius.
-    r_planet_m: f64,
 }
 
 impl EarthRadiationModel {
     /// Builds the Earth grid (upstream `Reset`'s single-planet fallback).
-    pub fn new(config: EarthRadiationModelConfig) -> Result<Self, PlanetRadiationError> {
+    ///
+    /// # Panics
+    ///
+    /// On an unusable grid or radii, as [`Albedo`](super::albedo::Albedo) does.
+    pub fn new(config: EarthRadiationModelConfig) -> Self {
         let req_m = config
             .req_m
             .filter(|&r| r > 0.0)
@@ -116,24 +127,22 @@ impl EarthRadiationModel {
             .rp_m
             .filter(|&r| r > 0.0)
             .unwrap_or(RP_EARTH * 1000.0);
-        let grid = PlanetGrid::new(&PlanetGridConfig {
-            num_lat: config.num_lat,
-            num_lon: config.num_lon,
-            ir_flux_mean_w_per_m2: config.ir_flux_mean_w_per_m2,
-            albedo_avg: config.albedo_avg,
-            albedo_data: config.albedo_data.clone(),
+        let grid = PlanetGrid::new(
+            config.albedo_avg,
+            config.albedo_map.as_deref(),
+            config.num_lat,
+            config.num_lon,
             req_m,
-            rp_m: Some(rp_m),
-        })?;
-        Ok(Self {
+            rp_m,
+        );
+        Self {
             config,
             spacecraft_state_in_msg: Input::default(),
             planet_state_in_msg: Input::default(),
             sun_position_in_msg: Input::default(),
             earth_radiation_out_msg: Output::default(),
             grid,
-            r_planet_m: authalic_radius(req_m, Some(rp_m)),
-        })
+        }
     }
 
     /// Upstream `Reset`'s input checks.
@@ -173,25 +182,48 @@ impl EarthRadiationModel {
         if sun_distance_m <= 0.0 {
             log::error!("{}: Sun-Earth distance <= 0 m", self.config.name);
         } else {
-            let patches = self.grid.compute_patches(
-                r_sat_n_m,
-                r_sun_n_m,
-                planet.position_inertial_m,
-                &planet_inertial_to_fixed(&planet),
-                self.r_planet_m,
-                solar_flux_at(sun_distance_m),
-            );
-            for patch in patches {
+            // Upstream `PlanetGrid::computePatches`: the fluxes of every
+            // patch visible from the spacecraft.
+            let grid = &self.grid;
+            let s_sun_w_per_m2 = SOLAR_FLUX_EARTH * AU2M.powi(2) / sun_distance_m.powi(2);
+            let fixed_to_inertial = planet_fixed_to_inertial(&planet);
+            let r_sat_p_n_m = r_sat_n_m - planet.position_inertial_m;
+            let r2 = grid.radius_m.powi(2);
+            for (k, dir_p) in grid.patch_dirs_fixed.iter().enumerate() {
+                let r_dap_n = grid.radius_m * (fixed_to_inertial * dir_p);
+                let r_hat_dap_n = r_dap_n / r_dap_n.norm();
+                let r_ida_n = r_sat_p_n_m - r_dap_n;
+                let d = r_ida_n.norm();
+                let r_hat_ida_n = r_ida_n / d;
+                // Cosine between the patch normal and the direction to the
+                // spacecraft; a back-facing patch is not visible.
+                let f2 = r_hat_dap_n.dot(&r_hat_ida_n);
+                if f2 <= 0.0 {
+                    continue;
+                }
+                let d_area = grid.patch_area_sr[k] * r2;
+                let d_squared = d.powi(2);
+
+                // Infrared is emitted whatever the illumination.
+                let ir = self.config.ir_flux_mean_w_per_m2 * FRAC_1_PI * f2 * d_area / d_squared;
+                ir_flux += ir;
+                ir_vec_n += ir * r_hat_ida_n;
+
+                let r_sda_n = r_sp_n_m - r_dap_n;
+                let f1 = r_hat_dap_n.dot(&(r_sda_n / r_sda_n.norm()));
+                if f1 <= 0.0 {
+                    continue;
+                }
                 let illumination = if self.config.eclipse_case {
-                    compute_illumination_at_da(self.r_planet_m, patch.r_dap_n_m, r_sp_n_m)
+                    illumination_at_patch(grid.radius_m, r_dap_n, r_sp_n_m)
                 } else {
                     1.0
                 };
-                albedo_flux += patch.albedo_flux_w_per_m2 * illumination;
-                albedo_vec_n += patch.albedo_flux_w_per_m2 * illumination * patch.r_hat_ida_n;
-                // Infrared is emitted whatever the illumination.
-                ir_flux += patch.ir_flux_w_per_m2;
-                ir_vec_n += patch.ir_flux_w_per_m2 * patch.r_hat_ida_n;
+                let albedo = (s_sun_w_per_m2 * FRAC_1_PI) * grid.patch_albedo[k] * f1 * f2 * d_area
+                    / d_squared
+                    * illumination;
+                albedo_flux += albedo;
+                albedo_vec_n += albedo * r_hat_ida_n;
             }
         }
 
@@ -239,7 +271,7 @@ mod tests {
     use nalgebra::{Matrix3, Vector3};
 
     use super::{EarthRadiationInputNotConnected, EarthRadiationModel, EarthRadiationModelConfig};
-    use crate::environment::planet_radiation::{AlbedoDataFile, PlanetRadiationError};
+    use crate::environment::albedo::load_albedo_map;
     use crate::environment::test_assets::asset_or_skip;
     use crate::messages::{
         EarthRadiationMsg, Output, PlanetOrientation, PlanetStateMsg, SpacecraftStateMsg,
@@ -282,21 +314,23 @@ mod tests {
     /// Upstream `_run_sim`: one update of the default 180 x 360 model.
     /// `None` when the albedo map asked for is not fetched.
     fn run_sim(run: Run) -> Option<EarthRadiationMsg> {
-        let albedo_data = if run.albedo_data {
+        let albedo_map = if run.albedo_data {
             let path = asset_or_skip(CERES_1X1)?;
-            Some(AlbedoDataFile {
-                data_path: path.parent().unwrap().to_path_buf(),
-                file_name: path.file_name().unwrap().to_str().unwrap().to_string(),
-            })
+            Some(load_albedo_map(path).expect("readable CERES map"))
         } else {
             None
         };
-        let mut erm = EarthRadiationModel::new(EarthRadiationModelConfig {
-            albedo_data,
+        let config = EarthRadiationModelConfig {
+            albedo_map,
             eclipse_case: run.eclipse_case,
             ..Default::default()
-        })
-        .expect("valid model");
+        };
+        Some(run_sim_with(config, run))
+    }
+
+    /// One update of the model `config` in the geometry of `run`.
+    fn run_sim_with(config: EarthRadiationModelConfig, run: Run) -> EarthRadiationMsg {
+        let mut erm = EarthRadiationModel::new(config);
 
         let earth = Output::new(PlanetStateMsg {
             orientation: Some(PlanetOrientation::identity()),
@@ -319,7 +353,7 @@ mod tests {
             current_sim_nanos: 0,
             current_epoch: Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
         });
-        Some(erm.earth_radiation_out_msg.read())
+        erm.earth_radiation_out_msg.read()
     }
 
     #[test]
@@ -359,7 +393,7 @@ mod tests {
 
     #[test]
     fn unconnected_inputs_are_configuration_errors() {
-        let erm = EarthRadiationModel::new(EarthRadiationModelConfig::default()).unwrap();
+        let erm = EarthRadiationModel::new(EarthRadiationModelConfig::default());
         assert_eq!(
             erm.configuration_errors(),
             vec![
@@ -370,19 +404,39 @@ mod tests {
         );
     }
 
+    /// Upstream `test_albedo.py`'s `test_ir_flux_conservation` (of the
+    /// shared `PlanetGrid`): far from a uniformly emitting sphere, the
+    /// infrared is `M R^2 / D^2`.
     #[test]
-    fn a_missing_albedo_file_is_an_error() {
-        let result = EarthRadiationModel::new(EarthRadiationModelConfig {
-            albedo_data: Some(AlbedoDataFile {
-                data_path: std::env::temp_dir(),
-                file_name: "does_not_exist.csv".to_string(),
-            }),
+    fn ir_flux_is_conserved_far_from_the_planet() {
+        let radius_m = 6_371_000.0;
+        let d_center = 1e9;
+        let out = run_sim_with(
+            EarthRadiationModelConfig {
+                req_m: Some(radius_m),
+                rp_m: Some(radius_m),
+                albedo_avg: 0.0,
+                ..Default::default()
+            },
+            Run {
+                sun_position_m: Vector3::new(1e11, 0.0, 0.0),
+                spacecraft_position_m: Vector3::new(d_center, 0.0, 0.0),
+                ..Default::default()
+            },
+        );
+        let expected = OLR_DEFAULT * radius_m.powi(2) / d_center.powi(2);
+        assert!(out.ir_flux_w_per_m2 > 0.0, "no IR flux");
+        let rel_error = (out.ir_flux_w_per_m2 - expected).abs() / expected;
+        assert!(rel_error < 1e-4, "relative error {rel_error:.4e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "albedo grid must be non-empty")]
+    fn an_empty_grid_is_rejected() {
+        EarthRadiationModel::new(EarthRadiationModelConfig {
+            num_lat: 0,
             ..Default::default()
         });
-        assert!(matches!(
-            result,
-            Err(PlanetRadiationError::AlbedoData { .. })
-        ));
     }
 
     /// The test's authalic radius (`_authalic_radius`).

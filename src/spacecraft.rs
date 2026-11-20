@@ -3,7 +3,7 @@ use crate::integrators::traits::DynamicObject;
 use crate::integrators::{Integrator, Rk4};
 use crate::messages::{
     AttitudeReferenceMsg, Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg,
-    SpacecraftMassPropsMsg, SpacecraftStateMsg,
+    SpacecraftMassPropsMsg, SpacecraftStateMsg, TranslationReferenceMsg,
 };
 use crate::{Module, SimulationContext};
 use hifitime::{Duration, Epoch};
@@ -38,6 +38,14 @@ pub struct Spacecraft {
     /// attitude evolves from the prescribed state under the hub dynamics.
     /// An unwritten reference reads as zero, as upstream's unwritten message.
     pub att_ref_in: Input<AttitudeReferenceMsg>,
+    /// Upstream `transRefInMsg` (optional): while connected, the hub position
+    /// and velocity are set to the reference's `r_RN_N` and `v_RN_N` at the
+    /// same points as [`Self::att_ref_in`], prescribing the translational
+    /// motion. As upstream sets `hubR_N`/`hubV_N`, the reference is taken
+    /// relative to the central body when there is one. The accumulated ΔV
+    /// still measures each step's integrated motion, as upstream's
+    /// `postIntegration` runs before the reference is applied.
+    pub trans_ref_in: Input<TranslationReferenceMsg>,
     pub gravity: GravityEffector,
     pub state_effectors: Vec<Box<dyn StateEffector>>,
     pub dynamic_effectors: Vec<Box<dyn DynamicEffector>>,
@@ -78,6 +86,7 @@ impl Spacecraft {
             mass_props_out: Output::default(),
             diagnostics_out: Output::default(),
             att_ref_in: Input::default(),
+            trans_ref_in: Input::default(),
             config,
             gravity: GravityEffector::new(),
             state_effectors: Vec::new(),
@@ -115,19 +124,26 @@ impl Spacecraft {
         }
     }
 
-    /// Upstream `readOptionalRefMsg` (its attitude half): with
-    /// [`Self::att_ref_in`] connected, the committed hub attitude and rate
-    /// become the reference's, `omega_BN_B = [BN] omega_RN_N`.
-    fn apply_attitude_reference(&mut self) {
-        if !self.att_ref_in.is_connected() {
-            return;
+    /// Upstream `readOptionalRefMsg`: with [`Self::att_ref_in`] connected,
+    /// the committed hub attitude and rate become the reference's,
+    /// `omega_BN_B = [BN] omega_RN_N`; with [`Self::trans_ref_in`]
+    /// connected, the hub position and velocity become `r_RN_N`, `v_RN_N`.
+    fn apply_reference_states(&mut self) {
+        if self.att_ref_in.is_connected() {
+            let reference = self.att_ref_in.read();
+            if let Some(state) = &mut self.integrated_state {
+                let inertial_to_body_dcm =
+                    body_to_inertial_dcm_from_sigma_bn(reference.sigma_rn).transpose();
+                state.sigma_bn = reference.sigma_rn;
+                state.omega_radps = inertial_to_body_dcm * reference.omega_rn_n_radps;
+            }
         }
-        let reference = self.att_ref_in.read();
-        if let Some(state) = &mut self.integrated_state {
-            let inertial_to_body_dcm =
-                body_to_inertial_dcm_from_sigma_bn(reference.sigma_rn).transpose();
-            state.sigma_bn = reference.sigma_rn;
-            state.omega_radps = inertial_to_body_dcm * reference.omega_rn_n_radps;
+        if self.trans_ref_in.is_connected() {
+            let reference = self.trans_ref_in.read();
+            if let Some(state) = &mut self.integrated_state {
+                state.position_wrt_central_body_m = reference.position_m;
+                state.velocity_wrt_central_body_mps = reference.velocity_mps;
+            }
         }
     }
 
@@ -205,7 +221,7 @@ impl Spacecraft {
     }
 
     fn refresh_outputs_without_integration(&mut self, context: &SimulationContext) {
-        self.apply_attitude_reference();
+        self.apply_reference_states();
         self.sync_effectors_from_integrated_state();
         let Some(integrated_state) = self.integrated_state.clone() else {
             return;
@@ -506,7 +522,7 @@ impl Module for Spacecraft {
             omega_radps: self.config.initial_omega_radps,
             effector_states: self.initial_effector_states(),
         });
-        self.apply_attitude_reference();
+        self.apply_reference_states();
         self.sync_effectors_from_integrated_state();
 
         let integrated_state = self
@@ -665,12 +681,6 @@ impl Spacecraft {
             .as_ref()
             .expect("spacecraft integrated state must remain initialized")
             .clone();
-        let (inertial_position_m, inertial_velocity_mps) =
-            self.gravity.inertial_position_and_velocity(
-                integrated_state.position_wrt_central_body_m,
-                integrated_state.velocity_wrt_central_body_mps,
-                context.current_sim_nanos,
-            );
 
         // Upstream `postIntegration`: the step's non-gravitational velocity
         // change, from the velocities relative to the central body, which the
@@ -690,11 +700,17 @@ impl Spacecraft {
             inertial_to_body_dcm * (dv_body_origin_mps / dt_seconds);
         // Upstream `readOptionalRefMsg`, after the integration and before
         // the outputs.
-        self.apply_attitude_reference();
+        self.apply_reference_states();
         let integrated_state = self
             .integrated_state
             .clone()
             .expect("spacecraft integrated state must remain initialized");
+        let (inertial_position_m, inertial_velocity_mps) =
+            self.gravity.inertial_position_and_velocity(
+                integrated_state.position_wrt_central_body_m,
+                integrated_state.velocity_wrt_central_body_mps,
+                context.current_sim_nanos,
+            );
         let state_msg = self.state_msg(
             &integrated_state,
             inertial_position_m,

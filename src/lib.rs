@@ -18,6 +18,7 @@ pub mod gauss_markov;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
+pub mod monte_carlo;
 #[cfg(feature = "mujoco")]
 pub mod mujoco_dynamics;
 pub mod onboard_data_handling;

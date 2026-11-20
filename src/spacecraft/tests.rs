@@ -2017,3 +2017,48 @@ fn attitude_reference_prescribes_the_hub_attitude() {
     assert!((state.position_m - free_state.read().position_m).norm() < 1e-9);
     assert!((state.velocity_mps - free_state.read().velocity_mps).norm() < 1e-12);
 }
+
+/// Upstream `transRefInMsg` (`readOptionalRefMsg`): a connected reference
+/// sets the hub position and velocity at initialization and after every
+/// step, relative to the central body; the attitude keeps its own dynamics.
+#[test]
+fn translation_reference_prescribes_the_hub_position_and_velocity() {
+    use crate::messages::TranslationReferenceMsg;
+
+    let reference = Output::new(TranslationReferenceMsg {
+        position_m: Vector3::new(1.0e7, -2.0e6, 3.0e5),
+        velocity_mps: Vector3::new(-10.0, 7_000.0, 20.0),
+        ..Default::default()
+    });
+    let mut prescribed = circular_orbit_spacecraft(7.0e6);
+    prescribed.config.initial_omega_radps = Vector3::new(0.01, -0.02, 0.03);
+    let mut free = circular_orbit_spacecraft(7.0e6);
+    free.config.initial_omega_radps = prescribed.config.initial_omega_radps;
+    prescribed.trans_ref_in.connect(reference.slot());
+    let prescribed_state = prescribed.state_out.clone();
+    let free_state = free.state_out.clone();
+    {
+        let mut simulation = Simulation::new(start_epoch(), false);
+        simulation.add_module("prescribed", &mut prescribed, STEP_NANOS, 0);
+        simulation.add_module("free", &mut free, STEP_NANOS, 0);
+        simulation.run_for(0);
+        assert_eq!(
+            prescribed_state.read().position_m,
+            reference.read().position_m
+        );
+        simulation.run_for(10 * STEP_NANOS);
+        // A changed reference is taken at the next step.
+        reference.write(TranslationReferenceMsg {
+            position_m: Vector3::new(-4.0e6, 5.0e6, 1.0e6),
+            velocity_mps: Vector3::new(3.0, 2.0, 1.0),
+            ..Default::default()
+        });
+        simulation.run_for(STEP_NANOS);
+    }
+    let state = prescribed_state.read();
+    assert_eq!(state.position_m, reference.read().position_m);
+    assert_eq!(state.velocity_mps, reference.read().velocity_mps);
+    assert_ne!(free_state.read().position_m, state.position_m);
+    assert!((state.sigma_bn - free_state.read().sigma_bn).norm() < 1e-12);
+    assert!((state.omega_radps - free_state.read().omega_radps).norm() < 1e-12);
+}

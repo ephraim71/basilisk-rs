@@ -55,17 +55,17 @@ use nalgebra::Vector3;
 
 /// Upstream `run(...)` parameters.
 #[derive(Clone, Copy, Debug)]
-struct Config {
+pub(crate) struct Config {
     use_unmodeled_torque: bool,
     use_int_gain: bool,
     use_known_torque: bool,
     use_c_msg: bool,
     /// Write the CSV file (off in the tests).
-    write_csv: bool,
+    pub(crate) write_csv: bool,
 }
 
 impl Config {
-    const fn new(
+    pub(crate) const fn new(
         use_unmodeled_torque: bool,
         use_int_gain: bool,
         use_known_torque: bool,
@@ -104,14 +104,14 @@ const TEST_PARAMETRIZATIONS: [Config; 5] = [
 /// (`samplingTime(simulationTime, simulationTimeStep, 100)`).
 // Some histories are only read by the tests.
 #[cfg_attr(not(test), allow(dead_code))]
-struct Results {
+pub(crate) struct Results {
     guidance: MessageLog<AttitudeGuidanceMsg>,
     torque: MessageLog<BodyTorqueCommandMsg>,
     state: MessageLog<SpacecraftStateMsg>,
     csv_path: Option<PathBuf>,
 }
 
-fn run(config: Config) -> Results {
+pub(crate) fn run(config: Config) -> Results {
     let inertia = hub_inertia_kg_m2();
     let mut spacecraft = spacecraft(inertia, &HubState::on_orbit(0.01));
     add_point_mass_earth(&mut spacecraft);

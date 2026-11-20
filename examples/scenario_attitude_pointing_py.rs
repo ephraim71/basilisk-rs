@@ -82,7 +82,7 @@ impl Module for ScenarioMrpPd {
     }
 }
 
-fn run(write_csv: bool) -> PointingResults {
+pub(crate) fn run(write_csv: bool) -> PointingResults {
     let mut controller = ScenarioMrpPd::new();
     controller.k = 3.5;
     controller.p = 30.0;

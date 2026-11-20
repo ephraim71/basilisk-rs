@@ -29,7 +29,7 @@ rand_distr = { version = "0.4.3", default-features = false, features = ["std"] }
 rayon = "1.10.0"
 rust-spice = { version = "1.0.1", optional = true, default-features = false, features = ["download"] }
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
 time = "0.3.47"
 zmq = { version = "0.10.0", optional = true }
 
@@ -78,3 +78,19 @@ required-features = ["mujoco", "spice"]
 [[example]]
 name = "scenario_quad_maps"
 required-features = ["vizard"]
+
+[[example]]
+name = "scenario_data_to_viz"
+required-features = ["vizard"]
+
+[[example]]
+name = "scenario_spice_spacecraft"
+required-features = ["spice"]
+
+[[example]]
+name = "scenario_monte_carlo_spice"
+required-features = ["spice"]
+
+[[example]]
+name = "scenario_spice_reconstruction"
+required-features = ["mujoco", "spice"]

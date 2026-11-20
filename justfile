@@ -8,6 +8,7 @@ support_data_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/s
 naif_generic_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 hst_spk_url := "https://naif.jpl.nasa.gov/pub/naif/HST/kernels/spk/hst_edited.bsp"
 upstream_src_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/src"
+upstream_examples_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/examples"
 nh_spk_url := "https://naif.jpl.nasa.gov/pub/naif/pds/data/nh-j_p_ss-spice-6-v1.0/nhsp_1000/data/spk/nh_pred_od077.bsp"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
@@ -55,6 +56,16 @@ fetch-small-body-data:
     mkdir -p assets/gravity
     curl --fail --location --progress-bar --output assets/gravity/VESTA20H.txt {{support_data_url}}/LocalGravData/VESTA20H.txt
     curl --fail --location --progress-bar --output assets/gravity/eros007790.tab {{support_data_url}}/LocalGravData/eros007790.tab
+
+# Data the SPICE, Vizard and Monte Carlo example scenarios read besides
+# `fetch-assets` and `fetch-spice-kernels`: upstream's custom spacecraft SPK
+# (`spacecraft_21T01.bsp`) and the two servicer/target state files of
+# `scenarioDataToViz`.
+fetch-misc-scenario-data:
+    mkdir -p assets/spice assets/data_for_examples
+    curl --fail --location --progress-bar --output assets/spice/spacecraft_21T01.bsp {{upstream_examples_url}}/dataForExamples/Spice/spacecraft_21T01.bsp
+    curl --fail --location --progress-bar --output assets/data_for_examples/scHoldTraj_rotating_MRP.csv {{upstream_examples_url}}/dataForExamples/scHoldTraj_rotating_MRP.csv
+    curl --fail --location --progress-bar --output assets/data_for_examples/scHoldTraj_rotating_EP.csv {{upstream_examples_url}}/dataForExamples/scHoldTraj_rotating_EP.csv
 
 # Albedo maps, Denton GEO plasma flux tables and tabulated atmospheres from
 # upstream supportData, for the albedo, Earth radiation, Denton flux and
@@ -120,7 +131,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -334,3 +345,39 @@ plot-multibody-b-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_robotic_arm.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_robotic_grappling.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_robotic_grappling.py --generated-dir "{{generated_dir}}" --variant Test
+# Run the SPICE, Vizard, Monte Carlo, logging, constrained-attitude and
+# benchmark example scenarios in every parametrization of upstream's
+# `test_scenario*.py` and write their CSV files. Reads the assets of
+# `fetch-assets`, `fetch-spice-kernels` and `fetch-misc-scenario-data`;
+# `scenario_spice_spacecraft` and `scenario_monte_carlo_spice` need the
+# `spice` feature, `scenario_spice_reconstruction` the `mujoco` and `spice`
+# features and `scenario_data_to_viz` the `vizard` feature, which also adds
+# the Vizard cases of `scenario_moving_camera` and `scenario_viz_point`.
+run-misc-scenarios:
+    cargo run --release --example scenario_bsk_log -- --all
+    cargo run --release --example scenario_attitude_prescribed -- --all
+    cargo run --release --example scenario_attitude_constraint_violation -- --all
+    cargo run --release --example scenario_attitude_constrained_maneuver -- --all
+    cargo run --release --example scenario_helio_trans_spice
+    cargo run --release --example scenario_flyby_spice -- --all
+    cargo run --release --features spice --example scenario_spice_spacecraft
+    cargo run --release --features spice --example scenario_monte_carlo_spice
+    cargo run --release --features mujoco,spice --example scenario_spice_reconstruction
+    cargo run --release --example scenario_monte_carlo_att_rw -- --all
+    cargo run --release --features vizard --example scenario_viz_point -- --all
+    cargo run --release --features vizard --example scenario_viz_point
+    cargo run --release --features vizard --example scenario_moving_camera -- --all
+    cargo run --release --features vizard --example scenario_data_to_viz -- --all
+    cargo run --release --example scenario_benchmark_numba -- --all
+# Render the misc scenarios' figures from their CSV files.
+plot-misc-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_attitude_prescribed.py --variant all --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_attitude_constraint_violation.py --variant all --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_attitude_constrained_maneuver.py --variant all --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_spice_spacecraft.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_spice_reconstruction.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_monte_carlo_att_rw.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_monte_carlo_att_rw.py --ic --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_viz_point.py --variant all --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_moving_camera.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_data_to_viz.py --variant all --generated-dir "{{generated_dir}}"

@@ -66,7 +66,7 @@ impl Module for ScenarioMrpPd {
     }
 }
 
-fn run(write_csv: bool) -> PointingResults {
+pub(crate) fn run(write_csv: bool) -> PointingResults {
     let mut controller = ScenarioMrpPd {
         guid_in_msg: Input::default(),
         cmd_torque_out_msg: Output::default(),

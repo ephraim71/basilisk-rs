@@ -34,14 +34,14 @@ use pointing::{ControllerPorts, PointingResults, run_pointing};
 
 /// Upstream `run(...)` parameters.
 #[derive(Clone, Copy, Debug)]
-struct Config {
+pub(crate) struct Config {
     use_large_tumble: bool,
     /// Write the CSV file (off in the tests).
-    write_csv: bool,
+    pub(crate) write_csv: bool,
 }
 
 impl Config {
-    const fn new(use_large_tumble: bool) -> Self {
+    pub(crate) const fn new(use_large_tumble: bool) -> Self {
         Self {
             use_large_tumble,
             write_csv: true,
@@ -59,7 +59,7 @@ const TEST_PARAMETRIZATIONS: [Config; 2] = [Config::new(false), Config::new(true
 /// Upstream `omega_BN_BInit` \[rad/s\] of the large tumble.
 const LARGE_TUMBLE_RADPS: [f64; 3] = [0.8, -0.6, 0.5];
 
-fn run(config: Config) -> PointingResults {
+pub(crate) fn run(config: Config) -> PointingResults {
     let mut controller = mrp_feedback(3.5, -1.0, 30.0, Vector3::zeros());
     let ports = ControllerPorts {
         guid_in_msg: controller.guid_in_msg.clone(),

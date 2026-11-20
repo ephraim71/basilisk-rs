@@ -327,16 +327,20 @@ impl Module for ScenarioMrpFeedback {
 
 /// Upstream `run(...)` parameters.
 #[derive(Clone, Copy, Debug)]
-struct Config {
+pub(crate) struct Config {
     use_unmodeled_torque: bool,
     use_int_gain: bool,
     use_known_torque: bool,
     /// Write the CSV file (off in the tests).
-    write_csv: bool,
+    pub(crate) write_csv: bool,
 }
 
 impl Config {
-    const fn new(use_unmodeled_torque: bool, use_int_gain: bool, use_known_torque: bool) -> Self {
+    pub(crate) const fn new(
+        use_unmodeled_torque: bool,
+        use_int_gain: bool,
+        use_known_torque: bool,
+    ) -> Self {
         Self {
             use_unmodeled_torque,
             use_int_gain,
@@ -366,13 +370,13 @@ const TEST_PARAMETRIZATIONS: [Config; 4] = [
 /// The recorded histories, every `samplingTime(T, 0.1 s, 50)` = 12.2 s.
 // Some histories are only read by the tests.
 #[cfg_attr(not(test), allow(dead_code))]
-struct Results {
+pub(crate) struct Results {
     guidance: MessageLog<AttitudeGuidanceMsg>,
     torque: MessageLog<BodyTorqueCommandMsg>,
     csv_path: Option<PathBuf>,
 }
 
-fn run(config: Config) -> Results {
+pub(crate) fn run(config: Config) -> Results {
     let inertia = hub_inertia_kg_m2();
     let mut spacecraft = spacecraft(inertia, &HubState::on_orbit(0.01));
     add_point_mass_earth(&mut spacecraft);

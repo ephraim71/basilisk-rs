@@ -101,6 +101,38 @@ impl RwFactory {
         self.wheels.last_mut().expect("just created")
     }
 
+    /// Upstream `create('custom', gsHat_B, Omega=..., Omega_max=...,
+    /// maxMomentum=..., u_max=..., RWModel=...)`: the spin inertia from the
+    /// momentum capacity, `Js = maxMomentum / Omega_max`, `Jt = Jg = Js / 2`,
+    /// no friction and no minimum torque, at the origin. `custom` sets no
+    /// mass or imbalance.
+    pub fn create_custom(
+        &mut self,
+        spin_axis_body: Vector3<f64>,
+        initial_speed_rpm: f64,
+        max_speed_rpm: f64,
+        max_momentum_nms: f64,
+        max_torque_nm: f64,
+        model: ReactionWheelModel,
+    ) -> &mut ReactionWheelStateEffectorConfig {
+        let max_speed_radps = rpm_to_radps(max_speed_rpm);
+        let mut config = ReactionWheelStateEffectorConfig::balanced(
+            format!("RW{}", self.wheels.len() + 1),
+            Vector3::zeros(),
+            spin_axis_body.normalize(),
+            max_torque_nm,
+            max_momentum_nms,
+        );
+        config.max_speed_radps = max_speed_radps;
+        config.js_kg_m2 = max_momentum_nms / max_speed_radps;
+        config.jt_kg_m2 = 0.5 * config.js_kg_m2;
+        config.jg_kg_m2 = config.jt_kg_m2;
+        config.model = model;
+        config.initial_omega_radps = rpm_to_radps(initial_speed_rpm);
+        self.wheels.push(config);
+        self.wheels.last_mut().expect("just created")
+    }
+
     /// Upstream `getConfigMessage()` (also what `fswSetupRW.create(gsHat_B,
     /// Js, 0.2)` builds): spin axes, spin inertias and maximum torques.
     pub fn config_message(&self) -> RwArrayConfigMsg {

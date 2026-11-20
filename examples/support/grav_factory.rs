@@ -27,7 +27,8 @@ use std::path::PathBuf;
 
 use anise::constants::frames::{
     EARTH_J2000, IAU_EARTH_FRAME, IAU_JUPITER_FRAME, IAU_MARS_FRAME, IAU_MOON_FRAME,
-    JUPITER_BARYCENTER_J2000, MARS_BARYCENTER_J2000, MARS_J2000, MOON_J2000, SSB_J2000, SUN_J2000,
+    IAU_VENUS_FRAME, JUPITER_BARYCENTER_J2000, MARS_BARYCENTER_J2000, MARS_J2000, MOON_J2000,
+    SSB_J2000, SUN_J2000,
 };
 use anise::prelude::Frame;
 use basilisk_rs::dynamics::gravity::{GravBodyData, SphericalHarmonicsGravityModel};
@@ -36,8 +37,8 @@ use basilisk_rs::environment::anise_planet_ephemeris::{
 };
 use basilisk_rs::messages::PlanetOrientation;
 use basilisk_rs::utilities::astro_constants::{
-    MU_EARTH, MU_JUPITER, MU_MARS, MU_MOON, MU_SUN, REQ_EARTH, REQ_JUPITER, REQ_MARS, REQ_MOON,
-    REQ_SUN,
+    MU_EARTH, MU_JUPITER, MU_MARS, MU_MOON, MU_SUN, MU_VENUS, REQ_EARTH, REQ_JUPITER, REQ_MARS,
+    REQ_MOON, REQ_SUN, REQ_VENUS,
 };
 use nalgebra::Vector3;
 
@@ -60,6 +61,9 @@ pub enum Body {
     Sun,
     Earth,
     Moon,
+    /// The planet (NAIF 299; Venus has no moons, so its barycenter is the
+    /// same point).
+    Venus,
     Mars,
     MarsBarycenter,
     JupiterBarycenter,
@@ -96,6 +100,13 @@ impl Body {
                 Some(IAU_EARTH_FRAME),
             ),
             Self::Moon => ("moon", MU_MOON, REQ_MOON, MOON_J2000, Some(IAU_MOON_FRAME)),
+            Self::Venus => (
+                "venus",
+                MU_VENUS,
+                REQ_VENUS,
+                Frame::new(299, anise::constants::orientations::J2000),
+                Some(IAU_VENUS_FRAME),
+            ),
             Self::Mars => ("mars", MU_MARS, REQ_MARS, MARS_J2000, Some(IAU_MARS_FRAME)),
             Self::MarsBarycenter => (
                 "mars barycenter",

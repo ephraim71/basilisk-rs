@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand_distr::{Distribution, Normal};
 
 use crate::messages::{
-    EclipseMsg, Input, Output, SpacecraftStateMsg, SunEphemerisMsg, SunSensorMsg,
+    AlbedoMsg, EclipseMsg, Input, Output, SpacecraftStateMsg, SunEphemerisMsg, SunSensorMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -100,6 +100,7 @@ pub struct CoarseSunSensor {
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_sun_msg: Input<SunEphemerisMsg>,
     pub input_eclipse_msg: Input<EclipseMsg>,
+    pub input_albedo_msg: Input<AlbedoMsg>,
     pub output_sun_sensor_msg: Output<SunSensorMsg>,
     noise_model: GaussMarkov,
 }
@@ -157,7 +158,9 @@ impl Module for CoarseSunSensor {
         let sun = self.read_sun_input_message();
         let eclipse = self.read_eclipse_input_message();
 
-        let measurement = self.compute_measurement(&state, &sun, &eclipse);
+        let albedo = self.input_albedo_msg.read().albedo_at_instrument;
+
+        let measurement = self.compute_measurement(&state, &sun, &eclipse, albedo);
         self.write_output_message(measurement);
     }
 }
@@ -179,6 +182,7 @@ impl CoarseSunSensor {
             input_state_msg: Input::default(),
             input_sun_msg: Input::default(),
             input_eclipse_msg: Input::default(),
+            input_albedo_msg: Input::default(),
             output_sun_sensor_msg: Output::default(),
         }
     }
@@ -206,6 +210,7 @@ impl CoarseSunSensor {
         state: &SpacecraftStateMsg,
         sun: &SunEphemerisMsg,
         eclipse: &EclipseMsg,
+        albedo: f64,
     ) -> SunSensorMsg {
         let spacecraft_to_sun_inertial_m = sun.sun_position_inertial_m - state.position_m;
         if spacecraft_to_sun_inertial_m.norm_squared() == 0.0 {
@@ -233,6 +238,9 @@ impl CoarseSunSensor {
             true_value *= (ASTRONOMICAL_UNIT_M * ASTRONOMICAL_UNIT_M)
                 / spacecraft_to_sun_inertial_m.norm_squared();
             true_value *= eclipse.illumination_factor;
+        }
+        if albedo > 0.0 {
+            true_value += albedo;
         }
 
         let mut sensed_value = true_value + self.compute_sensor_error();
@@ -281,7 +289,7 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{UnitQuaternion, Vector3};
 
-    use crate::messages::{EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
+    use crate::messages::{AlbedoMsg, EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
     use crate::{Module, SimulationContext};
 
     use super::{ASTRONOMICAL_UNIT_M, CoarseSunSensor, CoarseSunSensorConfig};
@@ -319,6 +327,29 @@ mod tests {
             sigma_bn: Vector3::zeros(),
             omega_radps: Vector3::zeros(),
         }
+    }
+
+    #[test]
+    fn albedo_adds_to_true_value() {
+        let mut sensor = aligned_sensor();
+        let state_out = Output::new(nominal_state());
+        let sun_out = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: Vector3::new(0.0, 0.0, -ASTRONOMICAL_UNIT_M),
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+        let albedo_out = Output::new(AlbedoMsg {
+            albedo_at_instrument: 0.25,
+            ..Default::default()
+        });
+        sensor.input_state_msg.connect(state_out.slot());
+        sensor.input_sun_msg.connect(sun_out.slot());
+        sensor.input_albedo_msg.connect(albedo_out.slot());
+        sensor.init();
+        sensor.update(&dummy_context());
+
+        let msg = sensor.output_sun_sensor_msg.read();
+        assert_eq!(msg.true_value, 0.25);
+        assert_eq!(msg.sensed_value, 0.25);
     }
 
     #[test]

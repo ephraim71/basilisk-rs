@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::overrides::rule::{Request, Rule, RuleId, fold_candidate, fold_installed, next_rule_id};
 
+mod albedo;
 mod array_motor_torque;
 mod array_motor_voltage;
 mod atmosphere;
@@ -58,6 +59,7 @@ mod thruster_command;
 mod translation_reference;
 mod vehicle_config;
 
+pub use albedo::AlbedoMsg;
 pub use array_motor_torque::ArrayMotorTorqueMsg;
 pub use array_motor_voltage::ArrayMotorVoltageMsg;
 pub use atmosphere::AtmosphereMsg;

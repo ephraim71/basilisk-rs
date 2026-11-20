@@ -4,12 +4,13 @@ de440s_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de
 earth_bpc_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_latest_high_prec.bpc"
 pck11_url := "https://public-data.nyxspace.com/anise/v0.4/pck11.pca"
 ggm03s_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData/LocalGravData/GGM03S.txt"
+albedo_url := "https://raw.githubusercontent.com/AVSLab/basilisk/ea95ec4efe6d3e842a26546de653b7505dd054c3/supportData/AlbedoData"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
 default:
     @just --list
 
-fetch-assets: fetch-anise-assets fetch-gravity
+fetch-assets: fetch-anise-assets fetch-gravity fetch-albedo
 
 fetch-anise-assets:
     mkdir -p assets/anise
@@ -20,6 +21,10 @@ fetch-anise-assets:
 fetch-gravity:
     mkdir -p assets/gravity
     curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt {{ggm03s_url}}
+
+fetch-albedo:
+    mkdir -p assets/albedo
+    for f in Earth_ALB_2018_CERES_All Earth_ALB_2018_CERES_Clear Mars_ALB_TES; do for r in 1x1 5x5 10x10; do curl --fail --location --progress-bar --output assets/albedo/${f}_${r}.csv {{albedo_url}}/${f}_${r}.csv; done; done
 
 # Run any example by name, forwarding extra args to the binary
 # (e.g. `just run scenario_basic_orbit` or `just run scenario_css -- --help`).

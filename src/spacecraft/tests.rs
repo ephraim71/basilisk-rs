@@ -1980,3 +1980,40 @@ fn hub_state_handle_sets_the_state_the_next_step_starts_from() {
     assert!((maneuvered.velocity_mps - expected.velocity_mps).norm() < 1e-9);
     assert_eq!(hub_state.position_m(), maneuvered.position_m);
 }
+
+/// Upstream `attRefInMsg` (`readOptionalRefMsg`): a connected reference sets
+/// the hub attitude and rate at initialization and after every step, as
+/// `sigma_BN = sigma_RN`, `omega_BN_B = [BN] omega_RN_N`; the translation is
+/// that of the same spacecraft without a reference.
+#[test]
+fn attitude_reference_prescribes_the_hub_attitude() {
+    use crate::messages::AttitudeReferenceMsg;
+
+    let sigma_rn = Vector3::new(0.1, -0.2, 0.3);
+    let omega_rn_n = Vector3::new(0.01, 0.02, -0.03);
+    let reference = Output::new(AttitudeReferenceMsg {
+        sigma_rn,
+        omega_rn_n_radps: omega_rn_n,
+        ..Default::default()
+    });
+    let mut prescribed = circular_orbit_spacecraft(7.0e6);
+    let mut free = circular_orbit_spacecraft(7.0e6);
+    prescribed.att_ref_in.connect(reference.slot());
+    let prescribed_state = prescribed.state_out.clone();
+    let free_state = free.state_out.clone();
+    let expected_omega_b = body_to_inertial_dcm_from_sigma_bn(sigma_rn).transpose() * omega_rn_n;
+    {
+        let mut simulation = Simulation::new(start_epoch(), false);
+        simulation.add_module("prescribed", &mut prescribed, STEP_NANOS, 0);
+        simulation.add_module("free", &mut free, STEP_NANOS, 0);
+        simulation.run_for(0);
+        assert_eq!(prescribed_state.read().sigma_bn, sigma_rn);
+        simulation.run_for(10 * STEP_NANOS);
+    }
+    let state = prescribed_state.read();
+    assert_eq!(state.sigma_bn, sigma_rn);
+    assert!((state.omega_radps - expected_omega_b).norm() < 1e-15);
+    assert_eq!(free_state.read().sigma_bn, Vector3::zeros());
+    assert!((state.position_m - free_state.read().position_m).norm() < 1e-9);
+    assert!((state.velocity_mps - free_state.read().velocity_mps).norm() < 1e-12);
+}

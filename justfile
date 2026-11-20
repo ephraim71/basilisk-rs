@@ -112,7 +112,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -195,3 +195,36 @@ plot-orbit-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_lagrange_point_orbit.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_lambert_solver.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_basic_orbit_stream.py --generated-dir "{{generated_dir}}"
+
+# Run the trajectory, integrator and drag example scenarios in every
+# parametrization of upstream's `test_scenario*.py` and write their CSV files.
+# Reads the assets of `fetch-assets` and `fetch-orbit-scenario-data`.
+run-traj-scenarios:
+    cargo run --release --example scenario_jupiter_arrival
+    cargo run --release --example scenario_integrators -- --all
+    cargo run --release --example scenario_integrators_comparison
+    cargo run --release --example scenario_variable_time_step_integrators -- --all
+    cargo run --release --example scenario_aerobrake -- --all
+    cargo run --release --example scenario_aerocapture -- --all
+    cargo run --release --example scenario_drag_deorbit -- --all
+    cargo run --release --example scenario_drag_sensitivity -- --all
+    cargo run --release --example scenario_drag_rendezvous -- --all
+    cargo run --release --example scenario_stochastic_drag_spacecraft -- --all
+    cargo run --release --example scenario_debris_reorbit_et
+    cargo run --release --example scenario_impact
+
+# Render the trajectory, integrator and drag scenarios' figures from their CSV
+# files.
+plot-traj-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_jupiter_arrival.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_integrators.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_integrators_comparison.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_variable_time_step_integrators.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_aerobrake.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_aerocapture.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_drag_deorbit.py --generated-dir "{{generated_dir}}" --variant all
+    python3 examples/plot_scenario_drag_sensitivity.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_drag_rendezvous.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_stochastic_drag_spacecraft.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_debris_reorbit_et.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_impact.py --generated-dir "{{generated_dir}}"

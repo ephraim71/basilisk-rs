@@ -44,14 +44,12 @@ use std::cell::RefCell;
 use crate::dynamics::state_effector_support::{
     KinematicsCache, add_back_sub, all_finite, normalized_axis,
 };
+use crate::kinematics::{is_rotation_matrix, is_valid_inertia_matrix};
 use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, HingedRigidBodyMsg, Input,
     MAX_EFF_COUNT, Output, SpacecraftStateMsg,
 };
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{
-    DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
-};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm, tilde};
 
 /// One body of the chain (upstream `SpinningBody`).
@@ -312,17 +310,13 @@ impl SpinningBodyNDofStateEffector {
                     "spinning body {index}: the norm of spin_axis_spinner must exceed 0.01"
                 ));
             }
-            if !is_rotation_matrix(&body.parent_to_spinner0_dcm, DEFAULT_TOLERANCE) {
+            if !is_rotation_matrix(&body.parent_to_spinner0_dcm) {
                 return Err(format!(
                     "spinning body {index}: parent_to_spinner0_dcm must be an orthogonal, \
                      right-handed rotation matrix"
                 ));
             }
-            if body.mass_kg > 0.0
-                && !is_valid_inertia_matrix(
-                    &body.inertia_about_com_spinner_kg_m2,
-                    DEFAULT_TOLERANCE,
-                )
+            if body.mass_kg > 0.0 && !is_valid_inertia_matrix(&body.inertia_about_com_spinner_kg_m2)
             {
                 return Err(format!(
                     "spinning body {index}: inertia_about_com_spinner_kg_m2 must be a valid \

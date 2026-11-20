@@ -34,9 +34,9 @@ use nalgebra::{Matrix2, Matrix2x3, Matrix3, Vector2, Vector3};
 use std::any::Any;
 use std::cell::RefCell;
 
+use crate::kinematics::is_rotation_matrix;
 use crate::messages::{ArrayMotorTorqueMsg, HingedRigidBodyMsg, Input, Output, SpacecraftStateMsg};
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{DEFAULT_TOLERANCE, is_rotation_matrix};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, euler2, mrp_to_dcm, tilde};
 
 /// Mass, joint and initial-state parameters of one panel of a
@@ -131,7 +131,7 @@ impl DualHingedRigidBodyConfig {
                 "panel1.mass_kg + panel2.mass_kg must be finite and greater than zero".to_string(),
             );
         }
-        if !is_rotation_matrix(&self.body_to_hinge_dcm, DEFAULT_TOLERANCE) {
+        if !is_rotation_matrix(&self.body_to_hinge_dcm) {
             return Err(
                 "body_to_hinge_dcm must be a finite, orthogonal, right-handed rotation matrix"
                     .to_string(),

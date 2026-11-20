@@ -43,14 +43,12 @@ use crate::dynamics::prescribed_motion_state_effector::{
 use crate::dynamics::state_effector_support::{
     KinematicsCache, add_back_sub, all_finite, normalized_axis,
 };
+use crate::kinematics::{is_rotation_matrix, is_valid_inertia_matrix};
 use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorForceMsg, EffectorLock, Input, LinearTranslationRigidBodyMsg,
     Output, SpacecraftStateMsg,
 };
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{
-    DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
-};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, tilde};
 
 /// User-settable parameters of [`LinearTranslationOneDofStateEffector`].
@@ -144,13 +142,13 @@ impl LinearTranslationOneDofConfig {
         if self.axis_body.norm() <= 0.01 {
             return Err("the norm of axis_body must exceed 0.01".to_string());
         }
-        if !is_rotation_matrix(&self.body_to_translating_dcm, DEFAULT_TOLERANCE) {
+        if !is_rotation_matrix(&self.body_to_translating_dcm) {
             return Err(
                 "body_to_translating_dcm must be an orthogonal, right-handed rotation matrix"
                     .to_string(),
             );
         }
-        if !is_valid_inertia_matrix(&self.inertia_about_com_translating_kg_m2, DEFAULT_TOLERANCE) {
+        if !is_valid_inertia_matrix(&self.inertia_about_com_translating_kg_m2) {
             return Err(
                 "inertia_about_com_translating_kg_m2 must be a valid inertia tensor".to_string(),
             );

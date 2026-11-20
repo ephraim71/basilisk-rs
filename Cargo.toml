@@ -53,3 +53,11 @@ spice = ["dep:rust-spice"]
 [profile.samply]
 inherits = "release"
 debug = true
+
+[[example]]
+name = "scenario_orbit_multi_body"
+required-features = ["spice"]
+
+[[example]]
+name = "scenario_basic_orbit_stream"
+required-features = ["vizard"]

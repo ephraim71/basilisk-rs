@@ -126,6 +126,15 @@ impl SphericalHarmonicsGravityModel {
         })
     }
 
+    /// Replaces the gravitational parameter read from the file. Upstream
+    /// `useSphericalHarmonicsGravityModel` keeps the file's reference radius
+    /// but gives the field the `mu` of its `GravBodyData`, so the field and the
+    /// body share one value; this is that override.
+    pub fn with_mu_m3ps2(mut self, mu_m3ps2: f64) -> Result<Self, GravityError> {
+        self.mu_m3ps2 = validate_positive("mu_m3ps2", mu_m3ps2)?;
+        Ok(self)
+    }
+
     pub fn max_degree(&self) -> usize {
         self.max_degree
     }

@@ -14,12 +14,14 @@ use utils::{
     spacecraft_state_msg_from_integrated_state, tilde,
 };
 
+pub mod hub_state;
 pub mod mrp;
 pub mod structs;
 pub mod synchronized;
 pub mod traits;
 pub mod utils;
 
+pub use hub_state::HubStateHandle;
 pub use structs::*;
 pub use synchronized::{SpacecraftCoupling, SpacecraftGroup, SpacecraftGroupDynamics};
 pub use traits::*;
@@ -39,6 +41,7 @@ pub struct Spacecraft {
     last_gravity_accel_inertial_mps2: Vector3<f64>,
     last_non_conservative_accel_body_mps2: Vector3<f64>,
     accumulated_dv: AccumulatedDeltaV,
+    hub_state: HubStateHandle,
 }
 
 /// Upstream `dvAccum_CN_B`, `dvAccum_BN_B` and `dvAccum_CN_N`: the
@@ -78,6 +81,39 @@ impl Spacecraft {
             last_gravity_accel_inertial_mps2: Vector3::zeros(),
             last_non_conservative_accel_body_mps2: Vector3::zeros(),
             accumulated_dv: AccumulatedDeltaV::default(),
+            hub_state: HubStateHandle::default(),
+        }
+    }
+
+    /// A shared handle on the hub position and velocity, to read or change
+    /// them between [`crate::simulation::Simulation::run_for`] calls: upstream
+    /// `dynManager.getStateObject(hub.nameOfHubPosition / nameOfHubVelocity)`.
+    /// A value set through it replaces the integrated state at the start of
+    /// the next update. See [`hub_state`].
+    pub fn hub_state_handle(&self) -> HubStateHandle {
+        self.hub_state.clone()
+    }
+
+    /// Takes a hub position or velocity set through [`Self::hub_state_handle`].
+    fn apply_pending_hub_state(&mut self) {
+        let (position_m, velocity_mps) = self.hub_state.take_pending();
+        if let Some(state) = &mut self.integrated_state {
+            if let Some(position_m) = position_m {
+                state.position_wrt_central_body_m = position_m;
+            }
+            if let Some(velocity_mps) = velocity_mps {
+                state.velocity_wrt_central_body_mps = velocity_mps;
+            }
+        }
+    }
+
+    /// Records the committed hub state in [`Self::hub_state_handle`].
+    fn publish_hub_state(&self) {
+        if let Some(state) = &self.integrated_state {
+            self.hub_state.publish(
+                state.position_wrt_central_body_m,
+                state.velocity_wrt_central_body_mps,
+            );
         }
     }
 
@@ -178,6 +214,7 @@ impl Spacecraft {
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);
+        self.publish_hub_state();
     }
 
     fn initial_effector_states(&self) -> Vec<Vec<f64>> {
@@ -469,6 +506,7 @@ impl Module for Spacecraft {
         self.write_state_effector_outputs(0, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);
+        self.publish_hub_state();
     }
 
     fn update(&mut self, context: &SimulationContext) {
@@ -519,6 +557,7 @@ impl Spacecraft {
     /// `t = 0`, where it publishes the initial outputs instead, or with a zero
     /// integration step.
     fn begin_step(&mut self, context: &SimulationContext) -> Option<(StepStart, IntegratedState)> {
+        self.apply_pending_hub_state();
         self.gravity
             .update_cache(context.current_sim_nanos)
             .unwrap_or_else(|error| panic!("failed to refresh gravity inputs: {error}"));
@@ -638,6 +677,7 @@ impl Spacecraft {
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);
+        self.publish_hub_state();
     }
 }
 

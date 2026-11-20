@@ -8,6 +8,7 @@ support_data_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/s
 naif_generic_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 hst_spk_url := "https://naif.jpl.nasa.gov/pub/naif/HST/kernels/spk/hst_edited.bsp"
 upstream_src_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/src"
+nh_spk_url := "https://naif.jpl.nasa.gov/pub/naif/pds/data/nh-j_p_ss-spice-6-v1.0/nhsp_1000/data/spk/nh_pred_od077.bsp"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
 default:
@@ -36,6 +37,16 @@ fetch-spice-kernels:
 fetch-gravity:
     mkdir -p assets/gravity
     curl --fail --location --progress-bar --output assets/gravity/GGM03S.txt {{ggm03s_url}}
+
+# Gravity fields and the New Horizons SPK that the orbit example scenarios read
+# besides `fetch-gravity` and `fetch-spice-kernels`: the J2-only Earth and Mars
+# fields, the full GGM2B Mars field and upstream's `nh_pred_od077.bsp`.
+fetch-orbit-scenario-data:
+    mkdir -p assets/gravity assets/spice
+    curl --fail --location --progress-bar --output assets/gravity/GGM03S-J2-only.txt {{support_data_url}}/LocalGravData/GGM03S-J2-only.txt
+    curl --fail --location --progress-bar --output assets/gravity/GGM2B-J2-only.txt {{support_data_url}}/LocalGravData/GGM2B-J2-only.txt
+    curl --fail --location --progress-bar --output assets/gravity/GGM2BData.txt {{support_data_url}}/LocalGravData/GGM2BData.txt
+    curl --fail --location --progress-bar --output assets/spice/nh_pred_od077.bsp {{nh_spk_url}}
 
 # Albedo maps, Denton GEO plasma flux tables and tabulated atmospheres from
 # upstream supportData, for the albedo, Earth radiation, Denton flux and
@@ -101,7 +112,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -132,3 +143,41 @@ plot-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_attitude_feedback_rw.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_css.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_mtb_momentum_management.py --generated-dir "{{generated_dir}}"
+
+# Run the orbit and gravity example scenarios in every parametrization of
+# upstream's `test_scenario*.py` and write their CSV files. Reads the assets of
+# `fetch-assets`, `fetch-spice-kernels` and `fetch-orbit-scenario-data`;
+# `scenario_orbit_multi_body` needs the `spice` feature and
+# `scenario_basic_orbit_stream` the `vizard` feature.
+run-orbit-scenarios:
+    cargo run --release --example scenario_basic_orbit -- --all
+    cargo run --release --example scenario_central_body -- --all
+    cargo run --release --example scenario_custom_grav_body
+    cargo run --release --features spice --example scenario_orbit_multi_body -- --all
+    cargo run --release --example scenario_patched_conics
+    cargo run --release --example scenario_hohmann -- --r-second 30000000
+    cargo run --release --example scenario_orbit_maneuver -- --all
+    cargo run --release --example scenario_orbit_maneuver_th
+    cargo run --release --example scenario_orbit_from_omm
+    cargo run --release --example scenario_orbit_consistency_verification -- --days 12 --degree 8 --step 30
+    cargo run --release --example scenario_halo_orbit
+    cargo run --release --example scenario_lagrange_point_orbit -- --all
+    cargo run --release --example scenario_lambert_solver
+    cargo run --release --features vizard --example scenario_basic_orbit_stream -- --all
+
+# Render the orbit scenarios' figures from their CSV files.
+plot-orbit-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_basic_orbit.py --generated-dir "{{generated_dir}}" --save --no-show
+    python3 examples/plot_scenario_central_body.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_custom_grav_body.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_orbit_multi_body.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_patched_conics.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_hohmann.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_orbit_maneuver.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_orbit_maneuver_th.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_orbit_from_omm.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_orbit_consistency_verification.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_halo_orbit.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_lagrange_point_orbit.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_lambert_solver.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_basic_orbit_stream.py --generated-dir "{{generated_dir}}"

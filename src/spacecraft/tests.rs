@@ -1942,3 +1942,41 @@ fn stochastic_integrators_reduce_to_their_drift_without_noise() {
         "the noise source moves its effector state"
     );
 }
+
+/// A velocity set through the hub-state handle between runs is where the next
+/// step integrates from: the run continues exactly as a spacecraft started at
+/// that state would (upstream `velRef.setState` between `ExecuteSimulation`s).
+#[test]
+fn hub_state_handle_sets_the_state_the_next_step_starts_from() {
+    let radius_m = 7_000_000.0;
+    let half_nanos = 500 * STEP_NANOS;
+    let mut sc = circular_orbit_spacecraft(radius_m);
+    let hub_state = sc.hub_state_handle();
+    let state_out = sc.state_out.clone();
+    let (start_position_m, start_velocity_mps) = {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(half_nanos);
+        let position_m = hub_state.position_m();
+        let velocity_mps = hub_state.velocity_mps() * 1.01;
+        assert_eq!(position_m, state_out.read().position_m);
+        hub_state.set_velocity_mps(velocity_mps);
+        assert_eq!(hub_state.velocity_mps(), velocity_mps);
+        sim.run_for(half_nanos);
+        (position_m, velocity_mps)
+    };
+
+    let mut reference = circular_orbit_spacecraft(radius_m);
+    reference.config.initial_position_m = start_position_m;
+    reference.config.initial_velocity_mps = start_velocity_mps;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut reference, STEP_NANOS, 0);
+        sim.run_for(half_nanos);
+    }
+    let maneuvered = sc.state_out.read();
+    let expected = reference.state_out.read();
+    assert!((maneuvered.position_m - expected.position_m).norm() < 1e-6);
+    assert!((maneuvered.velocity_mps - expected.velocity_mps).norm() < 1e-9);
+    assert_eq!(hub_state.position_m(), maneuvered.position_m);
+}

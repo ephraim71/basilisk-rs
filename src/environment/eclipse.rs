@@ -76,7 +76,7 @@ impl Eclipse {
             let sun_area = std::f64::consts::PI * apparent_sun_radius_rad * apparent_sun_radius_rad;
             let planet_area =
                 std::f64::consts::PI * apparent_planet_radius_rad * apparent_planet_radius_rad;
-            (1.0 - (sun_area - planet_area) / sun_area).clamp(0.0, 1.0)
+            (1.0 - planet_area / sun_area).clamp(0.0, 1.0)
         } else if separation_rad < apparent_sun_radius_rad + apparent_planet_radius_rad {
             let x = (separation_rad * separation_rad
                 + apparent_sun_radius_rad * apparent_sun_radius_rad
@@ -116,7 +116,7 @@ mod tests {
     use crate::messages::{Output, SpacecraftStateMsg, SunEphemerisMsg};
     use crate::{Module, SimulationContext};
 
-    use super::{Eclipse, EclipseConfig};
+    use super::{Eclipse, EclipseConfig, SUN_RADIUS_M};
 
     const AU: f64 = 149_597_870_693.0; // m
     const R_EARTH: f64 = 6_371_000.0; // m
@@ -181,5 +181,33 @@ mod tests {
         let sun_pos = Vector3::new(0.0, AU, 0.0);
         let factor = run_eclipse(sc_pos, sun_pos, R_EARTH);
         assert_eq!(factor, 1.0, "expected full illumination, got {factor}");
+    }
+
+    /// Beyond the umbra tip (~1.39e9 m behind Earth) the Earth disk sits inside the
+    /// solar disk, so the visible fraction is 1 - (b/a)^2, not the occulted (b/a)^2.
+    #[test]
+    fn annular_eclipse_yields_visible_fraction() {
+        for distance_m in [1.5e9, 1.0e10] {
+            for boundary_fraction in [0.0, 0.999] {
+                let sun_pos = Vector3::new(AU, 0.0, 0.0);
+                let a = (SUN_RADIUS_M / (AU + distance_m)).asin();
+                let b = (R_EARTH / distance_m).asin();
+                let lateral_m = boundary_fraction * (a - b) * distance_m * (AU + distance_m) / AU;
+                let sc_pos = Vector3::new(-distance_m, lateral_m, 0.0);
+
+                let sun_from_sc = sun_pos - sc_pos;
+                let a = (SUN_RADIUS_M / sun_from_sc.norm()).asin();
+                let b = (R_EARTH / sc_pos.norm()).asin();
+                let c = (-sc_pos.dot(&sun_from_sc) / (sc_pos.norm() * sun_from_sc.norm())).acos();
+                assert!(c < a - b, "setup must be annular");
+
+                let factor = run_eclipse(sc_pos, sun_pos, R_EARTH);
+                let expected = 1.0 - (b / a).powi(2);
+                assert!(
+                    (factor - expected).abs() < 1.0e-12,
+                    "{distance_m} m, fraction {boundary_fraction}: got {factor}, expected {expected}"
+                );
+            }
+        }
     }
 }

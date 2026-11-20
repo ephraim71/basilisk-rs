@@ -99,6 +99,24 @@ run-scenarios:
     cargo run --release --example scenario_css
     cargo run --release --example scenario_mtb_momentum_management
 
+# Run every ported upstream example scenario and write its CSV files, each in
+# all the parametrizations upstream's `test_scenario*.py` runs.
+run-all-scenarios: run-scenarios
+    cargo run --release --example scenario_attitude_feedback -- --all
+    cargo run --release --example scenario_attitude_feedback_2t -- --all
+    cargo run --release --example scenario_attitude_feedback_2t_th -- --all
+    cargo run --release --example scenario_attitude_feedback_2t_state_eff_th -- --all
+    cargo run --release --example scenario_attitude_feedback_no_earth -- --all
+    cargo run --release --example scenario_attitude_feedback_numba -- --all
+    cargo run --release --example scenario_attitude_feedback_rw -- --all
+    cargo run --release --example scenario_attitude_feedback_rw_power -- --all
+    cargo run --release --example scenario_attitude_gg
+    cargo run --release --example scenario_attitude_guidance -- --all
+    cargo run --release --example scenario_attitude_pointing -- --all
+    cargo run --release --example scenario_attitude_pointing_numba
+    cargo run --release --example scenario_attitude_pointing_py
+    cargo run --release --example scenario_attitude_steering -- --all
+
 # Compare existing Rust outputs without rerunning the simulations.
 compare-scenarios reference_zip=reference_csv_zip generated_dir="examples/output/scenarios":
     python3 examples/compare_scenario_csvs.py --reference-zip "{{reference_zip}}" --generated-dir "{{generated_dir}}"

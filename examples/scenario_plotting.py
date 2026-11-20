@@ -476,3 +476,103 @@ def run_plot(scenario_key: str) -> int:
         for figure in figures.values():
             plt.close(figure)
     return 0
+
+
+def run_variant_plot(
+    description: str,
+    csv_stem: str,
+    variants: Sequence[str],
+    builder: Callable[[Any, CsvTable, str], dict[str, Any]],
+) -> int:
+    """Plot one or every variant ``<csv_stem><variant>.csv`` of a scenario.
+
+    ``builder(plt, table, variant)`` returns the figures by upstream figure
+    name. ``variants[0]`` is the default; ``--variant all`` plots each one
+    whose CSV exists.
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "--variant",
+        choices=(*variants, "all"),
+        default=variants[0],
+        help=f"CSV suffix to plot (default: {variants[0]!r})",
+    )
+    parser.add_argument(
+        "--generated-dir",
+        type=Path,
+        default=DEFAULT_GENERATED_DIR,
+        help=f"CSV directory (default: {DEFAULT_GENERATED_DIR})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="PNG directory (default: generated CSV directory)",
+    )
+    parser.add_argument(
+        "--show", action="store_true", help="show the interactive plot windows"
+    )
+    arguments = parser.parse_args()
+
+    selected = list(variants) if arguments.variant == "all" else [arguments.variant]
+    tables: list[tuple[str, CsvTable]] = []
+    for variant in selected:
+        path = arguments.generated_dir / f"{csv_stem}{variant}.csv"
+        if arguments.variant == "all" and not path.exists():
+            continue
+        try:
+            tables.append((variant, _load_csv(path)))
+        except PlotError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+    if not tables:
+        print(f"error: no {csv_stem}*.csv in {arguments.generated_dir}", file=sys.stderr)
+        return 1
+
+    import matplotlib
+
+    if not arguments.show:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir = arguments.output_dir or arguments.generated_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for variant, table in tables:
+        try:
+            figures = builder(plt, table, variant)
+        except (PlotError, ValueError) as error:
+            print(f"error: cannot plot {csv_stem}{variant}: {error}", file=sys.stderr)
+            return 1
+        for name, figure in figures.items():
+            output = output_dir / f"{name}.png"
+            figure.tight_layout()
+            figure.savefig(output, dpi=160)
+            print(f"saved plot: {output}")
+        if not arguments.show:
+            for figure in figures.values():
+                plt.close(figure)
+
+    if arguments.show:
+        plt.show()
+    return 0
+
+
+def _plot_vector_history(
+    axis: Any,
+    time: Sequence[float],
+    table: CsvTable,
+    prefix: str,
+    label: Callable[[int], str],
+    ylabel: str,
+    *,
+    count: int = 3,
+    scale: float = 1.0,
+    legend: str = "lower right",
+) -> None:
+    """Plot the columns ``<prefix>_0`` ... ``<prefix>_<count-1>`` against minutes."""
+    for index, values in enumerate(_vector_columns(table, prefix, count)):
+        axis.plot(
+            time, _scaled(values, scale), color=_line_color(index), label=label(index)
+        )
+    axis.legend(loc=legend)
+    axis.set_xlabel("Time [min]")
+    axis.set_ylabel(ylabel)

@@ -7,6 +7,7 @@ ggm03s_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/support
 support_data_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/supportData"
 naif_generic_url := "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 hst_spk_url := "https://naif.jpl.nasa.gov/pub/naif/HST/kernels/spk/hst_edited.bsp"
+upstream_src_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/src"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
 default:
@@ -66,6 +67,23 @@ fetch-environment-data:
     curl --fail --location --progress-bar --output assets/atmosphere/UranusGRAMNominal.csv {{support_data_url}}/AtmosphereData/UranusGRAMNominal.csv
     curl --fail --location --progress-bar --output assets/atmosphere/TitanGRAMNominal.csv {{support_data_url}}/AtmosphereData/TitanGRAMNominal.csv
     curl --fail --location --progress-bar --output assets/atmosphere/JupiterGRAMNominal.csv {{support_data_url}}/AtmosphereData/JupiterGRAMNominal.csv
+
+# Test images from upstream's `_UnitTest` directories for the `opencv`
+# feature's `houghCircles`, `limbFinding`, `centerRadiusCNN` and `camera`, and
+# the trained `centerRadiusCNN` network (`CAD.onnx`, 26 MB).
+fetch-opencv-assets:
+    mkdir -p assets/opencv/hough_circles assets/opencv/limb_finding assets/opencv/center_radius_cnn assets/opencv/camera
+    curl --fail --location --progress-bar --output assets/opencv/hough_circles/mars.png {{upstream_src_url}}/fswAlgorithms/imageProcessing/houghCircles/_UnitTest/mars.png
+    curl --fail --location --progress-bar --output assets/opencv/hough_circles/moons.png {{upstream_src_url}}/fswAlgorithms/imageProcessing/houghCircles/_UnitTest/moons.png
+    curl --fail --location --progress-bar --output assets/opencv/limb_finding/MarsBright.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/limbFinding/_UnitTest/MarsBright.jpg
+    curl --fail --location --progress-bar --output assets/opencv/limb_finding/MarsDark.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/limbFinding/_UnitTest/MarsDark.jpg
+    curl --fail --location --progress-bar --output assets/opencv/limb_finding/moons.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/limbFinding/_UnitTest/moons.jpg
+    curl --fail --location --progress-bar --output assets/opencv/center_radius_cnn/mars.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/centerRadiusCNN/_UnitTest/mars.jpg
+    curl --fail --location --progress-bar --output assets/opencv/center_radius_cnn/mars2.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/centerRadiusCNN/_UnitTest/mars2.jpg
+    curl --fail --location --progress-bar --output assets/opencv/center_radius_cnn/mars3.jpg {{upstream_src_url}}/fswAlgorithms/imageProcessing/centerRadiusCNN/_UnitTest/mars3.jpg
+    curl --fail --location --progress-bar --output assets/opencv/center_radius_cnn/CAD.onnx {{upstream_src_url}}/fswAlgorithms/imageProcessing/centerRadiusCNN/CAD.onnx
+    curl --fail --location --progress-bar --output assets/opencv/camera/mars.jpg {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/mars.jpg
+    curl --fail --location --progress-bar --output assets/opencv/camera/tv_test.png {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/tv_test.png
 
 # Run any example by name, forwarding extra args to the binary
 # (e.g. `just run scenario_basic_orbit` or `just run scenario_css -- --help`).

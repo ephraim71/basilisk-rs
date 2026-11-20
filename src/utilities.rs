@@ -11,6 +11,8 @@ pub mod itu_ref_atmosphere;
 pub mod lambert;
 pub mod linear_algebra;
 pub mod newton_raphson;
+#[cfg(feature = "opencv")]
+pub mod opencv_image;
 pub mod orbital_motion;
 pub mod rigid_body_kinematics;
 pub mod signal_condition;

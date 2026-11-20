@@ -1,3 +1,5 @@
+#[cfg(feature = "opencv")]
+pub mod camera;
 pub mod coarse_sun_sensor;
 pub mod gps;
 pub mod hinged_rigid_body_motor_sensor;

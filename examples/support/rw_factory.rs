@@ -71,6 +71,36 @@ impl RwFactory {
         self.wheels.last_mut().expect("just created")
     }
 
+    /// Upstream `create('BCT_RWP015', gsHat_B, Omega_max=..., RWModel=...,
+    /// useRWfriction=False)`: 4 mN m maximum torque, the fixed 15 mN m s
+    /// momentum capacity, `Js = maxMomentum / Omega_max`, `Jt = Jg = Js / 2`,
+    /// 0.130 kg, no friction and no minimum torque, at rest at the origin.
+    pub fn create_bct_rwp015(
+        &mut self,
+        spin_axis_body: Vector3<f64>,
+        max_speed_rpm: f64,
+        model: ReactionWheelModel,
+    ) -> &mut ReactionWheelStateEffectorConfig {
+        let max_speed_radps = rpm_to_radps(max_speed_rpm);
+        let mut config = ReactionWheelStateEffectorConfig::balanced(
+            format!("RW{}", self.wheels.len() + 1),
+            Vector3::zeros(),
+            spin_axis_body,
+            0.004,
+            0.015,
+        );
+        config.js_kg_m2 = 0.015 / max_speed_radps;
+        config.jt_kg_m2 = 0.5 * config.js_kg_m2;
+        config.jg_kg_m2 = config.jt_kg_m2;
+        config.max_speed_radps = max_speed_radps;
+        config.mass_kg = 0.130;
+        config.static_imbalance_kg_m = 1e-7;
+        config.dynamic_imbalance_kg_m2 = 1e-8;
+        config.model = model;
+        self.wheels.push(config);
+        self.wheels.last_mut().expect("just created")
+    }
+
     /// Upstream `getConfigMessage()` (also what `fswSetupRW.create(gsHat_B,
     /// Js, 0.2)` builds): spin axes, spin inertias and maximum torques.
     pub fn config_message(&self) -> RwArrayConfigMsg {

@@ -184,6 +184,12 @@ enum RejectedUpdate {
 }
 
 impl SunlineSukf {
+    /// Upstream `bVec_B`: the body axis the sun frame `S` is currently built
+    /// from (upstream scenarios log it to reconstruct `[BS]`).
+    pub fn b_vec_b(&self) -> Vector3<f64> {
+        self.b_vec_b
+    }
+
     /// A filter at the configured starting estimate, with one unconnected
     /// CSS input per configured sensor.
     pub fn new(config: SunlineSukfConfig) -> Self {

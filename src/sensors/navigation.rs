@@ -12,13 +12,16 @@
 //! upstream does: the non-gravitational velocity change of the center of mass
 //! that [`crate::spacecraft::Spacecraft`] sums in body-frame components.
 //!
-//! The Sun-point vector stays zero: [`SpacecraftStateMsg`] carries no Sun
-//! direction and the optional Sun-state input is not ported.
+//! The Sun-point vector (`vehSunPntBdy`) is the unit spacecraft-to-Sun
+//! direction in body components when the optional
+//! [`SimpleNavigation::sun_state_in_msg`] is connected, and zero otherwise,
+//! as upstream.
 
 use nalgebra::Vector3;
 
 use crate::messages::{
-    Input, NavigationAttitudeMsg, NavigationTranslationMsg, Output, SpacecraftStateMsg,
+    Input, NavigationAttitudeMsg, NavigationTranslationMsg, Output, PlanetStateMsg,
+    SpacecraftStateMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -29,6 +32,9 @@ pub struct SimpleNavigation {
     pub name: String,
     /// Upstream `scStateInMsg`: spacecraft truth state.
     pub spacecraft_state_in_msg: Input<SpacecraftStateMsg>,
+    /// Upstream `sunStateInMsg` (optional): the Sun's state, for the
+    /// Sun-point vector.
+    pub sun_state_in_msg: Input<PlanetStateMsg>,
     /// Upstream `attOutMsg`: attitude and body rate.
     pub attitude_out_msg: Output<NavigationAttitudeMsg>,
     /// Upstream `transOutMsg`: inertial position and velocity.
@@ -40,6 +46,7 @@ impl SimpleNavigation {
         Self {
             name: name.into(),
             spacecraft_state_in_msg: Input::default(),
+            sun_state_in_msg: Input::default(),
             attitude_out_msg: Output::default(),
             translation_out_msg: Output::default(),
         }
@@ -65,11 +72,21 @@ impl Module for SimpleNavigation {
         // Upstream `(double)Clock * NANO2SEC` on both outputs.
         let time_tag_s = context.current_sim_nanos as f64 * 1.0e-9;
 
+        // Upstream: the spacecraft-to-Sun direction in body components, only
+        // with the Sun input linked.
+        let vehicle_sun_point_body = if self.sun_state_in_msg.is_connected() {
+            let to_sun_n = self.sun_state_in_msg.read().position_inertial_m - state.position_m;
+            state
+                .inertial_to_body()
+                .transform_vector(&to_sun_n.normalize())
+        } else {
+            Vector3::zeros()
+        };
         self.attitude_out_msg.write(NavigationAttitudeMsg {
             time_tag_s,
             sigma_bn: state.sigma_bn,
             omega_bn_b_radps: state.omega_radps,
-            vehicle_sun_point_body: Vector3::zeros(),
+            vehicle_sun_point_body,
         });
         self.translation_out_msg.write(NavigationTranslationMsg {
             time_tag_s,
@@ -103,6 +120,40 @@ mod tests {
         assert_eq!(actual.sigma_rn, expected.sigma_rn);
         assert_eq!(actual.omega_rn_n_radps, expected.omega_rn_n_radps);
         assert_eq!(actual.domega_rn_n_radps2, expected.domega_rn_n_radps2);
+    }
+
+    /// Upstream `simpleNav` with `sunStateInMsg` linked: `vehSunPntBdy` is
+    /// `[BN] (r_Sun - r_BN) / |r_Sun - r_BN|`.
+    #[test]
+    fn the_sun_input_gives_the_body_sun_heading() {
+        use crate::messages::PlanetStateMsg;
+
+        let state = SpacecraftStateMsg {
+            position_m: Vector3::new(7_000_000.0, -1_000.0, 2_000.0),
+            sigma_bn: Vector3::new(0.1, -0.2, 0.3),
+            ..SpacecraftStateMsg::default()
+        };
+        let sun_position = Vector3::new(-1.0e11, 5.0e10, 2.0e10);
+        let state_out = Output::new(state.clone());
+        let sun_out = Output::new(PlanetStateMsg {
+            position_inertial_m: sun_position,
+            ..PlanetStateMsg::default()
+        });
+        let mut navigation = SimpleNavigation::new("simple_navigation");
+        navigation.spacecraft_state_in_msg.connect(state_out.slot());
+        navigation.sun_state_in_msg.connect(sun_out.slot());
+        navigation.init();
+        navigation.update(&SimulationContext {
+            current_sim_nanos: 0,
+            current_epoch: Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
+        });
+
+        let expected = mrp_to_dcm(state.sigma_bn) * (sun_position - state.position_m).normalize();
+        let actual = navigation.attitude_out_msg.read().vehicle_sun_point_body;
+        assert!(
+            (actual - expected).norm() < 1.0e-15,
+            "{actual} vs {expected}"
+        );
     }
 
     #[test]

@@ -53,8 +53,13 @@ pub fn hub_inertia_kg_m2() -> Matrix3<f64> {
 
 /// Upstream `simHelpers.samplingTime`: the recorder period \[ns\] giving
 /// roughly `data_points` samples, a whole number of `base_period_nanos`.
+///
+/// Where upstream's value is below the period of the task the recorder runs
+/// on (it floors to `1 ns` for fewer than `data_points` task steps), its
+/// recorder samples every task step, so this returns `base_period_nanos`.
 pub fn sampling_period_nanos(duration_nanos: u64, base_period_nanos: u64, data_points: u64) -> u64 {
-    (duration_nanos / base_period_nanos / (data_points - 1) * base_period_nanos).max(1)
+    (duration_nanos / base_period_nanos / (data_points - 1) * base_period_nanos)
+        .max(base_period_nanos)
 }
 
 /// The orbit of the attitude scenarios: `a = 10 000 km`, `i = 33.3°`,

@@ -239,6 +239,12 @@ pub struct SunlineSekf {
 }
 
 impl SunlineSekf {
+    /// Upstream `bVec_B`: the body axis the sun frame `S` is currently built
+    /// from (upstream scenarios log it to reconstruct `[BS]`).
+    pub fn b_vec_b(&self) -> Vector3<f64> {
+        self.b_vec_b
+    }
+
     /// Builds the filter, with one unconnected CSS input per configured
     /// sensor, and seeds its estimate from the configuration.
     pub fn new(config: SunlineSekfConfig) -> Self {

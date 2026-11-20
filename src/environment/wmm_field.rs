@@ -6,6 +6,10 @@
 //! secular-variation terms. Dates before 2025 are deliberately supported by
 //! negative extrapolation; the momentum-management scenario
 //! starts in June 2019.
+//!
+//! As upstream's `magneticFieldBase`, optional reach limits
+//! ([`WmmFieldConfig::env_min_reach_m`], [`WmmFieldConfig::env_max_reach_m`])
+//! zero the field outside an orbit-radius band.
 
 use hifitime::{Duration as HiDuration, Epoch};
 use nalgebra::{Matrix3, Vector3};
@@ -21,12 +25,20 @@ const TRIANGULAR_TERM_COUNT: usize = (WMM_MAX_DEGREE + 1) * (WMM_MAX_DEGREE + 2)
 #[derive(Clone, Debug)]
 pub struct WmmFieldConfig {
     pub name: String,
+    /// Upstream `envMinReach` \[m\]: the field is zero at or below this
+    /// orbit radius. `None` is upstream's `-1`, off.
+    pub env_min_reach_m: Option<f64>,
+    /// Upstream `envMaxReach` \[m\]: the field is zero at or beyond this
+    /// orbit radius. `None` is upstream's `-1`, off.
+    pub env_max_reach_m: Option<f64>,
 }
 
 impl Default for WmmFieldConfig {
     fn default() -> Self {
         Self {
             name: "wmm2025".to_string(),
+            env_min_reach_m: None,
+            env_max_reach_m: None,
         }
     }
 }
@@ -73,6 +85,19 @@ impl WmmField {
         let orbit_radius_m = relative_position_fixed_m.norm();
 
         if !orbit_radius_m.is_finite() || orbit_radius_m <= f64::EPSILON {
+            return Vector3::zeros();
+        }
+        // Upstream `magneticFieldBase::UpdateState`: evaluate only inside the
+        // reach band.
+        let above_min = self
+            .config
+            .env_min_reach_m
+            .is_none_or(|reach| orbit_radius_m > reach);
+        let below_max = self
+            .config
+            .env_max_reach_m
+            .is_none_or(|reach| orbit_radius_m < reach);
+        if !(above_min && below_max) {
             return Vector3::zeros();
         }
 
@@ -568,5 +593,46 @@ mod tests {
                 .magnetic_field_inertial_t,
             Vector3::zeros()
         );
+    }
+
+    /// Upstream `test_magneticFieldWMM.py`'s `useMinReach`/`useMaxReach`
+    /// cases: with `REQ_EARTH + 200 km` as the minimum, or `REQ_EARTH -
+    /// 200 km` as the maximum, a spacecraft on the surface (or 100 km up)
+    /// sees a zero field; without limits it sees the model field.
+    #[test]
+    fn reach_limits_zero_the_field_outside_the_band() {
+        use crate::utilities::astro_constants::REQ_EARTH;
+
+        let epoch = Epoch::from_gregorian_utc(2019, 6, 27, 10, 23, 0, 0);
+        for height_km in [0.0, 100.0] {
+            let radius_m = (REQ_EARTH + height_km) * 1000.0;
+            let state = SpacecraftStateMsg {
+                position_m: Vector3::new(radius_m, 0.0, 0.0),
+                ..SpacecraftStateMsg::default()
+            };
+            for (min_reach, max_reach) in [
+                (None, None),
+                (Some((REQ_EARTH + 200.0) * 1000.0), None),
+                (None, Some((REQ_EARTH - 200.0) * 1000.0)),
+                (
+                    Some((REQ_EARTH + 200.0) * 1000.0),
+                    Some((REQ_EARTH - 200.0) * 1000.0),
+                ),
+            ] {
+                let field = WmmField::new(WmmFieldConfig {
+                    env_min_reach_m: min_reach,
+                    env_max_reach_m: max_reach,
+                    ..WmmFieldConfig::default()
+                })
+                .compute_magnetic_field(&state, epoch, 0);
+                let outside = min_reach.is_some_and(|reach| radius_m < reach)
+                    || max_reach.is_some_and(|reach| radius_m > reach);
+                if outside {
+                    assert_eq!(field, Vector3::zeros(), "{min_reach:?} {max_reach:?}");
+                } else {
+                    assert!(field.norm() > 1.0e-5, "{min_reach:?} {max_reach:?}");
+                }
+            }
+        }
     }
 }

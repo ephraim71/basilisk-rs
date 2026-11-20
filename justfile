@@ -127,6 +127,20 @@ run-all-scenarios: run-scenarios run-orbit-scenarios
     cargo run --release --example scenario_attitude_pointing_numba
     cargo run --release --example scenario_attitude_pointing_py
     cargo run --release --example scenario_attitude_steering -- --all
+    cargo run --release --example scenario_css -- --all
+    cargo run --release --example scenario_css_filters -- --all
+    cargo run --release --example scenario_tam -- --all
+    cargo run --release --example scenario_tam_comparison -- --all
+    cargo run --release --example scenario_magnetic_field_centered_dipole -- --all
+    cargo run --release --example scenario_magnetic_field_wmm -- --all
+    cargo run --release --example scenario_albedo -- --all
+    cargo run --release --example scenario_gauss_markov_random_walk -- --all
+    cargo run --release --example scenario_temp_measurement_attitude
+    cargo run --release --example scenario_sensor_thermal
+    cargo run --release --example scenario_momentum_dumping
+    cargo run --release --example scenario_mtb_momentum_management
+    cargo run --release --example scenario_mtb_momentum_management_simple
+    cargo run --release --example scenario_sep_momentum_management -- --all
 
 # Compare existing Rust outputs without rerunning the simulations.
 compare-scenarios reference_zip=reference_csv_zip generated_dir="examples/output/scenarios":

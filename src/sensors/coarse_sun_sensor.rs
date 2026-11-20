@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand_distr::{Distribution, Normal};
 
 use crate::messages::{
-    EclipseMsg, Input, Output, SpacecraftStateMsg, SunEphemerisMsg, SunSensorMsg,
+    AlbedoMsg, EclipseMsg, Input, Output, SpacecraftStateMsg, SunEphemerisMsg, SunSensorMsg,
 };
 use crate::{Module, SimulationContext};
 
@@ -100,6 +100,12 @@ pub struct CoarseSunSensor {
     pub input_state_msg: Input<SpacecraftStateMsg>,
     pub input_sun_msg: Input<SunEphemerisMsg>,
     pub input_eclipse_msg: Input<EclipseMsg>,
+    /// Upstream `albedoInMsg` (optional): the planetary albedo at the sensor,
+    /// for example one of [`Albedo`](crate::environment::albedo::Albedo)'s
+    /// outputs. Its `albedo_at_instrument`, when positive, is added to the
+    /// true value whether or not the Sun is in the field of view, before the
+    /// sensor errors and the scale factor, as upstream adds `albedoValue`.
+    pub input_albedo_msg: Input<AlbedoMsg>,
     pub output_sun_sensor_msg: Output<SunSensorMsg>,
     noise_model: GaussMarkov,
 }
@@ -156,8 +162,9 @@ impl Module for CoarseSunSensor {
         let state = self.read_state_input_message();
         let sun = self.read_sun_input_message();
         let eclipse = self.read_eclipse_input_message();
+        let albedo = self.read_albedo_input_message();
 
-        let measurement = self.compute_measurement(&state, &sun, &eclipse);
+        let measurement = self.compute_measurement(&state, &sun, &eclipse, albedo);
         self.write_output_message(measurement);
     }
 }
@@ -179,6 +186,7 @@ impl CoarseSunSensor {
             input_state_msg: Input::default(),
             input_sun_msg: Input::default(),
             input_eclipse_msg: Input::default(),
+            input_albedo_msg: Input::default(),
             output_sun_sensor_msg: Output::default(),
         }
     }
@@ -201,11 +209,22 @@ impl CoarseSunSensor {
         }
     }
 
+    /// Upstream `albedoValue`: the albedo ratio at the sensor, zero when no
+    /// albedo message is connected.
+    fn read_albedo_input_message(&self) -> f64 {
+        if self.input_albedo_msg.is_connected() {
+            self.input_albedo_msg.read().albedo_at_instrument
+        } else {
+            0.0
+        }
+    }
+
     fn compute_measurement(
         &mut self,
         state: &SpacecraftStateMsg,
         sun: &SunEphemerisMsg,
         eclipse: &EclipseMsg,
+        albedo: f64,
     ) -> SunSensorMsg {
         let spacecraft_to_sun_inertial_m = sun.sun_position_inertial_m - state.position_m;
         if spacecraft_to_sun_inertial_m.norm_squared() == 0.0 {
@@ -233,6 +252,9 @@ impl CoarseSunSensor {
             true_value *= (ASTRONOMICAL_UNIT_M * ASTRONOMICAL_UNIT_M)
                 / spacecraft_to_sun_inertial_m.norm_squared();
             true_value *= eclipse.illumination_factor;
+        }
+        if albedo > 0.0 {
+            true_value += albedo;
         }
 
         let mut sensed_value = true_value + self.compute_sensor_error();
@@ -544,6 +566,35 @@ mod tests {
         config.min_output = 2.0;
         config.max_output = 1.0;
         let _ = CoarseSunSensor::new(config);
+    }
+
+    /// Upstream `test_coarseSunSensor.py`'s `"albedo"` case (90 deg field of
+    /// view, `albedoValue = 0.5`, 1e-10 tolerance): the albedo is added to the
+    /// cosine inside the field of view and replaces the zero outside it. The
+    /// Sun sweeps about the sensor's x axis as upstream's attitudes do.
+    #[test]
+    fn albedo_is_added_inside_and_outside_the_field_of_view() {
+        let albedo_out = Output::new(crate::messages::AlbedoMsg {
+            albedo_at_instrument: 0.5,
+            ..Default::default()
+        });
+        for step in 0..=36 {
+            let angle = f64::from(step) * 10.0_f64.to_radians();
+            let mut sensor = aligned_sensor();
+            sensor.config.fov_half_angle_rad = std::f64::consts::FRAC_PI_2;
+            sensor.config.max_output = 10.0;
+            sensor.input_albedo_msg.connect(albedo_out.slot());
+            let sun = ASTRONOMICAL_UNIT_M * Vector3::new(0.0, -angle.sin(), angle.cos());
+            let msg = run_with_sun(sensor, sun);
+
+            let cosine = angle.cos();
+            let truth = if cosine >= 0.0 { cosine } else { 0.0 } + 0.5;
+            assert!(
+                (msg.true_value - truth).abs() < 1.0e-10,
+                "{angle}: expected {truth}, got {msg:?}"
+            );
+            assert!((msg.sensed_value - truth).abs() < 1.0e-10, "{msg:?}");
+        }
     }
 
     #[test]

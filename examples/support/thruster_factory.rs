@@ -48,6 +48,8 @@ pub struct ThrusterSpec {
 pub enum ThrusterModel {
     /// `MOOG_Monarc_1`: 0.9 N, Isp 227.5 s, nozzle 0.000079 m^2.
     MoogMonarc1,
+    /// `MOOG_Monarc_5`: 4.5 N, Isp 226.1 s, nozzle 0.0020 m^2.
+    MoogMonarc5,
     /// `MOOG_Monarc_22_6`: 22 N, Isp 229.5 s, nozzle 0.0045 m^2.
     MoogMonarc22_6,
 }
@@ -70,6 +72,7 @@ impl ThrusterFactory {
     ) -> &mut ThrusterSpec {
         let (max_thrust_n, steady_isp_s, area_nozzle_m2) = match model {
             ThrusterModel::MoogMonarc1 => (0.9, 227.5, 0.000_079),
+            ThrusterModel::MoogMonarc5 => (4.5, 226.1, 0.0020),
             ThrusterModel::MoogMonarc22_6 => (22.0, 229.5, 0.0045),
         };
         let label = format!("TH{}", self.thrusters.len() + 1);

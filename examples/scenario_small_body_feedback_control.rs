@@ -29,8 +29,8 @@
 //!
 //! * basilisk-rs's `SimpleNavigation` has no error model, so the noisy
 //!   navigation is [`small_body_simple_nav::NoisySimpleNav`], upstream's
-//!   18-state `simpleNav` errors on the crate's `GaussMarkov` (3-sigma units,
-//!   soft bounds, as `planetNav` here); the noise streams are not upstream's.
+//!   18-state `simpleNav` errors on the crate's `GaussMarkov` (upstream's
+//!   model, as `planetNav` here); the noise streams are not upstream's.
 //! * The wheels take one command each, so `rwMotorTorque`'s array command
 //!   goes through `arrayMotorTorqueToSingleActuators`.
 //! * `radiationPressure` reads an eclipse message for its illumination,

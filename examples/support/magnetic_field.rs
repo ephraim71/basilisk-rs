@@ -294,9 +294,8 @@ pub const TAM_BIAS_T: [f64; 3] = [0.0, 0.0, -1e-6];
 
 /// Upstream `magnetometer.Magnetometer()` with `scaleFactor = 1`, the
 /// scripts' 100 nT white noise, the optional `[0, 0, -1 uT]` bias and the
-/// optional symmetric saturation `±bound_t`. The noise matrix is in
-/// basilisk-rs's 3-sigma units (see [`basilisk_rs::gauss_markov`]), so it is
-/// `3 senNoiseStd` for upstream's one-sigma `senNoiseStd`.
+/// optional symmetric saturation `±bound_t`. The noise matrix is upstream's
+/// one-sigma `senNoiseStd` (see [`basilisk_rs::gauss_markov`]).
 pub fn tam(name: &str, use_bias: bool, bound_t: Option<f64>) -> Magnetometer {
     let (min_output_t, max_output_t) = match bound_t {
         Some(bound) => (-bound, bound),
@@ -310,7 +309,7 @@ pub fn tam(name: &str, use_bias: bool, bound_t: Option<f64>) -> Magnetometer {
         } else {
             Vector3::zeros()
         },
-        p_matrix_sqrt_t: Matrix3::from_diagonal_element(3.0 * TAM_NOISE_STD_T),
+        p_matrix_sqrt_t: Matrix3::from_diagonal_element(TAM_NOISE_STD_T),
         a_matrix: Matrix3::zeros(),
         walk_bounds_t: Vector3::zeros(),
         scale_factor: 1.0,

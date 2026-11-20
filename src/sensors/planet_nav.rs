@@ -17,11 +17,9 @@
 //! update, and likewise for the rate error into the attitude error when
 //! `cross_att` is set.
 //!
-//! The error model is the crate's [`GaussMarkov`]: `p_matrix_sqrt` is in its
-//! **3-sigma units** and `walk_bounds` are soft bounds, see
-//! [`crate::gauss_markov`]. Upstream's current `GaussMarkov` draws unit-variance
-//! samples and clamps at the bounds instead; the upstream tests' thresholds
-//! hold for both.
+//! The error model is the crate's [`GaussMarkov`], upstream's: `p_matrix_sqrt`
+//! is the 1-sigma error step and each state is clamped at its `walk_bounds`
+//! entry, see [`crate::gauss_markov`].
 //!
 //! As upstream, a reset restarts the random stream from the module's seed and
 //! zeroes the error state. The seed comes from the module name, like the
@@ -58,11 +56,11 @@ pub type PlanetNavVector = SVector<f64, PLANET_NAV_STATES>;
 pub struct PlanetNavConfig {
     /// Module name (upstream `ModelTag`); seeds the noise stream.
     pub name: String,
-    /// Upstream `PMatrix`: square root of the error covariance in 3-sigma
-    /// units, over the twelve error states. Zero disables the noise.
+    /// Upstream `PMatrix`: square root of the error covariance (1-sigma),
+    /// over the twelve error states. Zero disables the noise.
     pub p_matrix_sqrt: PlanetNavMatrix,
-    /// Upstream `walkBounds`: soft bound of each error state; a non-positive
-    /// bound leaves that state unbounded.
+    /// Upstream `walkBounds`: bound each error state is clamped at; a
+    /// non-positive bound leaves that state unbounded.
     pub walk_bounds: PlanetNavVector,
     /// Upstream `crossTrans`: the position error integrates the velocity error.
     pub cross_trans: bool,
@@ -246,12 +244,8 @@ mod tests {
     //! The statistical tests are seeded with upstream's default `RNGSeed`
     //! (`0x1badcad1`) rather than the name hash, so they do not depend on the
     //! standard library's hasher. Their thresholds were written for
-    //! upstream's current unit-variance, hard-clamped `GaussMarkov`, which
-    //! never exceeds a bound. Under this crate's 3-sigma, soft-bounded model
-    //! they hold with less margin: over a dozen seeds, the rate errors exceed
-    //! their bound in 40–95 % of the allowed count, and without the cross
-    //! terms the position error reaches 80 % of its bound in about half the
-    //! seeds (with the default seed it does).
+    //! upstream's unit-variance, hard-clamped `GaussMarkov`, which this
+    //! crate's model is.
 
     use std::f64::consts::PI;
 

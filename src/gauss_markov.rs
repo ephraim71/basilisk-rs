@@ -1,21 +1,12 @@
-//! First-order bounded Gauss-Markov error model.
+//! First-order bounded Gauss-Markov error model, as Basilisk's `GaussMarkov`.
+//!
+//! Each step is `state = A * state + P * w` with `w ~ N(0, 1)` per state, so a
+//! `noise_matrix_sqrt` diagonal entry of `x` gives error steps with a standard
+//! deviation of `x`. A state past a positive bound is clamped to that bound.
 //!
 //! [`GaussMarkov`] carries `N` error states, three unless a caller names
 //! another count (one for a scalar sensor, twelve for a full navigation
 //! state); its propagation and noise matrices may couple any pair of them.
-//!
-//! Two conventions callers must know:
-//!
-//! * **The noise matrix is in 3-sigma units.** Draws are `N(0, 1/3)`, so a
-//!   `noise_matrix_sqrt` diagonal entry of `x` produces error steps with a
-//!   standard deviation of `x / 3`. Specs quoted as 1-sigma must be
-//!   multiplied by 3 on the way in.
-//! * **Walk bounds repel rather than clamp.** As the state nears a bound the
-//!   random draw is biased back toward zero by `exp(-((2B-|s|)/|s|)^3)^2`;
-//!   the state may briefly exceed the bound and never sits pinned at it,
-//!   unlike a hard clamp, which piles probability mass at the boundary.
-//!   [`GaussMarkov::clamp_state`] applies upstream's current hard clamp
-//!   instead, for a module whose upstream relies on it.
 
 use nalgebra::{SMatrix, SVector};
 use rand::Rng;
@@ -27,11 +18,9 @@ pub struct GaussMarkov<const N: usize = 3> {
     /// Error-state propagation matrix. Zero reduces the model to independent
     /// per-sample noise; identity is a random walk.
     pub prop_matrix: SMatrix<f64, N, N>,
-    /// Matrix square root of the noise covariance in **3-sigma units**;
-    /// see the module docs.
+    /// Matrix square root of the noise covariance (1-sigma).
     pub noise_matrix_sqrt: SMatrix<f64, N, N>,
-    /// Per-state soft bounds; a non-positive bound leaves that state
-    /// unbounded.
+    /// Per-state bounds; a non-positive bound leaves that state unbounded.
     pub state_bounds: SVector<f64, N>,
     state: SVector<f64, N>,
 }
@@ -59,55 +48,19 @@ impl<const N: usize> GaussMarkov<N> {
         self.state
     }
 
-    /// Advance one step and return the new error state: propagate, draw
-    /// `N(0, 1/3)` per state, apply the bound repulsion to the raw draw,
-    /// then scale by the noise matrix and accumulate.
+    /// Advance one step and return the new error state.
     pub fn compute_next_state<R: Rng>(&mut self, rng: &mut R) -> SVector<f64, N> {
-        self.state = self.prop_matrix * self.state;
-
-        let normal = Normal::new(0.0, 1.0 / 3.0).expect("valid distribution");
-        let mut draws = SVector::<f64, N>::zeros();
+        let normal = Normal::new(0.0, 1.0).expect("valid distribution");
+        let draws = SVector::<f64, N>::from_fn(|_, _| normal.sample(rng));
+        self.state = self.prop_matrix * self.state + self.noise_matrix_sqrt * draws;
         for i in 0..N {
-            draws[i] = normal.sample(rng);
             let bound = self.state_bounds[i];
-            if bound > 0.0 {
-                draws[i] += bound_repulsion(self.state[i], bound);
-            }
-        }
-
-        self.state += self.noise_matrix_sqrt * draws;
-        self.state
-    }
-
-    /// Hard-limit each state whose entry in `bounds` is positive to
-    /// `±bound`, and return the result: the bound of upstream's current
-    /// `GaussMarkov`, which clips the state after every step instead of
-    /// repelling it. A caller wanting it leaves
-    /// [`state_bounds`](Self::state_bounds) at zero and calls this after each
-    /// [`compute_next_state`](Self::compute_next_state); the clipped state is
-    /// the one the next step propagates.
-    pub fn clamp_state(&mut self, bounds: &SVector<f64, N>) -> SVector<f64, N> {
-        for (state, &bound) in self.state.iter_mut().zip(bounds.iter()) {
-            if bound > 0.0 && state.abs() > bound {
-                *state = bound.copysign(*state);
+            if bound > 0.0 && self.state[i].abs() > bound {
+                self.state[i] = bound.copysign(self.state[i]);
             }
         }
         self.state
     }
-}
-
-/// Soft-bound repulsion: near-zero states fall back to evaluating at the
-/// bound itself, and the repulsion is the *square* of the exponential.
-fn bound_repulsion(state: f64, bound: f64) -> f64 {
-    let state_calc = if state.abs() > bound * 1.0e-10 {
-        state.abs()
-    } else {
-        bound
-    };
-    let mut bound_check = (bound * 2.0 - state_calc) / state_calc;
-    bound_check = bound_check.max(bound * 1.0e-10);
-    bound_check = 1.0 / (bound_check * bound_check * bound_check).exp();
-    bound_check * bound_check.copysign(-state)
 }
 
 #[cfg(test)]
@@ -119,13 +72,13 @@ mod tests {
     use super::GaussMarkov;
 
     /// With zero propagation the process is IID and the output standard
-    /// deviation is a third of the noise-matrix entry (3-sigma convention).
+    /// deviation equals the noise-matrix entry.
     #[test]
-    fn three_sigma_convention_scales_draws_by_one_third() {
-        let three_sigma = 3.0e-4;
+    fn noise_matrix_entry_is_the_step_standard_deviation() {
+        let sigma = 1.0e-4;
         let mut model = GaussMarkov::new(
             Matrix3::zeros(),
-            Matrix3::from_diagonal(&Vector3::repeat(three_sigma)),
+            Matrix3::from_diagonal(&Vector3::repeat(sigma)),
             Vector3::zeros(),
         );
         let mut rng = StdRng::seed_from_u64(7);
@@ -140,18 +93,16 @@ mod tests {
         }
         let mean = sum / n as f64;
         let std = (sum_sq / n as f64 - mean * mean).sqrt();
-        let expected = three_sigma / 3.0;
         assert!(
-            (std - expected).abs() < 0.05 * expected,
-            "std {std} vs expected {expected}"
+            (std - sigma).abs() < 0.05 * sigma,
+            "std {std} vs expected {sigma}"
         );
     }
 
-    /// With identity propagation and bounds set, the walk is herded: it stays
-    /// near the bounds without piling up hard at them, and transient
-    /// excursions past the bound are permitted (soft, not clamped).
+    /// With identity propagation the walk is clamped: it never passes the
+    /// bound and, with steps larger than the bound, it often sits on it.
     #[test]
-    fn soft_bounds_herd_the_walk_without_clamping() {
+    fn bounds_clamp_the_walk() {
         let bound = 5.0e-4;
         let mut model = GaussMarkov::new(
             Matrix3::identity(),
@@ -160,29 +111,15 @@ mod tests {
         );
         let mut rng = StdRng::seed_from_u64(11);
 
-        let n = 20_000;
-        let mut exceedances = 0usize;
-        let mut at_bound_exactly = 0usize;
-        let mut max_abs: f64 = 0.0;
-        for _ in 0..n {
+        let mut at_bound = 0usize;
+        for _ in 0..20_000 {
             let error = model.compute_next_state(&mut rng).x;
-            max_abs = max_abs.max(error.abs());
-            if error.abs() > bound {
-                exceedances += 1;
-            }
-            if (error.abs() - bound).abs() < f64::EPSILON {
-                at_bound_exactly += 1;
+            assert!(error.abs() <= bound, "walk passed the bound: {error}");
+            if error.abs() == bound {
+                at_bound += 1;
             }
         }
-        // Herded: the walk cannot run far past the bound...
-        assert!(
-            max_abs < 4.0 * bound,
-            "walk escaped the soft bound entirely: {max_abs}"
-        );
-        // ...but it is not a clamp: no samples sit exactly on the bound, and
-        // transient exceedances exist.
-        assert_eq!(at_bound_exactly, 0, "soft bound behaved like a clamp");
-        assert!(exceedances > 0, "no excursions: this is a hard clamp");
+        assert!(at_bound > 0, "walk never reached the bound");
     }
 
     #[test]
@@ -201,7 +138,7 @@ mod tests {
         assert_eq!(model.current_state(), Vector3::zeros());
     }
 
-    /// An off-diagonal propagation term couples two states: with noise on the
+    /// A two-state model whose propagation couples the states: noise drives the
     /// second state only, the first integrates it, `x0 += dt * x1` each step.
     #[test]
     fn propagation_couples_states_across_the_model() {
@@ -210,7 +147,7 @@ mod tests {
         let dt = 0.1;
         let mut model = GaussMarkov::new(
             Matrix2::new(1.0, dt, 0.0, 1.0),
-            Matrix2::new(0.0, 0.0, 0.0, 3.0e-2),
+            Matrix2::new(0.0, 0.0, 0.0, 1.0e-2),
             Vector2::zeros(),
         );
         let mut rng = StdRng::seed_from_u64(5);
@@ -226,12 +163,12 @@ mod tests {
         assert!(previous_second != 0.0 && expected_first != 0.0);
     }
 
-    /// A one-state model draws from the same 3-sigma distribution.
+    /// A one-state model draws from the same 1-sigma distribution.
     #[test]
-    fn a_single_state_model_keeps_the_three_sigma_convention() {
+    fn a_single_state_model_has_the_noise_entry_as_its_step_deviation() {
         use nalgebra::{Matrix1, Vector1};
 
-        let mut model = GaussMarkov::new(Matrix1::zeros(), Matrix1::new(0.3), Vector1::zeros());
+        let mut model = GaussMarkov::new(Matrix1::zeros(), Matrix1::new(0.1), Vector1::zeros());
         let mut rng = StdRng::seed_from_u64(9);
         let n = 50_000;
         let sum_sq: f64 = (0..n)
@@ -239,41 +176,5 @@ mod tests {
             .sum();
         let std = (sum_sq / n as f64).sqrt();
         assert!((std - 0.1).abs() < 0.005, "std {std}");
-    }
-
-    /// The hard clamp pins a random walk at its bound, and the next step
-    /// propagates the clipped state.
-    #[test]
-    fn clamp_state_pins_the_walk_at_the_bound() {
-        use nalgebra::{Matrix2, Vector2};
-
-        let bounds = Vector2::new(2.0e-3, 0.0);
-        let mut model = GaussMarkov::new(
-            Matrix2::identity(),
-            Matrix2::from_diagonal(&Vector2::repeat(3.0e-3)),
-            Vector2::zeros(),
-        );
-        let mut rng = StdRng::seed_from_u64(13);
-        let mut pinned = 0;
-        let mut unbounded_max: f64 = 0.0;
-        for _ in 0..5_000 {
-            let before = model.current_state();
-            let raw = model.compute_next_state(&mut rng);
-            let state = model.clamp_state(&bounds);
-            assert!(state[0].abs() <= bounds[0]);
-            assert_eq!(
-                state[1], raw[1],
-                "a non-positive bound leaves the state free"
-            );
-            assert!(
-                (raw[0] - before[0]).abs() < 1.0e-2,
-                "steps from the clipped state"
-            );
-            pinned += usize::from(state[0].abs() == bounds[0]);
-            unbounded_max = unbounded_max.max(state[1].abs());
-            assert_eq!(model.current_state(), state);
-        }
-        assert!(pinned > 0, "the walk never reached its bound");
-        assert!(unbounded_max > bounds[0]);
     }
 }

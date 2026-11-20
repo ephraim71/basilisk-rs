@@ -20,14 +20,9 @@
 //!
 //! # Noise model
 //!
-//! basilisk-rs's [`GaussMarkov`](basilisk_rs::gauss_markov) follows an older
-//! upstream model than the one this scenario was written for: its noise
-//! matrix is in 3-sigma units (draws are `N(0, 1/3)`) and its bounds repel
-//! the state rather than clamp it. The scenario runs against that model. The
-//! noise matrix is `3 processNoiseLevel I`, so each step has upstream's
-//! `processNoiseLevel` one-sigma; `walkBounds` are the model's soft bounds,
-//! which the walk may briefly exceed, where upstream's current model clips
-//! it at them.
+//! basilisk-rs's [`GaussMarkov`](basilisk_rs::gauss_markov) is upstream's:
+//! the noise matrix `processNoiseLevel I` gives each step a one-sigma of
+//! `processNoiseLevel`, and the walk is clamped at `walkBounds`.
 //!
 //! Writes `examples/output/scenarios/scenarioGaussMarkovRandomWalk.csv` with
 //! both gyros' rates (`AngVelPlatform1_rad_per_s_*`,
@@ -96,13 +91,12 @@ struct Results {
     csv_path: Option<PathBuf>,
 }
 
-/// Upstream `imuSensor.ImuSensor()` with `PMatrixGyro = level I` (in the
-/// 3-sigma units of [`GaussMarkov`](basilisk_rs::gauss_markov)),
+/// Upstream `imuSensor.ImuSensor()` with `PMatrixGyro = level I`,
 /// `AMatrixGyro` and error bounds `bounds` (zero for none).
 fn gyro(name: &str, level: f64, a_matrix: Matrix3<f64>, bounds: f64) -> ImuSensor {
     ImuSensor::new(ImuSensorConfig {
         name: name.to_string(),
-        p_matrix_sqrt_radps: Matrix3::from_diagonal_element(3.0 * level),
+        p_matrix_sqrt_radps: Matrix3::from_diagonal_element(level),
         a_matrix,
         walk_bounds_radps: Vector3::repeat(bounds),
         ..ImuSensorConfig::default()
@@ -258,9 +252,7 @@ mod tests {
     //! demonstrates, on the gyro errors (reading minus true rate) about each
     //! axis: the white-noise gyro has upstream's one-sigma step and no
     //! memory, the random-walk gyro is strongly correlated in time and held
-    //! near its bounds. With the soft bounds of basilisk-rs's model the walk
-    //! does go past `walkBounds` (see the module docs); it stays inside twice
-    //! the bound, where the repulsion is a full 3-sigma draw.
+    //! at its bounds, which clamp it.
 
     use super::*;
 
@@ -329,7 +321,7 @@ mod tests {
             let largest = errors
                 .iter()
                 .fold(0.0_f64, |largest, error| largest.max(error.abs()));
-            assert!(largest < 2.0 * config.walk_bounds, "axis {axis}: {largest}");
+            assert!(largest <= config.walk_bounds, "axis {axis}: {largest}");
             // An unbounded walk of 6000 such steps would spread to
             // sqrt(6000) * 0.5 = 39 rad/s.
             assert!(

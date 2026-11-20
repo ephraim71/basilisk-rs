@@ -8,11 +8,9 @@
 //! [`super::navigation`] stands in for a navigation filter. With the default
 //! configuration (zero noise) the output is the truth.
 //!
-//! The error model is the crate's [`GaussMarkov`]: `p_matrix_sqrt_v` is in its
-//! **3-sigma units** and `walk_bounds_v` is a soft bound, see
-//! [`crate::gauss_markov`]. Upstream's current `GaussMarkov` draws unit-variance
-//! samples and clamps at the bound instead; the upstream test's thresholds
-//! hold for both.
+//! The error model is the crate's [`GaussMarkov`], upstream's: `p_matrix_sqrt_v`
+//! is the 1-sigma error step and the walk is clamped at `walk_bounds_v`, see
+//! [`crate::gauss_markov`].
 //!
 //! As upstream, a reset restarts the random stream from the module's seed and
 //! zeroes the error state, so a reset run repeats its realization. The seed
@@ -38,15 +36,14 @@ use crate::{Module, SimulationContext};
 pub struct SimpleVoltEstimatorConfig {
     /// Module name (upstream `ModelTag`); seeds the noise stream.
     pub name: String,
-    /// Upstream `PMatrix` \[V\]: square root of the error covariance, in
-    /// 3-sigma units (a value of `x` gives error steps with standard
-    /// deviation `x / 3`). Zero disables the noise.
+    /// Upstream `PMatrix` \[V\]: square root of the error covariance, the
+    /// 1-sigma error step. Zero disables the noise.
     pub p_matrix_sqrt_v: f64,
     /// Upstream `AMatrix`: error propagation coefficient; one (upstream's
     /// identity default) is a random walk, zero independent noise.
     pub a_matrix: f64,
-    /// Upstream `walkBounds` \[V\]: soft bound on the error; a non-positive
-    /// value leaves it unbounded.
+    /// Upstream `walkBounds` \[V\]: bound the error is clamped at; a
+    /// non-positive value leaves it unbounded.
     pub walk_bounds_v: f64,
 }
 
@@ -192,9 +189,7 @@ mod tests {
     //! The statistical test is seeded with upstream's default `RNGSeed`
     //! (`0x1badcad1`) rather than the name hash, so it does not depend on the
     //! standard library's hasher. Its thresholds were written for upstream's
-    //! current hard-clamped `GaussMarkov`; under this crate's soft-bounded
-    //! model the error exceeds the bound in 20–55 % of the allowed count over
-    //! a dozen seeds.
+    //! hard-clamped `GaussMarkov`, which this crate's model is.
 
     use hifitime::Epoch;
 
@@ -314,12 +309,12 @@ mod tests {
     }
 
     /// With zero propagation the errors are independent with standard
-    /// deviation `p_matrix_sqrt_v / 3`.
+    /// deviation `p_matrix_sqrt_v`.
     #[test]
-    fn independent_errors_follow_the_three_sigma_convention() {
+    fn independent_errors_have_the_noise_entry_as_their_deviation() {
         let mut estimator = SimpleVoltEstimator::new(SimpleVoltEstimatorConfig {
             name: "iid".to_string(),
-            p_matrix_sqrt_v: 6.0,
+            p_matrix_sqrt_v: 2.0,
             a_matrix: 0.0,
             walk_bounds_v: 0.0,
         });

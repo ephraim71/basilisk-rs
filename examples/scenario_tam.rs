@@ -17,8 +17,8 @@
 //! `test_scenarioTAM.py`, whose truth the tests check.
 //!
 //! The noise is basilisk-rs's [`GaussMarkov`](basilisk_rs::gauss_markov),
-//! given `3 senNoiseStd` for its 3-sigma convention, so it has upstream's
-//! standard deviation but not upstream's random draws.
+//! upstream's model with upstream's `senNoiseStd`, but not upstream's random
+//! draws.
 //!
 //! Writes `examples/output/scenarios/scenarioTAM<orbitCase><planetCase><bias><bounds>.csv`
 //! with `r_BN_N_m_*`, `magField_N_T_*` and `tam_S_T_*`.

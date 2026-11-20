@@ -28,8 +28,8 @@
 //!
 //! * basilisk-rs's `SimpleNavigation` has no error model, so the navigation
 //!   is [`small_body_simple_nav::NoisySimpleNav`], upstream's 18-state
-//!   `simpleNav` errors on the crate's `GaussMarkov` (3-sigma units, soft
-//!   bounds, as `planetNav`); the noise stream is not upstream's.
+//!   `simpleNav` errors on the crate's `GaussMarkov` (upstream's model, as
+//!   `planetNav`); the noise stream is not upstream's.
 //! * Upstream evaluates the true Vesta-fixed state and the non-Keplerian
 //!   acceleration (`spherHarm.computeField(r, 14, False)`) from its recorded
 //!   histories after the run; here [`VestaFixedTruth`] does it at every step,

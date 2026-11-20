@@ -14,9 +14,9 @@
 //!
 //! The error process is the crate's [`GaussMarkov`], as in
 //! [`basilisk_rs::sensors::planet_nav::PlanetNav`], the crate's port of the
-//! same upstream structure for a body ephemeris: `p_matrix_sqrt` is in its
-//! 3-sigma units and `walk_bounds` are soft bounds. Upstream's current
-//! `GaussMarkov` draws unit-variance samples and clamps at the bounds. The
+//! same upstream structure for a body ephemeris: `p_matrix_sqrt` is the
+//! 1-sigma error step and each state is clamped at its `walk_bounds` entry,
+//! as upstream's `GaussMarkov` does. The
 //! seed is a hash of the module name (upstream `RNGSeed`), so a rerun repeats
 //! its stream; it is not upstream's `std::minstd_rand` stream.
 //!
@@ -90,7 +90,7 @@ pub struct NoisySimpleNav {
     pub attitude_out_msg: Output<NavigationAttitudeMsg>,
     /// Upstream `transOutMsg`.
     pub translation_out_msg: Output<NavigationTranslationMsg>,
-    /// Upstream `PMatrix` (3-sigma units, see the module docs).
+    /// Upstream `PMatrix` (1-sigma, see the module docs).
     pub p_matrix_sqrt: SimpleNavMatrix,
     /// Upstream `walkBounds`.
     pub walk_bounds: SimpleNavVector,

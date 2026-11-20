@@ -301,7 +301,7 @@ mod tests {
         Output, SpacecraftStateMsg, SunEphemerisMsg,
     };
     use crate::spacecraft::DynamicEffector;
-    use crate::utilities::astro_constants::{AU, SOLAR_FLUX_EARTH};
+    use crate::utilities::astro_constants::AU;
     use crate::utilities::rigid_body_kinematics::{mrp_to_dcm, prv_to_dcm, prv_to_mrp};
     use crate::{Module, SimulationContext};
 
@@ -569,12 +569,11 @@ mod tests {
             "every facet should be sunlit"
         );
 
-        let flux_ratio = 1368.0 / SOLAR_FLUX_EARTH;
+        // Both effectors use the 1361 W/m^2 solar flux at 1 AU.
         let faceted = DynamicEffector::compute_output(&srp, &state);
         let expected = reference.compute_output(&state);
-        let force_error =
-            (flux_ratio * faceted.force_inertial_n - expected.force_inertial_n).norm();
-        let torque_error = (flux_ratio * faceted.torque_body_nm - expected.torque_body_nm).norm();
+        let force_error = (faceted.force_inertial_n - expected.force_inertial_n).norm();
+        let torque_error = (faceted.torque_body_nm - expected.torque_body_nm).norm();
         assert!(
             force_error <= 1e-12 * expected.force_inertial_n.norm(),
             "{:?} vs {:?}",

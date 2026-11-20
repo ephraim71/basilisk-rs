@@ -507,7 +507,7 @@ mod tests {
         sim.add_module("battery", &mut battery, STEP_NANOS, 10);
 
         // `SolarFlux`'s own flux at 1 AU.
-        let solar_flux_1au_w_per_m2 = 1372.5398;
+        let solar_flux_1au_w_per_m2 = 1361.0;
         let mut expected_charge_j = STORED_CHARGE_INIT_J;
         let mut previous_charge_j = STORED_CHARGE_INIT_J;
         let (mut sunlit_steps, mut umbra_steps) = (0, 0);
@@ -540,7 +540,7 @@ mod tests {
                     assert!(charge_j > previous_charge_j, "step {step}: no charge");
                 }
                 // Both scale the same distance and eclipse; the panel adds
-                // its incidence angle, and the flux constants differ.
+                // its incidence angle.
                 let r_sb_n = sun.read().sun_position_inertial_m - state_out.read().position_m;
                 let incidence_cos = r_sb_n.normalize().x;
                 let flux = flux_out.read().flux_w_per_m2;

@@ -34,7 +34,7 @@
 //! * basilisk-rs's `SimpleNavigation` has no error model, so both
 //!   navigation instances are [`small_body_simple_nav::NoisySimpleNav`],
 //!   upstream's 18-state `simpleNav` errors on the crate's `GaussMarkov`
-//!   (3-sigma units, soft bounds, as `planetNav`); the noise streams are not
+//!   (upstream's model, as `planetNav`); the noise streams are not
 //!   upstream's, and the two instances draw different ones.
 //! * Upstream's filter updates only on measurements written at the current
 //!   time (message headers). The task switch that stands in for upstream's

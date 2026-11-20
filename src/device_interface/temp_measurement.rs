@@ -17,10 +17,9 @@
 //! reading, or multiplied by `spike_amount` with probability
 //! `spike_probability` each update.
 //!
-//! The error model is the crate's [`GaussMarkov`], fed `3 sen_noise_std_c`
-//! for its 3-sigma noise convention so the error keeps upstream's standard
-//! deviation, and hard-clamped with [`GaussMarkov::clamp_state`] as
-//! upstream's current model is (its soft bound is left unused). The noise
+//! The error model is the crate's [`GaussMarkov`], which, like upstream's,
+//! takes `sen_noise_std_c` as its 1-sigma step and clamps the walk at
+//! `walk_bounds_c`. The noise
 //! and spike draws use two streams seeded from the module's seed, which
 //! comes from the module name like the other sensors in this crate and is
 //! replaced with [`TempMeasurement::set_rng_seed`] (upstream `RNGSeed`); the
@@ -138,8 +137,8 @@ impl TempMeasurementConfig {
     fn error_model(&self) -> GaussMarkov<1> {
         GaussMarkov::new(
             Matrix1::new(self.a_matrix),
-            Matrix1::new(3.0 * self.sen_noise_std_c),
-            Vector1::zeros(),
+            Matrix1::new(self.sen_noise_std_c),
+            Vector1::new(self.walk_bounds_c),
         )
     }
 }
@@ -231,11 +230,9 @@ impl TempMeasurement {
             // Assigned rather than rebuilt: the accumulated walk is private
             // state a rebuild would discard.
             self.error_model.prop_matrix = Matrix1::new(config.a_matrix);
-            self.error_model.noise_matrix_sqrt = Matrix1::new(3.0 * config.sen_noise_std_c);
-            self.error_model.compute_next_state(&mut self.noise_rng);
-            let noise_c = self
-                .error_model
-                .clamp_state(&Vector1::new(config.walk_bounds_c))[0];
+            self.error_model.noise_matrix_sqrt = Matrix1::new(config.sen_noise_std_c);
+            self.error_model.state_bounds = Vector1::new(config.walk_bounds_c);
+            let noise_c = self.error_model.compute_next_state(&mut self.noise_rng)[0];
             config.sen_bias_c + noise_c
         };
         let mut sensed_c = true_temperature_c + sensor_error_c;

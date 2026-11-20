@@ -508,6 +508,14 @@ impl StateEffector for PrescribedMotionStateEffector {
         }
     }
 
+    /// Hands the stage time to the attached effectors, as the spacecraft does
+    /// to its own.
+    fn begin_stage(&mut self, stage_nanos: u64) {
+        for effector in &mut self.attached {
+            effector.begin_stage(stage_nanos);
+        }
+    }
+
     /// Upstream `updateContributions`, including the attached effectors'.
     fn update_contributions(
         &self,

@@ -19,10 +19,21 @@
 //! written. The pair can ride on a
 //! [`PrescribedMotionStateEffector`](super::prescribed_motion_state_effector::PrescribedMotionStateEffector).
 //!
+//! [`SpinningBodyTwoDofStateEffector::add_dynamic_effector`] attaches a
+//! [`DynamicEffector`] to one of the two bodies (upstream
+//! `addDynamicEffector(effector, segment)`), as
+//! [`SpinningBodyNDofStateEffector::add_dynamic_effector`](super::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector::add_dynamic_effector)
+//! does to a body of its chain. At every derivative evaluation the effector
+//! sees the body's frame Si with its origin at the joint (upstream `r_S1N_N`,
+//! `v_S1N_N`, `sigma_S1N`, `omega_S1N_S1` and their S2 counterparts) and
+//! returns an inertial force and a torque about that origin in Si axes. The
+//! loads act on that body and, through the joints, on the lower body and the
+//! hub (upstream `attBodyForce_S1`, `attBodyTorquePntS1_S1`, ... in
+//! `updateContributions`).
+//!
 //! Differences from upstream, as in
-//! [`super::spinning_body_one_dof_state_effector`]: `addDynamicEffector` is not
-//! ported (the attached-load terms are zero), and a locked axis is evaluated
-//! with a zero rate during the step, its committed rate zeroed in
+//! [`super::spinning_body_one_dof_state_effector`]: a locked axis is
+//! evaluated with a zero rate during the step, its committed rate zeroed in
 //! `modify_states` and, if locked at initialization, in the initial state.
 
 use nalgebra::{Matrix2, Matrix2x3, Matrix3, Vector2, Vector3};
@@ -40,7 +51,7 @@ use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, HingedRigidBodyMsg, Input, Output,
     SpacecraftStateMsg,
 };
-use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
+use crate::spacecraft::{BackSubMatrices, DynamicEffector, StateEffector, StateEffectorMassProps};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm, tilde};
 
 /// Mass, joint and initial-state parameters of one body of a
@@ -214,7 +225,6 @@ impl SpinningBodyTwoDofConfig {
 
 /// Two rigid bodies spinning in series (upstream
 /// `SpinningBodyTwoDOFStateEffector`).
-#[derive(Debug)]
 pub struct SpinningBodyTwoDofStateEffector {
     pub config: SpinningBodyTwoDofConfig,
     /// Upstream `motorTorqueInMsg` (optional): entries 0 and 1 are the motor
@@ -238,10 +248,32 @@ pub struct SpinningBodyTwoDofStateEffector {
     pub theta_ref_rad: [f64; 2],
     /// Upstream `theta1DotRef`, `theta2DotRef` \[rad/s\].
     pub theta_dot_ref_radps: [f64; 2],
+    /// The effectors attached to the lower and the upper body (upstream
+    /// `dynEffectors`).
+    dynamic_effectors: [Vec<Box<dyn DynamicEffector>>; 2],
+    /// Time of the current derivative evaluation, for the attached effectors.
+    stage_nanos: u64,
     /// Last loaded `[θ1, θ̇1, θ2, θ̇2]`.
     state: [f64; 4],
     back_sub: RefCell<TwoDofTerms>,
     kinematics: KinematicsCache<SpinningBodyTwoDofConfig, TwoDofKinematics>,
+}
+
+impl std::fmt::Debug for SpinningBodyTwoDofStateEffector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpinningBodyTwoDofStateEffector")
+            .field("config", &self.config)
+            .field("motor_torque_nm", &self.motor_torque_nm)
+            .field("locked", &self.locked)
+            .field("theta_ref_rad", &self.theta_ref_rad)
+            .field("theta_dot_ref_radps", &self.theta_dot_ref_radps)
+            .field("state", &self.state)
+            .field(
+                "dynamic_effectors",
+                &self.dynamic_effectors.each_ref().map(Vec::len),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl SpinningBodyTwoDofStateEffector {
@@ -258,6 +290,8 @@ impl SpinningBodyTwoDofStateEffector {
             locked: [false; 2],
             theta_ref_rad: [0.0; 2],
             theta_dot_ref_radps: [0.0; 2],
+            dynamic_effectors: Default::default(),
+            stage_nanos: 0,
             state,
             back_sub: RefCell::new(TwoDofTerms::default()),
             kinematics: KinematicsCache::default(),
@@ -267,6 +301,32 @@ impl SpinningBodyTwoDofStateEffector {
     /// `[θ1, θ̇1, θ2, θ̇2]` of the last loaded state.
     pub fn state(&self) -> [f64; 4] {
         self.state
+    }
+
+    /// Attaches `effector` to body `index`, 0 the lower body and 1 the upper
+    /// (upstream `addDynamicEffector(effector, index + 1)`). Any effector is
+    /// accepted, so it must make sense for a body whose state is that body's
+    /// frame, not the spacecraft's.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is not 0 or 1 (upstream's "attachment to a non-existent
+    /// spinning body").
+    pub fn add_dynamic_effector<E>(&mut self, index: usize, effector: E)
+    where
+        E: DynamicEffector + 'static,
+    {
+        assert!(
+            index < 2,
+            "SpinningBodyTwoDofStateEffector '{}': no spinning body {index} to attach an effector to",
+            self.config.name
+        );
+        self.dynamic_effectors[index].push(Box::new(effector));
+    }
+
+    /// The effectors attached to body `index`.
+    pub fn dynamic_effectors(&self, index: usize) -> &[Box<dyn DynamicEffector>] {
+        &self.dynamic_effectors[index]
     }
 
     /// Inertial states of the two bodies (upstream
@@ -297,6 +357,57 @@ impl SpinningBodyTwoDofStateEffector {
         ]
     }
 
+    /// Sum of each body's attached effector loads, as a force at its frame
+    /// origin and a torque about it, in hub axes (upstream
+    /// `computeSpinningBodyInertialStates` and the loads `attBodyForce_S1`,
+    /// `attBodyTorquePntS1_S1`, ... of `updateContributions`).
+    fn attached_loads_b(
+        &self,
+        k: &TwoDofKinematics,
+        hub_state: &SpacecraftStateMsg,
+    ) -> [(Vector3<f64>, Vector3<f64>); 2] {
+        if self.dynamic_effectors.iter().all(Vec::is_empty) {
+            return [(Vector3::zeros(), Vector3::zeros()); 2];
+        }
+        let dcm_bn = mrp_to_dcm(hub_state.sigma_bn);
+        let dcm_nb = dcm_bn.transpose();
+        let omega_bn_b = hub_state.omega_radps;
+        let r_s1b_b = self.config.spinner1_origin_body_m;
+        // Each frame's origin, its rate relative to B, its attitude and its
+        // rate, all in B.
+        let frames = [
+            (r_s1b_b, Vector3::zeros(), &k.dcm_bs1, k.omega_s1b_b),
+            (
+                r_s1b_b + k.r_s2s1_b,
+                k.r_prime_s2s1_b,
+                &k.dcm_bs2,
+                k.omega_s2b_b,
+            ),
+        ];
+        let mut loads = [(Vector3::zeros(), Vector3::zeros()); 2];
+        for ((load, effectors), (r_sb_b, r_prime_sb_b, dcm_bs, omega_sb_b)) in
+            loads.iter_mut().zip(&self.dynamic_effectors).zip(frames)
+        {
+            if effectors.is_empty() {
+                continue;
+            }
+            let frame_state = SpacecraftStateMsg {
+                position_m: hub_state.position_m + dcm_nb * r_sb_b,
+                velocity_mps: hub_state.velocity_mps
+                    + dcm_nb * (r_prime_sb_b + omega_bn_b.cross(&r_sb_b)),
+                sigma_bn: dcm_to_mrp(dcm_bs.transpose() * dcm_bn),
+                omega_radps: dcm_bs.transpose() * (omega_sb_b + omega_bn_b),
+                ..Default::default()
+            };
+            for effector in effectors {
+                let output = effector.compute_output_at(&frame_state, self.stage_nanos);
+                load.0 += dcm_bn * output.force_inertial_n;
+                load.1 += dcm_bs * output.torque_body_nm;
+            }
+        }
+        loads
+    }
+
     fn kinematics(&self, effector_state: &[f64]) -> TwoDofKinematics {
         assert_eq!(
             effector_state.len(),
@@ -315,12 +426,14 @@ impl SpinningBodyTwoDofStateEffector {
         })
     }
 
-    /// Upstream `updateContributions`.
+    /// Upstream `updateContributions`, for the attached loads `loads_b` of
+    /// [`Self::attached_loads_b`].
     fn back_sub_terms(
         &self,
         k: &TwoDofKinematics,
         omega_bn_b: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
+        loads_b: &[(Vector3<f64>, Vector3<f64>); 2],
     ) -> TwoDofTerms {
         let (m1, m2) = (self.config.body1.mass_kg, self.config.body2.mass_kg);
         let m = m1 + m2;
@@ -368,6 +481,9 @@ impl SpinningBodyTwoDofStateEffector {
             (-i_s2_pnt_s2 * s2 + m2 * r_s2b_b.cross(&k.r_sc2s2_b.cross(&s2))).transpose(),
         ]);
 
+        // Upstream `attBodyForce_S1`, `attBodyTorquePntS1_S1`, ... in B.
+        let [(force1_b, torque1_b), (force2_b, torque2_b)] = *loads_b;
+
         let w = omega_bn_b;
         let r_dot_s1b_b = w.cross(&r_s1b_b);
         let r_dot_s2s1_b = k.r_prime_s2s1_b + w.cross(&k.r_s2s1_b);
@@ -387,12 +503,16 @@ impl SpinningBodyTwoDofStateEffector {
             + m2 * (k.r_sc2s1_b.cross(&k.omega_s1b_b.cross(&k.r_prime_sc2s1_b))
                 + w.cross(&k.r_sc2s1_b.cross(&k.r_prime_sc2s1_b)))
             + m2 * k.r_sc2s1_b.cross(&k.omega_s2s1_b.cross(&k.r_prime_sc2s2_b))
-            + m * r_scs1_b.cross(&w.cross(&r_dot_s1b_b));
+            + m * r_scs1_b.cross(&w.cross(&r_dot_s1b_b))
+            - torque1_b
+            - torque2_b
+            - k.r_s2s1_b.cross(&force2_b);
         let c_term1 = i_prime_s2_pnt_s2 * omega_s2n_b
             + w.cross(&(i_s2_pnt_s2 * omega_s2n_b))
             + i_s2_pnt_s2 * relative_spin
             + m2 * k.r_sc2s2_b.cross(&omega_s1n_b.cross(&k.r_prime_s2s1_b))
-            + m2 * k.r_sc2s2_b.cross(&w.cross(&(r_dot_s2s1_b + r_dot_s1b_b)));
+            + m2 * k.r_sc2s2_b.cross(&w.cross(&(r_dot_s2s1_b + r_dot_s1b_b)))
+            - torque2_b;
         let joint = |index: usize, body: &SpinningBodyTwoDofBodyConfig| {
             self.motor_torque_nm[index]
                 - body.spring_constant_nm_per_rad * (k.theta[index] - self.theta_ref_rad[index])
@@ -440,7 +560,9 @@ impl SpinningBodyTwoDofStateEffector {
                     - m2 * (k.omega_s2s1_b.cross(&k.r_prime_sc2s2_b)
                         - k.r_sc2s2_b.cross(&relative_spin))
                     - trans0 * c_theta[0]
-                    - trans1 * c_theta[1],
+                    - trans1 * c_theta[1]
+                    + force1_b
+                    + force2_b,
                 vec_rot: -k.i1_prime_b * k.omega_s1b_b
                     - w.cross(&(i1 * k.omega_s1b_b))
                     - k.i2_prime_b * k.omega_s2b_b
@@ -453,7 +575,11 @@ impl SpinningBodyTwoDofStateEffector {
                         + w.cross(&k.r_sc2b_b.cross(&k.r_prime_sc2s1_b)))
                     - m2 * k.r_sc2b_b.cross(&k.omega_s2s1_b.cross(&k.r_prime_sc2s2_b))
                     - rot_factor0 * c_theta[0]
-                    - rot_factor1 * c_theta[1],
+                    - rot_factor1 * c_theta[1]
+                    + torque1_b
+                    + torque2_b
+                    + r_s1b_b.cross(&force1_b)
+                    + r_s2b_b.cross(&force2_b),
             },
             a_theta,
             b_theta,
@@ -539,7 +665,10 @@ impl StateEffector for SpinningBodyTwoDofStateEffector {
             .expect("spinning body two DOF state length mismatch");
     }
 
-    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {
+    fn pre_integration(&mut self, current_sim_nanos: u64, dt_seconds: f64) {
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.pre_integration(current_sim_nanos, dt_seconds);
+        }
         if self.motor_torque_in.is_connected() {
             let torque = self.motor_torque_in.read().motor_torque_nm;
             self.motor_torque_nm = [torque[0], torque[1]];
@@ -560,6 +689,15 @@ impl StateEffector for SpinningBodyTwoDofStateEffector {
         }
     }
 
+    /// Hands the stage time to the attached effectors, as the spacecraft does
+    /// to its own.
+    fn begin_stage(&mut self, stage_nanos: u64) {
+        self.stage_nanos = stage_nanos;
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.begin_stage(stage_nanos);
+        }
+    }
+
     fn update_contributions(
         &self,
         effector_state: &[f64],
@@ -567,9 +705,9 @@ impl StateEffector for SpinningBodyTwoDofStateEffector {
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
-        let body_omega_radps = hub_state.omega_radps;
         let k = self.kinematics(effector_state);
-        let terms = self.back_sub_terms(&k, body_omega_radps, gravity_body_mps2);
+        let loads_b = self.attached_loads_b(&k, hub_state);
+        let terms = self.back_sub_terms(&k, hub_state.omega_radps, gravity_body_mps2, &loads_b);
         add_back_sub(back_sub, &terms.back_sub);
         self.back_sub.replace(terms);
     }
@@ -909,6 +1047,7 @@ mod tests {
     //! [`SpinningBodyTwoDofConfig::validate`].
 
     use super::{SpinningBodyTwoDofConfig, SpinningBodyTwoDofStateEffector};
+    use crate::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
     use crate::dynamics::spinning_body_one_dof_state_effector::{
         SpinningBodyOneDofConfig, SpinningBodyOneDofStateEffector,
     };
@@ -1202,5 +1341,174 @@ mod tests {
                 .norm()
                 < 1e-10
         );
+    }
+
+    /// Upstream's `extForceTorque`: attached to a body, a force at its frame
+    /// origin and a torque about it, in its frame, plus an inertial force.
+    fn ext_force_torque(
+        force_inertial_n: Vector3<f64>,
+        force_body_n: Vector3<f64>,
+        torque_body_nm: Vector3<f64>,
+    ) -> ExtForceTorque {
+        ExtForceTorque::new(ExtForceTorqueConfig {
+            name: "extFT".to_string(),
+            ext_force_inertial_n: force_inertial_n,
+            ext_force_body_n: force_body_n,
+            ext_torque_body_nm: torque_body_nm,
+        })
+    }
+
+    /// The pair `upstream_pair()` as the equivalent two-body
+    /// [`SpinningBodyNDofStateEffector`](crate::dynamics::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector).
+    fn equivalent_chain(
+        pair: &SpinningBodyTwoDofConfig,
+    ) -> crate::dynamics::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector {
+        use crate::dynamics::spinning_body_n_dof_state_effector::{
+            SpinningBody, SpinningBodyNDofStateEffector,
+        };
+        let mut chain = SpinningBodyNDofStateEffector::new("chain");
+        for (body, dcm, origin) in [
+            (
+                &pair.body1,
+                pair.body_to_spinner1_dcm,
+                pair.spinner1_origin_body_m,
+            ),
+            (
+                &pair.body2,
+                pair.spinner1_to_spinner2_dcm,
+                pair.spinner2_origin_spinner1_m,
+            ),
+        ] {
+            chain.add_spinning_body(SpinningBody {
+                mass_kg: body.mass_kg,
+                inertia_about_com_spinner_kg_m2: body.inertia_about_com_spinner_kg_m2,
+                parent_to_spinner0_dcm: dcm,
+                center_of_mass_spinner_m: body.center_of_mass_spinner_m,
+                origin_parent_m: origin,
+                spin_axis_spinner: body.spin_axis_spinner,
+                spring_constant_nm_per_rad: body.spring_constant_nm_per_rad,
+                damping_nm_s_per_rad: body.damping_nm_s_per_rad,
+                ..SpinningBody::default()
+            });
+        }
+        chain
+    }
+
+    /// Effectors attached to either body enter the joint and hub equations
+    /// as they do for the equivalent two-body chain, whose attached loads
+    /// upstream's `computeDependentEffectors` propagates the same way.
+    #[test]
+    fn attached_effectors_match_the_equivalent_chain() {
+        let loads = [
+            (
+                Vector3::new(0.4, -0.3, 1.2),
+                Vector3::new(1.5, -2.0, 0.7),
+                Vector3::new(-0.4, 0.9, 0.3),
+            ),
+            (
+                Vector3::new(-1.1, 0.2, 0.5),
+                Vector3::new(-0.8, 0.6, 2.2),
+                Vector3::new(0.5, -0.2, -1.1),
+            ),
+        ];
+        let mut pair = upstream_pair();
+        pair.body1.damping_nm_s_per_rad = 3.0;
+        pair.body2.damping_nm_s_per_rad = 2.0;
+        let mut chain = equivalent_chain(&pair);
+        let mut two_dof = SpinningBodyTwoDofStateEffector::new(pair);
+        for (index, (force_n, force_s, torque_s)) in loads.into_iter().enumerate() {
+            two_dof.add_dynamic_effector(index, ext_force_torque(force_n, force_s, torque_s));
+            chain.add_dynamic_effector(index, ext_force_torque(force_n, force_s, torque_s));
+        }
+        assert_eq!(two_dof.dynamic_effectors(1).len(), 1);
+
+        let (theta, theta_dot) = ([0.3, -0.2], [0.04, -0.07]);
+        let pair_state = [theta[0], theta_dot[0], theta[1], theta_dot[1]];
+        let chain_state = [theta[0], theta[1], theta_dot[0], theta_dot[1]];
+        let hub_state = crate::messages::SpacecraftStateMsg {
+            sigma_bn: Vector3::new(0.1, -0.2, 0.3),
+            omega_radps: Vector3::new(0.05, -0.1, 0.2),
+            ..Default::default()
+        };
+        let gravity = Vector3::new(-0.2, 0.1, 0.3);
+        let mut pair_back_sub = Default::default();
+        let mut chain_back_sub = Default::default();
+        two_dof.update_contributions(&pair_state, &hub_state, gravity, &mut pair_back_sub);
+        chain.update_contributions(&chain_state, &hub_state, gravity, &mut chain_back_sub);
+        let accel = Vector3::new(0.2, -0.3, 0.1);
+        let omega_dot = Vector3::new(-0.02, 0.01, 0.03);
+        let pair_dot = two_dof.compute_derivatives(&pair_state, accel, omega_dot);
+        let chain_dot = chain.compute_derivatives(&chain_state, accel, omega_dot);
+
+        assert!((pair_dot[1] - chain_dot[2]).abs() < 1e-10 * chain_dot[2].abs().max(1.0));
+        assert!((pair_dot[3] - chain_dot[3]).abs() < 1e-10 * chain_dot[3].abs().max(1.0));
+        for (a, b, what) in [
+            (pair_back_sub.matrix_a, chain_back_sub.matrix_a, "A"),
+            (pair_back_sub.matrix_b, chain_back_sub.matrix_b, "B"),
+            (pair_back_sub.matrix_c, chain_back_sub.matrix_c, "C"),
+            (pair_back_sub.matrix_d, chain_back_sub.matrix_d, "D"),
+        ] {
+            assert!((a - b).norm() <= 1e-10 * b.norm(), "{what}: {a} vs {b}");
+        }
+        for (a, b, what) in [
+            (
+                pair_back_sub.vec_trans,
+                chain_back_sub.vec_trans,
+                "vecTrans",
+            ),
+            (pair_back_sub.vec_rot, chain_back_sub.vec_rot, "vecRot"),
+        ] {
+            assert!((a - b).norm() <= 1e-10 * b.norm(), "{what}: {a} vs {b}");
+        }
+        // And the effectors do change them.
+        let mut unloaded = Default::default();
+        SpinningBodyTwoDofStateEffector::new(upstream_pair()).update_contributions(
+            &pair_state,
+            &hub_state,
+            gravity,
+            &mut unloaded,
+        );
+        assert!((unloaded.vec_rot - pair_back_sub.vec_rot).norm() > 1e-3);
+    }
+
+    /// An attached torque about the upper body's spin axis drives its joint:
+    /// on a hub too heavy to move, with the lower axis locked,
+    /// `theta2_ddot = T / I_s2`.
+    #[test]
+    fn attached_torque_drives_the_upper_joint() {
+        let mut config = SpinningBodyTwoDofConfig::new("pair");
+        config.body1.mass_kg = 0.0;
+        config.body1.inertia_about_com_spinner_kg_m2 = Matrix3::zeros();
+        config.body2.mass_kg = 5.0;
+        config.body2.inertia_about_com_spinner_kg_m2 =
+            Matrix3::from_diagonal(&Vector3::new(2.0, 3.0, 4.0));
+        config.body2.spin_axis_spinner = Vector3::z();
+        let mut effector = SpinningBodyTwoDofStateEffector::new(config);
+        effector.locked = [true, false];
+        effector.add_dynamic_effector(
+            1,
+            ext_force_torque(
+                Vector3::zeros(),
+                Vector3::zeros(),
+                Vector3::new(0.0, 0.0, 0.8),
+            ),
+        );
+        let theta2 = effector.spinning_body_out[1].clone();
+        let lock = Output::new(ArrayEffectorLockMsg {
+            effector_lock: {
+                let mut lock = ArrayEffectorLockMsg::default().effector_lock;
+                lock[0] = EffectorLock::Locked;
+                lock
+            },
+        });
+        effector.motor_lock_in.connect(lock.slot());
+        let mut hub = HubSetup::hinged_body_hub();
+        hub.mass_kg = 1e12;
+        hub.inertia_kg_m2 = Matrix3::identity() * 1e12;
+        let mut spacecraft = spacecraft_with_effectors(&hub, 1_000_000, vec![Box::new(effector)]);
+        run_logging_every_step(&mut spacecraft, 100, || {});
+        let t = 0.1;
+        let expected = 0.5 * (0.8 / 4.0) * t * t;
+        assert!((theta2.read().theta_rad - expected).abs() < 1e-9 * expected);
     }
 }

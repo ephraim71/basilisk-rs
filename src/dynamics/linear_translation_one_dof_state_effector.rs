@@ -64,8 +64,6 @@ use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, tilde};
 /// `addDynamicEffector`): a force at the F origin and a torque about it, both
 /// in F components, as upstream sums `forceExternal_B + [FB][BN]
 /// forceExternal_N` and `torqueExternalPntB_B` of each attached effector.
-/// The translating-body counterpart of
-/// [`SpinnerLoad`](super::spinning_body_n_dof_state_effector::SpinnerLoad).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TranslatingBodyLoad {
     /// \[N\] force at the F origin, F components.
@@ -236,9 +234,7 @@ impl LinearTranslationOneDofStateEffector {
 
     /// Sets the load the dynamic effectors attached to the body apply
     /// (upstream `addDynamicEffector`); it acts from the next derivative
-    /// evaluation on, until set again, as
-    /// [`SpinningBodyNDofStateEffector::set_attached_load`](super::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector::set_attached_load)
-    /// does for a spinner. Unlike that one it takes `&self`: an effector whose
+    /// evaluation on, until set again. It takes `&self`: an effector whose
     /// load depends on the body's state sets it before every evaluation from
     /// the spacecraft it reads, as a
     /// [`CouplingEffector`](crate::spacecraft::CouplingEffector) of a

@@ -16,10 +16,15 @@
 //!
 //! State layout, as upstream registers it: `[θ1 … θN, θ̇1 … θ̇N]`.
 //!
-//! Difference from upstream: `addDynamicEffector` (dynamic effectors attached
-//! to a panel) is not ported, as in
-//! [`super::hinged_rigid_body_state_effector`], so the attached-load terms of
-//! the equations are zero.
+//! [`NHingedRigidBodyStateEffector::add_dynamic_effector`] attaches a
+//! [`DynamicEffector`] to a panel (upstream `addDynamicEffector(effector,
+//! segment)`), as
+//! [`HingedRigidBodyStateEffector::add_dynamic_effector`](super::hinged_rigid_body_state_effector::HingedRigidBodyStateEffector::add_dynamic_effector)
+//! does to the single panel. At every derivative evaluation the effector
+//! sees the panel frame with its origin at the panel's hinge, and returns an
+//! inertial force and a torque about the hinge in panel axes. The loads act
+//! on the panel and, through the hinges, on the panels inboard and the hub
+//! (upstream `extForce_B`, `extTorquePntH_B` and `attBodyForce_B`).
 
 use nalgebra::{DMatrix, DVector, Matrix3, MatrixXx3, Vector3};
 use std::any::Any;
@@ -27,7 +32,7 @@ use std::cell::RefCell;
 
 use crate::kinematics::is_rotation_matrix;
 use crate::messages::{HingedRigidBodyMsg, Output, SpacecraftStateMsg};
-use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
+use crate::spacecraft::{BackSubMatrices, DynamicEffector, StateEffector, StateEffectorMassProps};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, euler2, mrp_to_dcm};
 
 /// Upstream `NHingedRigidBodyStateEffector::validateConfiguration` tolerance
@@ -100,7 +105,6 @@ impl NHingedRigidBodyConfig {
 }
 
 /// A chain of hinged rigid panels (upstream `NHingedRigidBodyStateEffector`).
-#[derive(Debug)]
 pub struct NHingedRigidBodyStateEffector {
     pub config: NHingedRigidBodyConfig,
     /// Upstream `nHingedRigidBodyOutMsgs`: angle and rate of each hinge, in
@@ -111,9 +115,33 @@ pub struct NHingedRigidBodyStateEffector {
     /// position.
     pub panel_state_out: Vec<Output<SpacecraftStateMsg>>,
     panels: Vec<HingedPanel>,
+    /// Effectors attached to each panel, in chain order. They see the panel
+    /// frame with its origin at the panel's hinge, and return an inertial
+    /// force and a torque about the hinge in panel axes.
+    dynamic_effectors: Vec<Vec<Box<dyn DynamicEffector>>>,
+    /// Time of the current derivative evaluation, for the attached effectors.
+    stage_nanos: u64,
     /// Last loaded `[θ1 … θN, θ̇1 … θ̇N]`.
     state: Vec<f64>,
     back_sub: RefCell<NHingedBackSubTerms>,
+}
+
+impl std::fmt::Debug for NHingedRigidBodyStateEffector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NHingedRigidBodyStateEffector")
+            .field("config", &self.config)
+            .field("panels", &self.panels)
+            .field("state", &self.state)
+            .field(
+                "dynamic_effectors",
+                &self
+                    .dynamic_effectors
+                    .iter()
+                    .map(Vec::len)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl NHingedRigidBodyStateEffector {
@@ -125,6 +153,8 @@ impl NHingedRigidBodyStateEffector {
             hinged_rigid_body_out: Vec::new(),
             panel_state_out: Vec::new(),
             panels: Vec::new(),
+            dynamic_effectors: Vec::new(),
+            stage_nanos: 0,
             state: Vec::new(),
             back_sub: RefCell::new(NHingedBackSubTerms::default()),
         }
@@ -134,6 +164,7 @@ impl NHingedRigidBodyStateEffector {
     /// messages (upstream `addHingedPanel`).
     pub fn add_hinged_panel(&mut self, panel: HingedPanel) {
         self.panels.push(panel);
+        self.dynamic_effectors.push(Vec::new());
         self.hinged_rigid_body_out.push(Output::default());
         self.panel_state_out.push(Output::default());
         self.state = self.configured_initial_state();
@@ -142,6 +173,76 @@ impl NHingedRigidBodyStateEffector {
     /// The panels, from the hub outward.
     pub fn panels(&self) -> &[HingedPanel] {
         &self.panels
+    }
+
+    /// Attaches an effector to panel `index`, counting from the hub (upstream
+    /// `addDynamicEffector(effector, index + 1)`). Any effector is accepted,
+    /// so it must make sense for a body whose state is the panel's.
+    ///
+    /// # Panics
+    ///
+    /// If the chain has no panel `index` (upstream: "specifying attachment
+    /// to a non-existent panel").
+    pub fn add_dynamic_effector<E>(&mut self, index: usize, effector: E)
+    where
+        E: DynamicEffector + 'static,
+    {
+        assert!(
+            index < self.panels.len(),
+            "NHingedRigidBodyStateEffector '{}': specifying attachment to a non-existent panel \
+             {index}",
+            self.config.name
+        );
+        self.dynamic_effectors[index].push(Box::new(effector));
+    }
+
+    /// The effectors attached to panel `index`.
+    pub fn dynamic_effectors(&self, index: usize) -> &[Box<dyn DynamicEffector>] {
+        &self.dynamic_effectors[index]
+    }
+
+    /// Each panel's attached loads, as a force and a torque about its hinge
+    /// in body axes (upstream `extForce_B`, `extTorquePntH_B`).
+    fn attached_loads(
+        &self,
+        kinematics: &[PanelKinematics],
+        hub_state: &SpacecraftStateMsg,
+    ) -> Vec<(Vector3<f64>, Vector3<f64>)> {
+        let dcm_bn = mrp_to_dcm(hub_state.sigma_bn);
+        let dcm_nb = dcm_bn.transpose();
+        let omega_bn_b = hub_state.omega_radps;
+        self.panels
+            .iter()
+            .zip(kinematics)
+            .zip(&self.dynamic_effectors)
+            .map(|((panel, kin), effectors)| {
+                if effectors.is_empty() {
+                    return (Vector3::zeros(), Vector3::zeros());
+                }
+                let d = panel.center_of_mass_offset_m;
+                let r_hb_b = kin.r_sb_b + d * kin.s1;
+                let r_prime_hb_b = kin.r_prime_sb_b - d * kin.sum_theta_dot_radps * kin.s3;
+                let hinge_state = SpacecraftStateMsg {
+                    position_m: hub_state.position_m + dcm_nb * r_hb_b,
+                    velocity_mps: hub_state.velocity_mps
+                        + dcm_nb * (r_prime_hb_b + omega_bn_b.cross(&r_hb_b)),
+                    sigma_bn: dcm_to_mrp(kin.dcm_sb * dcm_bn),
+                    omega_radps: kin.dcm_sb * (omega_bn_b + kin.omega_sb_b),
+                    ..Default::default()
+                };
+                let panel_to_body = kin.dcm_sb.transpose();
+                effectors.iter().fold(
+                    (Vector3::zeros(), Vector3::zeros()),
+                    |(force, torque), effector| {
+                        let output = effector.compute_output_at(&hinge_state, self.stage_nanos);
+                        (
+                            force + dcm_bn * output.force_inertial_n,
+                            torque + panel_to_body * output.torque_body_nm,
+                        )
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Upstream `validateConfiguration`: at least one panel, every mass finite
@@ -272,6 +373,7 @@ impl NHingedRigidBodyStateEffector {
         kinematics: &[PanelKinematics],
         body_omega_radps: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
+        attached_loads_b: &[(Vector3<f64>, Vector3<f64>)],
     ) -> NHingedBackSubTerms {
         let panels = &self.panels;
         let n = panels.len();
@@ -279,6 +381,17 @@ impl NHingedRigidBodyStateEffector {
         let heaviside = |cond: f64| if cond < 0.0 { 0.0 } else { 1.0 };
         let total_mass_kg: f64 = panels.iter().map(|panel| panel.mass_kg).sum();
         let iyy = |index: usize| panels[index].inertia_about_panel_com_panel_kg_m2[(1, 1)];
+
+        // Upstream `attBodyForce_B`, `attBodyTorquePntB_B`: the attached
+        // loads, the forces acting at the hinges `r_HB_B = r_SB_B + d ŝ1`.
+        let att_body_force_b: Vector3<f64> = attached_loads_b.iter().map(|(force, _)| force).sum();
+        let att_body_torque_b: Vector3<f64> = attached_loads_b
+            .iter()
+            .zip(panels.iter().zip(kinematics))
+            .map(|((force, torque), (panel, kin))| {
+                torque + (kin.r_sb_b + panel.center_of_mass_offset_m * kin.s1).cross(force)
+            })
+            .sum();
 
         // Panel equations `A θ̈ = F r̈_B + G ω̇ + v`.
         let mut matrix_a = DMatrix::zeros(n, n);
@@ -318,9 +431,11 @@ impl NHingedRigidBodyStateEffector {
 
         let mut vector_v = DVector::zeros(n);
         let mut mass_of_current_panel_and_before = 0.0;
+        let mut ext_force_current_panel_and_before = Vector3::zeros();
         for j in 0..n {
             let (panel_j, kin_j) = (&panels[j], &kinematics[j]);
             mass_of_current_panel_and_before += panel_j.mass_kg;
+            ext_force_current_panel_and_before += attached_loads_b[j].0;
             let mut spring_term = -panel_j.spring_constant_nm_per_rad
                 * (kin_j.theta_rad - panel_j.theta_rest_rad)
                 - panel_j.damping_nm_s_per_rad * kin_j.theta_dot_radps;
@@ -363,9 +478,19 @@ impl NHingedRigidBodyStateEffector {
                 * kin_j.s1.cross(&(panel_j.mass_kg * gravity_body_mps2));
             let grav_force_rest_of_panels =
                 (total_mass_kg - mass_of_current_panel_and_before) * gravity_body_mps2;
+            // An attached torque on a panel outboard of j cancels between the
+            // balances of rows j and j + 1; only its force's moment arm
+            // remains (upstream's comment).
+            let ext_force_rest_of_panels = att_body_force_b - ext_force_current_panel_and_before;
             vector_v[j] = sum_term1
-                + kin_j.s2.dot(&grav_torque_cur_panel)
-                + 2.0 * panel_j.center_of_mass_offset_m * kin_j.s3.dot(&grav_force_rest_of_panels);
+                + kin_j
+                    .s2
+                    .dot(&(grav_torque_cur_panel + attached_loads_b[j].1))
+                + 2.0
+                    * panel_j.center_of_mass_offset_m
+                    * kin_j
+                        .s3
+                        .dot(&(grav_force_rest_of_panels + ext_force_rest_of_panels));
         }
 
         let theta_ddot_accel = &matrix_e * matrix_f;
@@ -400,6 +525,7 @@ impl NHingedRigidBodyStateEffector {
             terms.matrix_b += sum_term1 * theta_ddot_omega_dot.row(j);
             terms.vec_trans += -sum_term2 - sum_term1 * theta_ddot_bias[j];
         }
+        terms.vec_trans += att_body_force_b;
 
         // Rotational contributions.
         let mut sum_theta_dot = 0.0;
@@ -432,6 +558,7 @@ impl NHingedRigidBodyStateEffector {
             terms.matrix_d += sum_term1 * theta_ddot_omega_dot.row(j);
             terms.vec_rot += -sum_term2 - sum_term1 * theta_ddot_bias[j];
         }
+        terms.vec_rot += att_body_torque_b;
 
         terms.theta_ddot_accel = theta_ddot_accel;
         terms.theta_ddot_omega_dot = theta_ddot_omega_dot;
@@ -496,7 +623,20 @@ impl StateEffector for NHingedRigidBodyStateEffector {
         self.write_hinge_states();
     }
 
-    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {}
+    fn pre_integration(&mut self, current_sim_nanos: u64, dt_seconds: f64) {
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.pre_integration(current_sim_nanos, dt_seconds);
+        }
+    }
+
+    /// Hands the stage time to the attached effectors, as the spacecraft does
+    /// to its own.
+    fn begin_stage(&mut self, stage_nanos: u64) {
+        self.stage_nanos = stage_nanos;
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.begin_stage(stage_nanos);
+        }
+    }
 
     fn update_contributions(
         &self,
@@ -505,9 +645,14 @@ impl StateEffector for NHingedRigidBodyStateEffector {
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
-        let body_omega_radps = hub_state.omega_radps;
         let kinematics = self.kinematics(effector_state);
-        let terms = self.back_sub_terms(&kinematics, body_omega_radps, gravity_body_mps2);
+        let attached_loads_b = self.attached_loads(&kinematics, hub_state);
+        let terms = self.back_sub_terms(
+            &kinematics,
+            hub_state.omega_radps,
+            gravity_body_mps2,
+            &attached_loads_b,
+        );
         back_sub.matrix_a += terms.matrix_a;
         back_sub.matrix_b += terms.matrix_b;
         back_sub.matrix_c += terms.matrix_c;
@@ -655,8 +800,8 @@ impl Default for NHingedBackSubTerms {
 
 /// One panel's geometry for a given chain state (upstream `HingedPanel`'s
 /// derived members, filled by `updateEffectorMassProps`). The hinge position
-/// and velocity (`r_HB_B`, `rPrime_HB_B`) only serve attached dynamic
-/// effectors and are not kept.
+/// and velocity (`r_HB_B`, `rPrime_HB_B`), which only attached dynamic
+/// effectors need, follow from `r_sb_b` and `r_prime_sb_b`.
 #[derive(Clone, Debug)]
 struct PanelKinematics {
     theta_rad: f64,
@@ -684,13 +829,16 @@ mod tests {
     //! Ports of upstream `test_nHingedRigidBodyStateEffector.py` and
     //! `test_nHingedRigidBodyDefaultConfig.py`.
     //!
-    //! Not ported: `test_nHingedRigidBodyDynamicEffectorSegmentBounds`, which
-    //! exercises `addDynamicEffector` (not ported, see the module docs).
+    //! `test_nHingedRigidBodyDynamicEffectorSegmentBounds` is
+    //! `dynamic_effectors_only_attach_to_existing_panels` and its
+    //! `..._reject_a_missing_panel`; the attached-load terms are also checked
+    //! against a single hinged panel carrying the same effector.
 
     use super::{HingedPanel, NHingedRigidBodyConfig, NHingedRigidBodyStateEffector};
     use crate::dynamics::dual_hinged_rigid_body_state_effector::{
         DualHingedPanelConfig, DualHingedRigidBodyConfig, DualHingedRigidBodyStateEffector,
     };
+    use crate::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
     use crate::dynamics::state_effector_test_support::{
         HubSetup, add_point_mass_earth, assert_conserved, run_logging_every_step,
         spacecraft_with_effectors,
@@ -978,5 +1126,184 @@ mod tests {
         assert_eq!(effector.state_len(), 6);
         assert_eq!(effector.hinged_rigid_body_out.len(), 3);
         assert_eq!(effector.panel_state_out.len(), 3);
+    }
+
+    /// A three-panel chain with distinct inertias, springs and dampers, and
+    /// the equivalent three-body spinning chain: each body turning about its
+    /// frame's y axis, its center of mass `d` along -x, the next joint `2d`
+    /// along -x.
+    fn panel_and_spinner_chains() -> (
+        NHingedRigidBodyStateEffector,
+        crate::dynamics::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector,
+    ) {
+        use crate::dynamics::spinning_body_n_dof_state_effector::{
+            SpinningBody, SpinningBodyNDofStateEffector,
+        };
+        let mut config = NHingedRigidBodyConfig::new("panels");
+        config.hinge_position_body_m = Vector3::new(0.5, -1.5, -0.5);
+        config.body_to_hinge_dcm = Matrix3::new(0.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0);
+        let mut panels = NHingedRigidBodyStateEffector::new(config.clone());
+        let mut spinners = SpinningBodyNDofStateEffector::new("spinners");
+        let d = 0.75;
+        for index in 0..3 {
+            let inertia = Matrix3::from_diagonal(&Vector3::new(
+                100.0 + 10.0 * index as f64,
+                50.0 - 5.0 * index as f64,
+                60.0 + 3.0 * index as f64,
+            ));
+            let panel = HingedPanel {
+                mass_kg: 100.0,
+                center_of_mass_offset_m: d,
+                spring_constant_nm_per_rad: 100.0 + 20.0 * index as f64,
+                damping_nm_s_per_rad: 3.0 - index as f64,
+                inertia_about_panel_com_panel_kg_m2: inertia,
+                ..HingedPanel::default()
+            };
+            spinners.add_spinning_body(SpinningBody {
+                mass_kg: panel.mass_kg,
+                inertia_about_com_spinner_kg_m2: inertia,
+                parent_to_spinner0_dcm: if index == 0 {
+                    config.body_to_hinge_dcm
+                } else {
+                    Matrix3::identity()
+                },
+                center_of_mass_spinner_m: Vector3::new(-d, 0.0, 0.0),
+                origin_parent_m: if index == 0 {
+                    config.hinge_position_body_m
+                } else {
+                    Vector3::new(-2.0 * d, 0.0, 0.0)
+                },
+                spin_axis_spinner: Vector3::y(),
+                spring_constant_nm_per_rad: panel.spring_constant_nm_per_rad,
+                damping_nm_s_per_rad: panel.damping_nm_s_per_rad,
+                ..SpinningBody::default()
+            });
+            panels.add_hinged_panel(panel);
+        }
+        (panels, spinners)
+    }
+
+    fn ext_force_torque(
+        force_inertial_n: Vector3<f64>,
+        force_body_n: Vector3<f64>,
+        torque_body_nm: Vector3<f64>,
+    ) -> ExtForceTorque {
+        ExtForceTorque::new(ExtForceTorqueConfig {
+            name: "extFT".to_string(),
+            ext_force_inertial_n: force_inertial_n,
+            ext_force_body_n: force_body_n,
+            ext_torque_body_nm: torque_body_nm,
+        })
+    }
+
+    /// Upstream `test_nHingedRigidBodyDynamicEffectorSegmentBounds` (with
+    /// zero-based panel indices): the first and last panels take an
+    /// effector.
+    #[test]
+    fn dynamic_effectors_only_attach_to_existing_panels() {
+        let (mut panels, _) = panel_and_spinner_chains();
+        panels.add_dynamic_effector(
+            0,
+            ext_force_torque(Vector3::zeros(), Vector3::x(), Vector3::zeros()),
+        );
+        panels.add_dynamic_effector(
+            2,
+            ext_force_torque(Vector3::zeros(), Vector3::x(), Vector3::zeros()),
+        );
+        assert_eq!(
+            (0..3)
+                .map(|index| panels.dynamic_effectors(index).len())
+                .collect::<Vec<_>>(),
+            [1, 0, 1]
+        );
+    }
+
+    /// The same check's out-of-range side.
+    #[test]
+    #[should_panic(expected = "non-existent panel")]
+    fn dynamic_effectors_reject_a_missing_panel() {
+        let (mut panels, _) = panel_and_spinner_chains();
+        panels.add_dynamic_effector(
+            3,
+            ext_force_torque(Vector3::zeros(), Vector3::x(), Vector3::zeros()),
+        );
+    }
+
+    /// An `extForceTorque` attached to each panel (a force and a torque in
+    /// panel axes at the hinge, and an inertial force) enters the hinge and
+    /// hub equations as the same effector attached to each body of the
+    /// equivalent spinning-body chain does; without effectors the two chains
+    /// agree too.
+    #[test]
+    fn attached_effectors_match_the_equivalent_spinning_chain() {
+        let (mut panels, mut spinners) = panel_and_spinner_chains();
+        let state = [0.08, -0.05, 0.03, -0.02, 0.01, 0.04];
+        let hub_state = SpacecraftStateMsg {
+            sigma_bn: Vector3::new(0.1, -0.2, 0.3),
+            omega_radps: Vector3::new(0.05, -0.02, 0.03),
+            ..Default::default()
+        };
+        let gravity = Vector3::new(0.2, -0.1, 0.15);
+        let accel = Vector3::new(0.3, 0.1, -0.2);
+        let omega_dot = Vector3::new(-0.01, 0.02, 0.005);
+        let compare = |panels: &NHingedRigidBodyStateEffector,
+                       spinners: &crate::dynamics::spinning_body_n_dof_state_effector::SpinningBodyNDofStateEffector,
+                       what: &str| {
+            let mut panel_terms = Default::default();
+            let mut spinner_terms = Default::default();
+            panels.update_contributions(&state, &hub_state, gravity, &mut panel_terms);
+            spinners.update_contributions(&state, &hub_state, gravity, &mut spinner_terms);
+            let panel_dot = panels.compute_derivatives(&state, accel, omega_dot);
+            let spinner_dot = spinners.compute_derivatives(&state, accel, omega_dot);
+            for index in 3..6 {
+                let scale = spinner_dot[index].abs().max(1e-3);
+                assert!(
+                    (panel_dot[index] - spinner_dot[index]).abs() < 1e-9 * scale,
+                    "{what}: theta ddot {} vs {}",
+                    panel_dot[index],
+                    spinner_dot[index]
+                );
+            }
+            for (a, b, name) in [
+                (panel_terms.matrix_a, spinner_terms.matrix_a, "A"),
+                (panel_terms.matrix_b, spinner_terms.matrix_b, "B"),
+                (panel_terms.matrix_c, spinner_terms.matrix_c, "C"),
+                (panel_terms.matrix_d, spinner_terms.matrix_d, "D"),
+            ] {
+                assert!((a - b).norm() <= 1e-9 * b.norm(), "{what} {name}: {a} vs {b}");
+            }
+            for (a, b, name) in [
+                (panel_terms.vec_trans, spinner_terms.vec_trans, "vecTrans"),
+                (panel_terms.vec_rot, spinner_terms.vec_rot, "vecRot"),
+            ] {
+                assert!((a - b).norm() <= 1e-9 * b.norm().max(1.0), "{what} {name}: {a} vs {b}");
+            }
+            panel_terms.vec_rot
+        };
+        let unloaded = compare(&panels, &spinners, "unloaded");
+
+        let loads = [
+            (
+                Vector3::new(-4.0, 6.0, 2.0),
+                Vector3::new(10.0, -5.0, 3.0),
+                Vector3::new(2.0, -1.0, 4.0),
+            ),
+            (
+                Vector3::zeros(),
+                Vector3::new(-2.0, 4.0, 1.0),
+                Vector3::new(0.5, 3.0, -1.5),
+            ),
+            (
+                Vector3::new(1.0, -2.0, 0.5),
+                Vector3::new(1.0, 1.0, -6.0),
+                Vector3::new(-2.0, 0.7, 0.4),
+            ),
+        ];
+        for (index, (force_n, force_s, torque_s)) in loads.into_iter().enumerate() {
+            panels.add_dynamic_effector(index, ext_force_torque(force_n, force_s, torque_s));
+            spinners.add_dynamic_effector(index, ext_force_torque(force_n, force_s, torque_s));
+        }
+        let loaded = compare(&panels, &spinners, "loaded");
+        assert!((loaded - unloaded).norm() > 1.0);
     }
 }

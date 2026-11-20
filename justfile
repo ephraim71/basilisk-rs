@@ -127,7 +127,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -308,6 +308,38 @@ plot-ground-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_spacecraft_location.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_satellite_constellation.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_two_charged_sc.py --generated-dir "{{generated_dir}}"
+
+# Run the hinged, flexible, slosh, spinning-body, prescribed-motion and
+# branching example scenarios in every parametrization of upstream's
+# `test_scenario*.py` and write their CSV files. The deploying-panel,
+# flexible-panel and extending-boom scenarios read the assets of
+# `fetch-anise-assets`.
+run-multibody-a-scenarios:
+    cargo run --release --example scenario_hinged_rigid_body
+    cargo run --release --example scenario_deploying_panel
+    cargo run --release --example scenario_deploying_solar_arrays
+    cargo run --release --example scenario_extending_boom
+    cargo run --release --example scenario_flexible_panel -- --segments 5
+    cargo run --release --example scenario_rotating_panel
+    cargo run --release --example scenario_fuel_slosh -- --all
+    cargo run --release --example scenario_spinning_bodies_two_dof -- --all
+    cargo run --release --example scenario_sweeping_spacecraft -- --all
+    cargo run --release --example scenario_thruster_arm
+    cargo run --release --example scenario_branching_verification
+
+# Render the multibody scenarios' figures from their CSV files.
+plot-multibody-a-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_hinged_rigid_body.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_deploying_panel.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_deploying_solar_arrays.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_extending_boom.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_flexible_panel.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_rotating_panel.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_fuel_slosh.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_spinning_bodies_two_dof.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_sweeping_spacecraft.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_thruster_arm.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_branching_verification.py --generated-dir "{{generated_dir}}"
 
 # Run the constrained-dynamics, prescribed-motion and robotic-arm example
 # write their CSV files. `scenario_robotic_arm` reads the ANISE assets of

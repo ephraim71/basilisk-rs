@@ -20,7 +20,8 @@ use crate::integrators::{
     Dopri45, Euler, Heun, Integrator, Midpoint, Ralston, Rk4, Rk4ThreeEighths, Rkf45,
 };
 use crate::messages::{
-    AtmosphereMsg, HingedRigidBodyMsg, Input, MotorTorqueMsg, Output, SpacecraftStateMsg,
+    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, MotorTorqueMsg, Output,
+    SpacecraftStateMsg,
 };
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
@@ -1034,7 +1035,7 @@ impl StateEffector for PublishingThetaEffector {
     fn update_contributions(
         &self,
         _effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
+        _hub_state: &SpacecraftStateMsg,
         _gravity_body_mps2: Vector3<f64>,
         _back_sub: &mut BackSubMatrices,
     ) {
@@ -1200,4 +1201,281 @@ fn integrator_accuracy_improves_with_order() {
     assert!(heun < euler, "heun {heun:.3e} !< euler {euler:.3e}");
     assert!(rk4 < heun, "rk4 {rk4:.3e} !< heun {heun:.3e}");
     assert!(dopri < 1e-6, "adaptive dopri45 radius error {dopri:.3e}");
+}
+
+/// Constant load. The force is inertial; the torque is in the frame of whatever it
+/// is attached to, about that frame's origin.
+struct ConstantLoad {
+    force_inertial_n: Vector3<f64>,
+    torque_nm: Vector3<f64>,
+}
+
+impl DynamicEffector for ConstantLoad {
+    fn name(&self) -> &str {
+        "constant_load"
+    }
+
+    fn compute_output(&self, _state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput {
+            force_inertial_n: self.force_inertial_n,
+            torque_body_nm: self.torque_nm,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn tumbling_spacecraft() -> Spacecraft {
+    Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, -0.05, 0.02),
+        inertia_kg_m2: Matrix3::new(900.0, 10.0, 0.0, 10.0, 800.0, 5.0, 0.0, 5.0, 600.0),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
+    })
+}
+
+fn skewed_panel_config() -> HingedRigidBodyConfig {
+    let (s, c) = 0.6_f64.sin_cos();
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 100.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::new(100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0);
+    config.center_of_mass_offset_m = 1.5;
+    config.spring_constant_nm_per_rad = 100.0;
+    config.damping_nm_s_per_rad = 2.0;
+    config.hinge_position_body_m = Vector3::new(0.5, 0.3, 1.0);
+    config.body_to_hinge_dcm = Matrix3::new(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0);
+    config.theta_init_rad = 0.2;
+    config
+}
+
+/// Runs 20 s and returns the hub state and the hinge angle and rate.
+fn run_with_panel(
+    mut spacecraft: Spacecraft,
+    panel: HingedRigidBodyStateEffector,
+) -> (SpacecraftStateMsg, HingedRigidBodyMsg) {
+    let state = spacecraft.state_out.clone();
+    let hinge = panel.hinged_rigid_body_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    spacecraft.add_state_effector(panel);
+    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+    sim.run_for(20_000_000_000);
+    (state.read(), hinge.read())
+}
+
+fn assert_same_motion(
+    a: (SpacecraftStateMsg, HingedRigidBodyMsg),
+    b: (SpacecraftStateMsg, HingedRigidBodyMsg),
+) {
+    let pairs = [
+        (a.0.position_m, b.0.position_m),
+        (a.0.velocity_mps, b.0.velocity_mps),
+        (a.0.sigma_bn, b.0.sigma_bn),
+        (a.0.omega_radps, b.0.omega_radps),
+        (
+            Vector3::new(a.1.theta_rad, a.1.theta_dot_radps, 0.0),
+            Vector3::new(b.1.theta_rad, b.1.theta_dot_radps, 0.0),
+        ),
+    ];
+    for (x, y) in pairs {
+        assert!(
+            (x - y).norm() <= 1.0e-12 * x.norm().max(1.0),
+            "panel load {x} differs from equivalent {y}"
+        );
+    }
+}
+
+/// A force through the hinge does no work on the hinge, so it must move the
+/// spacecraft exactly as the same force applied to the hub at the hinge point.
+#[test]
+fn panel_force_at_hinge_matches_hub_force_at_hinge_point() {
+    let force_inertial_n = Vector3::new(0.3, -0.2, 0.5);
+    let mut panel = HingedRigidBodyStateEffector::new(skewed_panel_config());
+    panel.add_dynamic_effector(ConstantLoad {
+        force_inertial_n,
+        torque_nm: Vector3::zeros(),
+    });
+    let on_panel = run_with_panel(tumbling_spacecraft(), panel);
+
+    // Hub torque about B from a force at the hinge needs the hub attitude, so the
+    // equivalent load rotates the inertial force into the body frame itself.
+    struct ForceAtPoint {
+        force_inertial_n: Vector3<f64>,
+        point_body_m: Vector3<f64>,
+    }
+    impl DynamicEffector for ForceAtPoint {
+        fn name(&self) -> &str {
+            "force_at_point"
+        }
+        fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+            let force_body = state
+                .inertial_to_body()
+                .transform_vector(&self.force_inertial_n);
+            EffectorOutput {
+                force_inertial_n: self.force_inertial_n,
+                torque_body_nm: self.point_body_m.cross(&force_body),
+            }
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    let mut spacecraft = tumbling_spacecraft();
+    spacecraft.add_dynamic_effector(ForceAtPoint {
+        force_inertial_n,
+        point_body_m: skewed_panel_config().hinge_position_body_m,
+    });
+    let on_hub = run_with_panel(
+        spacecraft,
+        HingedRigidBodyStateEffector::new(skewed_panel_config()),
+    );
+
+    assert_same_motion(on_panel, on_hub);
+}
+
+/// A torque on the panel about the hinge axis equals a motor torque (panel gets +T,
+/// hub gets -T) plus the same torque on the hub.
+#[test]
+fn panel_torque_about_hinge_axis_matches_motor_plus_hub_torque() {
+    let torque_nm = 0.4;
+    let mut panel = HingedRigidBodyStateEffector::new(skewed_panel_config());
+    panel.add_dynamic_effector(ConstantLoad {
+        force_inertial_n: Vector3::zeros(),
+        torque_nm: Vector3::new(0.0, torque_nm, 0.0),
+    });
+    let on_panel = run_with_panel(tumbling_spacecraft(), panel);
+
+    let config = skewed_panel_config();
+    let hinge_axis_body = config.body_to_hinge_dcm.row(1).transpose();
+    let mut spacecraft = tumbling_spacecraft();
+    spacecraft.add_dynamic_effector(ConstantLoad {
+        force_inertial_n: Vector3::zeros(),
+        torque_nm: torque_nm * hinge_axis_body,
+    });
+    let motor = Output::new(ArrayMotorTorqueMsg::from_active(&[torque_nm]));
+    let mut panel = HingedRigidBodyStateEffector::new(config);
+    panel.motor_torque_in.connect(motor.slot());
+    let on_hub_with_motor = run_with_panel(spacecraft, panel);
+
+    assert_same_motion(on_panel, on_hub_with_motor);
+}
+
+/// Constant force and torque in the frame of whatever it is attached to, like
+/// Basilisk's `extForceTorque` with `extForce_B` and `extTorquePntB_B`.
+struct AttachedFrameLoad {
+    force_n: Vector3<f64>,
+    torque_nm: Vector3<f64>,
+}
+
+impl DynamicEffector for AttachedFrameLoad {
+    fn name(&self) -> &str {
+        "attached_frame_load"
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput {
+            force_inertial_n: state.body_to_inertial().transform_vector(&self.force_n),
+            torque_body_nm: self.torque_nm,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Basilisk 1c89eed20: spacecraft, hinged panel and `extForceTorque` attached to the
+/// panel (segment 1), RK4 at 0.01 s for 10 s. The initial B position and velocity are
+/// Basilisk's, which it derives from a zero initial center of mass state.
+#[test]
+fn panel_external_load_matches_basilisk() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, -0.05, 0.02),
+        inertia_kg_m2: Matrix3::new(900.0, 10.0, 0.0, 10.0, 800.0, 5.0, 0.0, 5.0, 600.0),
+        integration_step_nanos: 10_000_000,
+        initial_position_m: Vector3::new(
+            -0.010670562682714532,
+            0.09387901417630339,
+            -0.09654597379569231,
+        ),
+        initial_velocity_mps: Vector3::new(
+            -0.0002959525465259052,
+            0.00020381370471187879,
+            0.0002308932107304473,
+        ),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.01, -0.005, 0.008),
+        integrator: None,
+    });
+    let mut config = skewed_panel_config();
+    config.mass_kg = 50.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::from_diagonal(&Vector3::new(50.0, 30.0, 40.0));
+    config.center_of_mass_offset_m = 1.0;
+    let mut panel = HingedRigidBodyStateEffector::new(config);
+    panel.add_dynamic_effector(AttachedFrameLoad {
+        force_n: Vector3::new(0.3, -0.2, 0.5),
+        torque_nm: Vector3::new(0.1, 0.4, -0.2),
+    });
+
+    let state = spacecraft.state_out.clone();
+    let hinge = panel.hinged_rigid_body_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    spacecraft.add_state_effector(panel);
+    sim.add_module("spacecraft", &mut spacecraft, 10_000_000, 0);
+    sim.run_for(10_000_000_000);
+    let (state, hinge) = (state.read(), hinge.read());
+
+    let expected = [
+        (
+            state.position_m,
+            Vector3::new(
+                -0.024805271284116165,
+                0.08142523147854516,
+                -0.05313444453434257,
+            ),
+        ),
+        (
+            state.velocity_mps,
+            Vector3::new(
+                0.004611752630162651,
+                0.0026913562505741086,
+                0.0013102015333102146,
+            ),
+        ),
+        (
+            state.sigma_bn,
+            Vector3::new(
+                0.11962060893301583,
+                -0.20592654400510157,
+                0.07268509154996725,
+            ),
+        ),
+        (
+            state.omega_radps,
+            Vector3::new(
+                0.015346272302581508,
+                -0.008412017755388355,
+                0.002931728363179389,
+            ),
+        ),
+        (
+            Vector3::new(hinge.theta_rad, hinge.theta_dot_radps, 0.0),
+            Vector3::new(0.10492570106582176, 0.16035275664228743, 0.0),
+        ),
+    ];
+    for (actual, basilisk) in expected {
+        assert!(
+            (actual - basilisk).norm() < 1.0e-12 * basilisk.norm(),
+            "got {actual}, Basilisk {basilisk}"
+        );
+    }
 }

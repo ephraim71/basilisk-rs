@@ -348,3 +348,43 @@ f 2 3 4\n";
         assert_eq!(model.face_count(), 4);
     }
 }
+
+/// Advancing a spinning planet's orientation must land on the exact rotation;
+/// the linear `DCM + DCM_dot dt` estimate is off by ~(omega dt)^2.
+#[test]
+fn planet_orientation_advances_by_rotation() {
+    let omega = 7.292_115e-5;
+    let r3 = |angle: f64| {
+        let (s, c) = angle.sin_cos();
+        nalgebra::Matrix3::new(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0)
+    };
+    let r3_dot = |angle: f64| {
+        let (s, c) = angle.sin_cos();
+        omega * nalgebra::Matrix3::new(-s, c, 0.0, -c, -s, 0.0, 0.0, 0.0, 0.0)
+    };
+    let tilt = nalgebra::Matrix3::new(
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9,
+        0.4358898943540674,
+        0.0,
+        -0.4358898943540674,
+        0.9,
+    );
+    let orientation = PlanetOrientation {
+        inertial_to_fixed: r3(0.3) * tilt,
+        inertial_to_fixed_dot: r3_dot(0.3) * tilt,
+    };
+
+    for dt in [1.0, 600.0, -3600.0] {
+        let advanced = gravity_effector::advance_inertial_to_fixed(&orientation, dt);
+        let exact = r3(0.3 + omega * dt) * tilt;
+        assert!(
+            (advanced - exact).norm() < 1.0e-14,
+            "dt {dt}: {}",
+            (advanced - exact).norm()
+        );
+    }
+}

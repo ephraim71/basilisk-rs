@@ -17,4 +17,5 @@ pub mod orbital_motion;
 pub mod rigid_body_kinematics;
 pub mod signal_condition;
 pub mod svd;
+pub mod tle_handling;
 pub mod ukf_utilities;

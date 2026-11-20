@@ -52,6 +52,8 @@ pub enum ThrusterModel {
     MoogMonarc5,
     /// `MOOG_Monarc_22_6`: 22 N, Isp 229.5 s, nozzle 0.0045 m^2.
     MoogMonarc22_6,
+    /// `MOOG_Monarc_90HT`: 116 N, Isp 234 s, nozzle 0.0222 m^2.
+    MoogMonarc90Ht,
 }
 
 /// Upstream `thrusterFactory`: the thrusters in creation order.
@@ -74,6 +76,7 @@ impl ThrusterFactory {
             ThrusterModel::MoogMonarc1 => (0.9, 227.5, 0.000_079),
             ThrusterModel::MoogMonarc5 => (4.5, 226.1, 0.0020),
             ThrusterModel::MoogMonarc22_6 => (22.0, 229.5, 0.0045),
+            ThrusterModel::MoogMonarc90Ht => (116.0, 234.0, 0.0222),
         };
         let label = format!("TH{}", self.thrusters.len() + 1);
         self.thrusters.push(ThrusterSpec {

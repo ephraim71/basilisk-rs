@@ -13,6 +13,7 @@ use basilisk_rs::dynamics::reaction_wheel_state_effector::{
     ReactionWheelModel, ReactionWheelStateEffectorConfig,
 };
 use basilisk_rs::messages::RwArrayConfigMsg;
+use basilisk_rs::utilities::rigid_body_kinematics::{Axis, mi};
 use nalgebra::Vector3;
 
 use super::common::rpm_to_radps;
@@ -147,4 +148,32 @@ impl RwFactory {
         }
         config
     }
+}
+
+/// The four-wheel pyramid of upstream's BskSim and MultiSat dynamics
+/// (`BSK_Dynamics`, `BSK_MultiSatDynamics`): `Honeywell_HR16` wheels of
+/// `max_momentum_nms` at 40° elevation and 45°, 135°, 225° and 315° azimuth,
+/// `gsHat_B = Mi(-az, 3) Mi(el, 2) [1, 0, 0]`, at upstream's `rWB_B`, at
+/// rest, balanced.
+pub fn hr16_pyramid(max_momentum_nms: f64) -> RwFactory {
+    let positions = [
+        [0.8, 0.8, 1.79070],
+        [0.8, -0.8, 1.79070],
+        [-0.8, -0.8, 1.79070],
+        [-0.8, 0.8, 1.79070],
+    ];
+    let elevation = 40.0_f64.to_radians();
+    let mut factory = RwFactory::default();
+    for (azimuth_deg, position) in [45.0_f64, 135.0, 225.0, 315.0].into_iter().zip(positions) {
+        let spin_axis =
+            mi(-azimuth_deg.to_radians(), Axis::Z) * mi(elevation, Axis::Y) * Vector3::x();
+        factory.create_honeywell_hr16(
+            spin_axis,
+            max_momentum_nms,
+            0.0,
+            Vector3::from(position),
+            ReactionWheelModel::BalancedWheels,
+        );
+    }
+    factory
 }

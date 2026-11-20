@@ -127,7 +127,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -410,3 +410,33 @@ plot-bsksim-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_bsk_sim_lambert_guidance.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_bsk_sim_basic_orbit_formation.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_bsk_sim_relative_pointing_formation.py --generated-dir "{{generated_dir}}"
+# Run the MultiSatBskSim example scenarios (`multi_sat_*`, built on
+# `examples/support/multi_sat`) in every parametrization of upstream's
+# `test_scenario*.py` and write their CSV files. Reads the assets of
+# `fetch-anise-assets`; the TLE files are in `examples/data/tle`.
+run-multisat-scenarios:
+    cargo run --release --example multi_sat_basic_orbit -- --all
+    cargo run --release --example multi_sat_basic_orbit_mt -- --all
+    cargo run --release --example multi_sat_att_guid -- --all
+    cargo run --release --example multi_sat_station_keeping -- --all
+    cargo run --release --example multi_sat_constellation_from_tle -- --all
+# Render the MultiSatBskSim scenarios' figures from their CSV files.
+plot-multisat-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_multi_sat_basic_orbit.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_multi_sat_basic_orbit_mt.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_multi_sat_att_guid.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_multi_sat_station_keeping.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_multi_sat_constellation_from_tle.py --generated-dir "{{generated_dir}}"
+# Run the MonteCarloExamples scenarios in order: the campaign of the BskSim
+# attitude-feedback scenario (archived in
+# `examples/output/montecarlo/scenarioBskSimAttFeedbackMC`), the rerun of its
+# run 1, and the visualization of its retained data. Reads the assets of
+# `fetch-anise-assets`.
+run-montecarlo-scenarios:
+    cargo run --release --example scenario_bsk_sim_att_feedback_mc -- --all
+    cargo run --release --example scenario_rerun_monte_carlo -- --all
+    cargo run --release --example scenario_visualize_monte_carlo -- --all
+# Render the Monte Carlo scenarios' figures from their CSV files.
+plot-montecarlo-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_bsk_sim_att_feedback_mc.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_visualize_monte_carlo.py --generated-dir "{{generated_dir}}"

@@ -37,6 +37,7 @@ use std::any::Any;
 
 use nalgebra::Vector3;
 
+use crate::messages::SpacecraftStateMsg;
 use crate::spacecraft::{BackSubMatrices, StateEffector};
 
 /// Parameters of an [`IgbmNoiseStateEffector`].
@@ -167,7 +168,7 @@ impl StateEffector for IgbmNoiseStateEffector {
     fn update_contributions(
         &self,
         _effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
+        _hub_state: &SpacecraftStateMsg,
         _gravity_body_mps2: Vector3<f64>,
         _back_sub: &mut BackSubMatrices,
     ) {

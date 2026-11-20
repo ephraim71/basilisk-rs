@@ -12,7 +12,6 @@ pub mod ground_mapping;
 pub mod igrf_field;
 pub mod magnetic_field_centered_dipole;
 pub mod planet_ephemeris;
-pub mod planet_radiation;
 pub mod solar_flux;
 pub mod space_weather_data;
 pub mod spacecraft_charging_dynamics;

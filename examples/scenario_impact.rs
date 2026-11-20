@@ -9,12 +9,14 @@
 //!
 //! Upstream applies the impact through an `extForceTorque` attached to the
 //! fifth body (`panel.addDynamicEffector(extFTObject, 5)`) whose
-//! `extForce_B` and `extTorquePntB_B` it sets between runs; here the body
-//! takes that load through
-//! [`SpinningBodyNDofStateEffector::set_attached_load`] (body index 4). The
-//! load and the hinge changes are made between runs through [`PanelEdits`],
-//! a handle on the effector the spacecraft owns, applied before the next
-//! integration step as upstream's setters take effect at the next step.
+//! `extForce_B` and `extTorquePntB_B` it sets between runs; here the
+//! [`ExtForceTorque`] is attached with
+//! [`SpinningBodyNDofStateEffector::add_dynamic_effector`] (body index 4)
+//! and the impact is written between runs to its body force and torque
+//! command inputs, which it reads at every evaluation. The hinge changes are
+//! made between runs through [`PanelEdits`], a handle on the effector the
+//! spacecraft owns, applied before the next integration step as upstream's
+//! setters take effect at the next step.
 //!
 //! The spacecraft flies an 8000 km, e = 0.1 Earth orbit with the Sun's
 //! gravity; upstream's `createSpiceInterface` (zero base Earth, epoch
@@ -42,10 +44,13 @@ mod scenario_args;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
+use basilisk_rs::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
 use basilisk_rs::dynamics::spinning_body_n_dof_state_effector::{
-    SpinnerLoad, SpinningBody, SpinningBodyNDofStateEffector,
+    SpinningBody, SpinningBodyNDofStateEffector,
 };
-use basilisk_rs::messages::{HingedRigidBodyMsg, SpacecraftStateMsg};
+use basilisk_rs::messages::{
+    BodyForceCommandMsg, BodyTorqueCommandMsg, HingedRigidBodyMsg, Output, SpacecraftStateMsg,
+};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{
     BackSubMatrices, Spacecraft, SpacecraftConfig, StateEffector, StateEffectorMassProps,
@@ -114,16 +119,12 @@ impl StateEffector for EditablePanel {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
-        self.inner.update_contributions(
-            effector_state,
-            body_omega_radps,
-            gravity_body_mps2,
-            back_sub,
-        );
+        self.inner
+            .update_contributions(effector_state, hub_state, gravity_body_mps2, back_sub);
     }
     fn compute_derivatives(
         &self,
@@ -255,7 +256,18 @@ pub fn run() -> Results {
     let mut earth_ephemeris = earth.ephemeris(Body::Earth);
     let mut sun_ephemeris = Body::Sun.ephemeris(Body::Earth);
 
-    let panel = solar_array(diameter, height);
+    let mut panel = solar_array(diameter, height);
+    // Upstream `extFTObject`, attached to the struck body; the impact is
+    // written to its commands.
+    let impact_force = Output::new(BodyForceCommandMsg::default());
+    let impact_torque = Output::new(BodyTorqueCommandMsg::default());
+    let mut impact = ExtForceTorque::new(ExtForceTorqueConfig {
+        name: "extForceTorque".to_string(),
+        ..Default::default()
+    });
+    impact_force.connect_to(&mut impact.cmd_force_body_in_msg);
+    impact_torque.connect_to(&mut impact.cmd_torque_in_msg);
+    panel.add_dynamic_effector(STRUCK_BODY, impact);
     let edits = PanelEdits::default();
     let mut csv = scenario_csv("scenarioImpact");
     let csv_path = csv.config.output_path.clone();
@@ -305,21 +317,19 @@ pub fn run() -> Results {
         run_until(&mut simulation, stop_nanos);
 
         // The impact, for one step.
-        edits.edit(|panel| {
-            panel.set_attached_load(
-                STRUCK_BODY,
-                SpinnerLoad {
-                    force_spinner_n: Vector3::from(IMPACT_FORCE_N),
-                    torque_spinner_nm: Vector3::from(IMPACT_TORQUE_NM),
-                },
-            );
+        impact_force.write(BodyForceCommandMsg {
+            force_request_body_n: Vector3::from(IMPACT_FORCE_N),
+        });
+        impact_torque.write(BodyTorqueCommandMsg {
+            torque_request_body_nm: Vector3::from(IMPACT_TORQUE_NM),
         });
         stop_nanos += STEP_NANOS;
         run_until(&mut simulation, stop_nanos);
 
         // The hinges of the struck sub-panel break.
+        impact_force.write(BodyForceCommandMsg::default());
+        impact_torque.write(BodyTorqueCommandMsg::default());
         edits.edit(|panel| {
-            panel.set_attached_load(STRUCK_BODY, SpinnerLoad::default());
             for index in [STRUCK_BODY, STRUCK_BODY + 1] {
                 let body = panel.spinning_body_mut(index);
                 body.spring_constant_nm_per_rad = 200.0;

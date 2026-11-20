@@ -78,6 +78,9 @@ struct AccumulatedDeltaV {
 
 impl Spacecraft {
     pub fn new(config: SpacecraftConfig) -> Self {
+        if let Err(msg) = config.validate() {
+            panic!("invalid SpacecraftConfig: {msg}");
+        }
         let integration_step_seconds = config.integration_step_nanos as f64 * 1.0e-9;
         let integration_step_duration =
             Duration::from_total_nanoseconds(config.integration_step_nanos as i128);
@@ -839,7 +842,7 @@ impl Spacecraft {
         {
             effector.update_contributions(
                 effector_state,
-                state.omega_radps,
+                &state_msg,
                 gravity_body_mps2,
                 &mut back_sub,
             );

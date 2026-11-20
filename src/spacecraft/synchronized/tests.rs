@@ -295,7 +295,7 @@ impl StateEffector for CallCounter {
     fn update_contributions(
         &self,
         _: &[f64],
-        _: Vector3<f64>,
+        _: &SpacecraftStateMsg,
         _: Vector3<f64>,
         _: &mut BackSubMatrices,
     ) {

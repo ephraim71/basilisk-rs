@@ -1,4 +1,24 @@
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, SymmetricEigen, Vector3};
+
+/// Orthonormal and right-handed within `1e-9`, as Basilisk's `eigenIsRotationMatrix`.
+pub(crate) fn is_rotation_matrix(dcm: &Matrix3<f64>) -> bool {
+    dcm.iter().all(|v| v.is_finite())
+        && (dcm.transpose() * dcm - Matrix3::identity()).norm() <= 1.0e-9
+        && (dcm.determinant() - 1.0).abs() <= 1.0e-9
+}
+
+/// Finite, symmetric, at most one zero principal moment, and the principal
+/// moments satisfy the triangle inequality, as Basilisk's `eigenIsValidInertiaMatrix`.
+pub(crate) fn is_valid_inertia_matrix(inertia: &Matrix3<f64>) -> bool {
+    const TOLERANCE: f64 = 1.0e-9;
+    if !inertia.iter().all(|v| v.is_finite()) || (inertia - inertia.transpose()).norm() > TOLERANCE
+    {
+        return false;
+    }
+    let mut moments = SymmetricEigen::new(*inertia).eigenvalues;
+    moments.as_mut_slice().sort_by(f64::total_cmp);
+    moments[1] > TOLERANCE * moments[2] && moments[0] + moments[1] >= moments[2] * (1.0 - TOLERANCE)
+}
 
 /// Compose two successive modified Rodrigues parameter rotations, selecting
 /// the shadow set to avoid the parameter singularity.
@@ -70,9 +90,10 @@ fn map_mrp_to_inner_set(mrp: Vector3<f64>) -> Vector3<f64> {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::Vector3;
+    use nalgebra::{Matrix3, Vector3};
 
-    use super::{add_mrp, mrp_to_dcm, subtract_mrp};
+    use super::{add_mrp, is_rotation_matrix, is_valid_inertia_matrix, mrp_to_dcm, subtract_mrp};
+    use crate::utilities::rigid_body_kinematics::euler321_to_dcm;
 
     #[test]
     fn matches_att_tracking_error_reference_values() {
@@ -105,5 +126,47 @@ mod tests {
 
         let dcm = mrp_to_dcm(body);
         assert!((dcm * dcm.transpose() - nalgebra::Matrix3::identity()).norm() < 1.0e-14);
+    }
+
+    #[test]
+    fn rotation_matrix_check_accepts_rotations_and_rejects_reflections() {
+        let rotation = euler321_to_dcm(Vector3::new(0.3, -1.1, 2.4));
+        assert!(is_rotation_matrix(&rotation));
+        assert!(is_rotation_matrix(&Matrix3::identity()));
+
+        let reflection = Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, -1.0));
+        assert!(!is_rotation_matrix(&reflection));
+        assert!(!is_rotation_matrix(&(2.0 * rotation)));
+        let mut non_finite = rotation;
+        non_finite[(1, 2)] = f64::NAN;
+        assert!(!is_rotation_matrix(&non_finite));
+    }
+
+    #[test]
+    fn inertia_check_matches_upstream_validation_cases() {
+        // Valid and invalid tensors of the upstream state effector reset checks
+        // (`test_spinningBodyOneDOFResetChecks.py`,
+        // `test_linearTranslationOneDOFStateEffector.py`).
+        let accepted = [
+            Matrix3::from_diagonal(&Vector3::new(50.0, 30.0, 40.0)),
+            Matrix3::from_diagonal(&Vector3::new(50.0, 80.0, 60.0)),
+            // A thin rod: one zero principal moment.
+            Matrix3::from_diagonal(&Vector3::new(0.0, 10.0, 10.0)),
+        ];
+        for matrix in accepted {
+            assert!(is_valid_inertia_matrix(&matrix), "{matrix}");
+        }
+        let rejected = [
+            Matrix3::new(50.0, 5.0, 0.0, 0.0, 30.0, 0.0, 0.0, 0.0, 40.0),
+            Matrix3::from_diagonal(&Vector3::new(-50.0, 30.0, 40.0)),
+            Matrix3::from_diagonal(&Vector3::new(50.0, 80.0, -10.0)),
+            Matrix3::from_diagonal(&Vector3::new(10.0, 10.0, 90.0)),
+            Matrix3::zeros(),
+            Matrix3::from_diagonal(&Vector3::new(0.0, 0.0, 1.0)),
+            Matrix3::new(1.0, f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        ];
+        for matrix in rejected {
+            assert!(!is_valid_inertia_matrix(&matrix), "{matrix}");
+        }
     }
 }

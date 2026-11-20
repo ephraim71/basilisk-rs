@@ -42,7 +42,7 @@ pub trait StateEffector: Send {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     );

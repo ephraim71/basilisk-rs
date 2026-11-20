@@ -43,12 +43,12 @@ use nalgebra::{Matrix3, Vector3};
 use std::any::Any;
 use std::cell::RefCell;
 
+use crate::kinematics::is_rotation_matrix;
 use crate::messages::{
     Input, MAX_EFF_COUNT, Output, SpacecraftStateMsg, VscmgCommandMsg, VscmgConfigMsg, VscmgModel,
     VscmgSpeedMsg,
 };
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{DEFAULT_TOLERANCE, is_rotation_matrix};
 use crate::utilities::rigid_body_kinematics::{euler1, euler3};
 
 /// Configuration of one VSCMG: the user-settable fields of upstream
@@ -205,10 +205,7 @@ impl VscmgConfig {
             }
         }
         let axes = normalized_axes(self);
-        if !is_rotation_matrix(
-            &Matrix3::from_columns(&[axes.0, axes.1, axes.2]),
-            DEFAULT_TOLERANCE,
-        ) {
+        if !is_rotation_matrix(&Matrix3::from_columns(&[axes.0, axes.1, axes.2])) {
             return Err(
                 "gsHat0_B, gtHat0_B and ggHat_B must form an orthogonal, right-handed frame"
                     .to_string(),
@@ -1135,10 +1132,11 @@ impl StateEffector for VscmgStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         for (vscmg, k) in self.vscmgs.iter().zip(self.kinematics(effector_state)) {
             vscmg.add_contributions(&k, body_omega_radps, gravity_body_mps2, back_sub);
         }
@@ -2122,7 +2120,7 @@ mod tests {
         let message = panic_message(|| {
             effector.update_contributions(
                 &state,
-                Vector3::zeros(),
+                &crate::messages::SpacecraftStateMsg::default(),
                 Vector3::zeros(),
                 &mut Default::default(),
             )

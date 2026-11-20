@@ -10,12 +10,13 @@ hst_spk_url := "https://naif.jpl.nasa.gov/pub/naif/HST/kernels/spk/hst_edited.bs
 upstream_src_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/src"
 upstream_examples_url := "https://raw.githubusercontent.com/AVSLab/basilisk/develop/examples"
 nh_spk_url := "https://naif.jpl.nasa.gov/pub/naif/pds/data/nh-j_p_ss-spice-6-v1.0/nhsp_1000/data/spk/nh_pred_od077.bsp"
+albedo_url := "https://raw.githubusercontent.com/AVSLab/basilisk/ea95ec4efe6d3e842a26546de653b7505dd054c3/supportData/AlbedoData"
 reference_csv_zip := env_var_or_default("BASILISK_REFERENCE_CSV_ZIP", "/home/ephraim/hamming/csvs.zip")
 
 default:
     @just --list
 
-fetch-assets: fetch-anise-assets fetch-gravity fetch-environment-data
+fetch-assets: fetch-anise-assets fetch-gravity fetch-albedo fetch-environment-data
 
 fetch-anise-assets:
     mkdir -p assets/anise
@@ -67,20 +68,11 @@ fetch-misc-scenario-data:
     curl --fail --location --progress-bar --output assets/data_for_examples/scHoldTraj_rotating_MRP.csv {{upstream_examples_url}}/dataForExamples/scHoldTraj_rotating_MRP.csv
     curl --fail --location --progress-bar --output assets/data_for_examples/scHoldTraj_rotating_EP.csv {{upstream_examples_url}}/dataForExamples/scHoldTraj_rotating_EP.csv
 
-# Albedo maps, Denton GEO plasma flux tables and tabulated atmospheres from
-# upstream supportData, for the albedo, Earth radiation, Denton flux and
-# tabular atmosphere modules.
+# Denton GEO plasma flux tables and tabulated atmospheres from upstream
+# supportData, for the Denton flux and tabular atmosphere modules (the albedo
+# maps are `fetch-albedo`'s).
 fetch-environment-data:
-    mkdir -p assets/albedo assets/denton assets/atmosphere
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_All_10x10.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_All_10x10.csv
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_All_5x5.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_All_5x5.csv
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_All_1x1.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_All_1x1.csv
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_Clear_10x10.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_Clear_10x10.csv
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_Clear_5x5.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_Clear_5x5.csv
-    curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERES_Clear_1x1.csv {{support_data_url}}/AlbedoData/Earth_ALB_2018_CERES_Clear_1x1.csv
-    curl --fail --location --progress-bar --output assets/albedo/Mars_ALB_TES_10x10.csv {{support_data_url}}/AlbedoData/Mars_ALB_TES_10x10.csv
-    curl --fail --location --progress-bar --output assets/albedo/Mars_ALB_TES_5x5.csv {{support_data_url}}/AlbedoData/Mars_ALB_TES_5x5.csv
-    curl --fail --location --progress-bar --output assets/albedo/Mars_ALB_TES_1x1.csv {{support_data_url}}/AlbedoData/Mars_ALB_TES_1x1.csv
+    mkdir -p assets/denton assets/atmosphere
     curl --fail --location --progress-bar --output assets/denton/model_e_array_all.txt {{support_data_url}}/DentonGEO/model_e_array_all.txt
     curl --fail --location --progress-bar --output assets/denton/model_e_array_low.txt {{support_data_url}}/DentonGEO/model_e_array_low.txt
     curl --fail --location --progress-bar --output assets/denton/model_e_array_mid.txt {{support_data_url}}/DentonGEO/model_e_array_mid.txt
@@ -114,6 +106,10 @@ fetch-opencv-assets:
     curl --fail --location --progress-bar --output assets/opencv/center_radius_cnn/CAD.onnx {{upstream_src_url}}/fswAlgorithms/imageProcessing/centerRadiusCNN/CAD.onnx
     curl --fail --location --progress-bar --output assets/opencv/camera/mars.jpg {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/mars.jpg
     curl --fail --location --progress-bar --output assets/opencv/camera/tv_test.png {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/tv_test.png
+
+fetch-albedo:
+    mkdir -p assets/albedo
+    for f in Earth_ALB_2018_CERES_All Earth_ALB_2018_CERES_Clear Mars_ALB_TES; do for r in 1x1 5x5 10x10; do curl --fail --location --progress-bar --output assets/albedo/${f}_${r}.csv {{albedo_url}}/${f}_${r}.csv; done; done
 
 # Run any example by name, forwarding extra args to the binary
 # (e.g. `just run scenario_basic_orbit` or `just run scenario_css -- --help`).

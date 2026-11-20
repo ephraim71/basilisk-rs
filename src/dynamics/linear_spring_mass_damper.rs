@@ -21,6 +21,7 @@ use std::any::Any;
 use std::cell::RefCell;
 
 use super::fuel_slosh::{DepletionMassProps, FuelSlosh, FuelSloshFlow, point_mass_slosh_props};
+use crate::messages::SpacecraftStateMsg;
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
 
 /// User-settable parameters of [`LinearSpringMassDamper`].
@@ -165,10 +166,11 @@ impl StateEffector for LinearSpringMassDamper {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let (r_pc, r_prime_pc) = self.particle_position(effector_state);
         let mass = self.fuel_mass_kg(effector_state);
         if mass <= 0.0 {
@@ -460,7 +462,10 @@ mod tests {
 
         particle.update_contributions(
             &[0.2, 0.1, 0.0],
-            Vector3::new(0.1, 0.2, 0.3),
+            &crate::messages::SpacecraftStateMsg {
+                omega_radps: Vector3::new(0.1, 0.2, 0.3),
+                ..Default::default()
+            },
             Vector3::new(0.0, 0.0, -9.81),
             &mut back_sub,
         );
@@ -491,7 +496,7 @@ mod tests {
 
         particle.update_contributions(
             &[0.05, 0.0, 10.0],
-            Vector3::zeros(),
+            &crate::messages::SpacecraftStateMsg::default(),
             Vector3::zeros(),
             &mut back_sub,
         );

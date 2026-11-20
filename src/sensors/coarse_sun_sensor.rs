@@ -162,7 +162,7 @@ impl Module for CoarseSunSensor {
         let state = self.read_state_input_message();
         let sun = self.read_sun_input_message();
         let eclipse = self.read_eclipse_input_message();
-        let albedo = self.read_albedo_input_message();
+        let albedo = self.input_albedo_msg.read().albedo_at_instrument;
 
         let measurement = self.compute_measurement(&state, &sun, &eclipse, albedo);
         self.write_output_message(measurement);
@@ -206,16 +206,6 @@ impl CoarseSunSensor {
             EclipseMsg {
                 illumination_factor: 1.0,
             }
-        }
-    }
-
-    /// Upstream `albedoValue`: the albedo ratio at the sensor, zero when no
-    /// albedo message is connected.
-    fn read_albedo_input_message(&self) -> f64 {
-        if self.input_albedo_msg.is_connected() {
-            self.input_albedo_msg.read().albedo_at_instrument
-        } else {
-            0.0
         }
     }
 
@@ -303,7 +293,7 @@ mod tests {
     use hifitime::Epoch;
     use nalgebra::{UnitQuaternion, Vector3};
 
-    use crate::messages::{EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
+    use crate::messages::{AlbedoMsg, EclipseMsg, Output, SpacecraftStateMsg, SunEphemerisMsg};
     use crate::{Module, SimulationContext};
 
     use super::{ASTRONOMICAL_UNIT_M, CoarseSunSensor, CoarseSunSensorConfig};
@@ -342,6 +332,29 @@ mod tests {
             omega_radps: Vector3::zeros(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn albedo_adds_to_true_value() {
+        let mut sensor = aligned_sensor();
+        let state_out = Output::new(nominal_state());
+        let sun_out = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: Vector3::new(0.0, 0.0, -ASTRONOMICAL_UNIT_M),
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+        let albedo_out = Output::new(AlbedoMsg {
+            albedo_at_instrument: 0.25,
+            ..Default::default()
+        });
+        sensor.input_state_msg.connect(state_out.slot());
+        sensor.input_sun_msg.connect(sun_out.slot());
+        sensor.input_albedo_msg.connect(albedo_out.slot());
+        sensor.init();
+        sensor.update(&dummy_context());
+
+        let msg = sensor.output_sun_sensor_msg.read();
+        assert_eq!(msg.true_value, 0.25);
+        assert_eq!(msg.sensed_value, 0.25);
     }
 
     #[test]

@@ -35,14 +35,12 @@ use crate::dynamics::prescribed_motion_state_effector::{
 use crate::dynamics::state_effector_support::{
     KinematicsCache, add_back_sub, all_finite, normalized_axis,
 };
+use crate::kinematics::{is_rotation_matrix, is_valid_inertia_matrix};
 use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, HingedRigidBodyMsg, Input, Output,
     SpacecraftStateMsg,
 };
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{
-    DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
-};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm, tilde};
 
 /// Mass, joint and initial-state parameters of one body of a
@@ -186,7 +184,7 @@ impl SpinningBodyTwoDofConfig {
             ("body_to_spinner1_dcm", &self.body_to_spinner1_dcm),
             ("spinner1_to_spinner2_dcm", &self.spinner1_to_spinner2_dcm),
         ] {
-            if !is_rotation_matrix(dcm, DEFAULT_TOLERANCE) {
+            if !is_rotation_matrix(dcm) {
                 return Err(format!(
                     "{label} must be an orthogonal, right-handed rotation matrix"
                 ));
@@ -203,11 +201,7 @@ impl SpinningBodyTwoDofConfig {
             return Err("the combined mass must be finite".to_string());
         }
         for (prefix, body) in [("body1", &self.body1), ("body2", &self.body2)] {
-            if body.mass_kg > 0.0
-                && !is_valid_inertia_matrix(
-                    &body.inertia_about_com_spinner_kg_m2,
-                    DEFAULT_TOLERANCE,
-                )
+            if body.mass_kg > 0.0 && !is_valid_inertia_matrix(&body.inertia_about_com_spinner_kg_m2)
             {
                 return Err(format!(
                     "{prefix}.inertia_about_com_spinner_kg_m2 must be a valid inertia tensor"
@@ -569,10 +563,11 @@ impl StateEffector for SpinningBodyTwoDofStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let k = self.kinematics(effector_state);
         let terms = self.back_sub_terms(&k, body_omega_radps, gravity_body_mps2);
         add_back_sub(back_sub, &terms.back_sub);
@@ -1182,8 +1177,12 @@ mod tests {
         let (state2, state1) = ([0.1, 0.05, 0.0, 0.0], [0.1, 0.05]);
         let mut back_sub2 = Default::default();
         let mut back_sub1 = Default::default();
-        two_dof.update_contributions(&state2, omega, gravity, &mut back_sub2);
-        one_dof.update_contributions(&state1, omega, gravity, &mut back_sub1);
+        let hub = crate::messages::SpacecraftStateMsg {
+            omega_radps: omega,
+            ..Default::default()
+        };
+        two_dof.update_contributions(&state2, &hub, gravity, &mut back_sub2);
+        one_dof.update_contributions(&state1, &hub, gravity, &mut back_sub1);
         let accel = Vector3::new(0.3, -0.1, 0.2);
         let omega_dot = Vector3::new(-0.01, 0.02, 0.005);
         let derivative2 = two_dof.compute_derivatives(&state2, accel, omega_dot);

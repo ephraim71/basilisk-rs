@@ -46,14 +46,12 @@ use crate::dynamics::prescribed_motion_state_effector::{
 use crate::dynamics::state_effector_support::{
     KinematicsCache, add_back_sub, all_finite, normalized_axis,
 };
+use crate::kinematics::{is_rotation_matrix, is_valid_inertia_matrix};
 use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, HingedRigidBodyMsg, Input, Output,
     SpacecraftStateMsg,
 };
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{
-    DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
-};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm, tilde};
 
 /// User-settable parameters of [`SpinningBodyOneDofStateEffector`].
@@ -150,7 +148,7 @@ impl SpinningBodyOneDofConfig {
         if self.spin_axis_spinner.norm() <= 0.01 {
             return Err("the norm of spin_axis_spinner must be greater than 0.01".to_string());
         }
-        if !is_rotation_matrix(&self.body_to_spinner0_dcm, DEFAULT_TOLERANCE) {
+        if !is_rotation_matrix(&self.body_to_spinner0_dcm) {
             return Err(
                 "body_to_spinner0_dcm must be an orthogonal, right-handed rotation matrix"
                     .to_string(),
@@ -159,9 +157,7 @@ impl SpinningBodyOneDofConfig {
         if self.mass_kg < 0.0 {
             return Err("mass_kg must be greater than or equal to 0".to_string());
         }
-        if self.mass_kg > 0.0
-            && !is_valid_inertia_matrix(&self.inertia_about_com_spinner_kg_m2, DEFAULT_TOLERANCE)
-        {
+        if self.mass_kg > 0.0 && !is_valid_inertia_matrix(&self.inertia_about_com_spinner_kg_m2) {
             return Err(
                 "inertia_about_com_spinner_kg_m2 must be a valid inertia tensor".to_string(),
             );
@@ -383,10 +379,11 @@ impl StateEffector for SpinningBodyOneDofStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let k = self.kinematics(effector_state);
         let terms = self.back_sub_terms(&k, body_omega_radps, gravity_body_mps2);
         add_back_sub(back_sub, &terms.back_sub);

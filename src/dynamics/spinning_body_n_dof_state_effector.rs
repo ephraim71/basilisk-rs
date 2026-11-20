@@ -17,17 +17,16 @@
 //! (upstream reads them in `UpdateState`); a connected input counts as
 //! written. Entry `i` of the torque and lock arrays drives body `i`.
 //!
-//! Upstream's `addDynamicEffector(effector, segment)` attaches a dynamic
-//! effector to a body; its force and torque act on that body and, through
-//! the joints, on the bodies inboard and the hub (upstream
-//! `computeDependentEffectors`). Here a body takes the loads such effectors
-//! apply directly, as a force at its frame origin and a torque about it,
-//! both in its frame ([`SpinnerLoad`],
-//! [`SpinningBodyNDofStateEffector::set_attached_load`]): an attached
-//! `extForceTorque` with `extForce_B` and `extTorquePntB_B` is exactly that.
-//! Effectors whose loads depend on the body's inertial state (drag, SRP) are
-//! not supported: the [`StateEffector`] interface gives the effector no hub
-//! attitude to place them with.
+//! [`SpinningBodyNDofStateEffector::add_dynamic_effector`] attaches a
+//! [`DynamicEffector`] to a body (upstream `addDynamicEffector(effector,
+//! segment)`), as
+//! [`HingedRigidBodyStateEffector::add_dynamic_effector`](super::hinged_rigid_body_state_effector::HingedRigidBodyStateEffector::add_dynamic_effector)
+//! does to a panel. At every derivative evaluation the effector sees the
+//! body's frame Si with its origin at the joint (upstream `r_SN_N`,
+//! `v_SN_N`, `sigma_SN`, `omega_SN_S`) and returns an inertial force and a
+//! torque about that origin in Si axes. The loads act on that body and,
+//! through the joints, on the bodies inboard and the hub (upstream
+//! `computeDependentEffectors`).
 //!
 //! Differences from upstream, as in
 //! [`super::spinning_body_one_dof_state_effector`]: a locked axis is
@@ -44,14 +43,12 @@ use std::cell::RefCell;
 use crate::dynamics::state_effector_support::{
     KinematicsCache, add_back_sub, all_finite, normalized_axis,
 };
+use crate::kinematics::{is_rotation_matrix, is_valid_inertia_matrix};
 use crate::messages::{
     ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, HingedRigidBodyMsg, Input,
     MAX_EFF_COUNT, Output, SpacecraftStateMsg,
 };
-use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
-use crate::utilities::avs_eigen_support::{
-    DEFAULT_TOLERANCE, is_rotation_matrix, is_valid_inertia_matrix,
-};
+use crate::spacecraft::{BackSubMatrices, DynamicEffector, StateEffector, StateEffectorMassProps};
 use crate::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm, tilde};
 
 /// One body of the chain (upstream `SpinningBody`).
@@ -115,20 +112,7 @@ pub struct SpinningJointCommand {
     pub theta_dot_ref_radps: f64,
 }
 
-/// The load of the dynamic effectors attached to one body (upstream
-/// `addDynamicEffector`): a force at the body's frame origin `S` and a
-/// torque about it, both in body frame components, as an attached effector
-/// reports `forceExternal_B` and `torqueExternalPntB_B`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SpinnerLoad {
-    /// \[N\] force at the frame origin, body frame components.
-    pub force_spinner_n: Vector3<f64>,
-    /// \[N m\] torque about the frame origin, body frame components.
-    pub torque_spinner_nm: Vector3<f64>,
-}
-
 /// A chain of spinning bodies (upstream `SpinningBodyNDOFStateEffector`).
-#[derive(Debug)]
 pub struct SpinningBodyNDofStateEffector {
     /// Effector name (upstream `ModelTag`).
     pub name: String,
@@ -147,12 +131,32 @@ pub struct SpinningBodyNDofStateEffector {
     pub spinning_body_state_out: Vec<Output<SpacecraftStateMsg>>,
     bodies: Vec<SpinningBody>,
     commands: Vec<SpinningJointCommand>,
-    /// Attached loads by body; bodies past the end carry none.
-    attached_loads: Vec<SpinnerLoad>,
+    /// The effectors attached to each body (upstream `dynEffectors`).
+    dynamic_effectors: Vec<Vec<Box<dyn DynamicEffector>>>,
+    /// Time of the current derivative evaluation, for the attached effectors.
+    stage_nanos: u64,
     /// Last loaded `[θ1 … θN, θ̇1 … θ̇N]`.
     state: Vec<f64>,
     back_sub: RefCell<NDofTerms>,
     kinematics: KinematicsCache<Vec<SpinningBody>, Vec<SpinnerKinematics>>,
+}
+
+impl std::fmt::Debug for SpinningBodyNDofStateEffector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpinningBodyNDofStateEffector")
+            .field("name", &self.name)
+            .field("bodies", &self.bodies)
+            .field("state", &self.state)
+            .field(
+                "dynamic_effectors",
+                &self
+                    .dynamic_effectors
+                    .iter()
+                    .map(Vec::len)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl SpinningBodyNDofStateEffector {
@@ -168,7 +172,8 @@ impl SpinningBodyNDofStateEffector {
             spinning_body_state_out: Vec::new(),
             bodies: Vec::new(),
             commands: Vec::new(),
-            attached_loads: Vec::new(),
+            dynamic_effectors: Vec::new(),
+            stage_nanos: 0,
             state: Vec::new(),
             back_sub: RefCell::new(NDofTerms::default()),
             kinematics: KinematicsCache::default(),
@@ -183,6 +188,7 @@ impl SpinningBodyNDofStateEffector {
         self.spinning_body_ref_in.push(Input::default());
         self.spinning_body_out.push(Output::default());
         self.spinning_body_state_out.push(Output::default());
+        self.dynamic_effectors.push(Vec::new());
         self.state = self.configured_state();
     }
 
@@ -198,29 +204,30 @@ impl SpinningBodyNDofStateEffector {
         &mut self.bodies[index]
     }
 
-    /// Sets the load the dynamic effectors attached to body `index` apply
-    /// (upstream `addDynamicEffector(effector, index + 1)`); it acts from the
-    /// next derivative evaluation on, until set again.
+    /// Attaches `effector` to body `index` (upstream
+    /// `addDynamicEffector(effector, index + 1)`). Any effector is accepted,
+    /// so it must make sense for a body whose state is that body's frame, not
+    /// the spacecraft's.
     ///
     /// # Panics
     ///
-    /// If the chain has no body `index`.
-    pub fn set_attached_load(&mut self, index: usize, load: SpinnerLoad) {
+    /// If the chain has no body `index` (upstream's "attachment to a
+    /// non-existent spinning bodies linkage").
+    pub fn add_dynamic_effector<E>(&mut self, index: usize, effector: E)
+    where
+        E: DynamicEffector + 'static,
+    {
         assert!(
             index < self.bodies.len(),
-            "SpinningBodyNDofStateEffector '{}': no spinning body {index} to attach a load to",
+            "SpinningBodyNDofStateEffector '{}': no spinning body {index} to attach an effector to",
             self.name
         );
-        if self.attached_loads.len() <= index {
-            self.attached_loads
-                .resize(index + 1, SpinnerLoad::default());
-        }
-        self.attached_loads[index] = load;
+        self.dynamic_effectors[index].push(Box::new(effector));
     }
 
-    /// The load attached to body `index` (zero when none was set).
-    pub fn attached_load(&self, index: usize) -> SpinnerLoad {
-        self.attached_loads.get(index).copied().unwrap_or_default()
+    /// The effectors attached to body `index`.
+    pub fn dynamic_effectors(&self, index: usize) -> &[Box<dyn DynamicEffector>] {
+        &self.dynamic_effectors[index]
     }
 
     /// The bodies, from the hub outward.
@@ -312,17 +319,13 @@ impl SpinningBodyNDofStateEffector {
                     "spinning body {index}: the norm of spin_axis_spinner must exceed 0.01"
                 ));
             }
-            if !is_rotation_matrix(&body.parent_to_spinner0_dcm, DEFAULT_TOLERANCE) {
+            if !is_rotation_matrix(&body.parent_to_spinner0_dcm) {
                 return Err(format!(
                     "spinning body {index}: parent_to_spinner0_dcm must be an orthogonal, \
                      right-handed rotation matrix"
                 ));
             }
-            if body.mass_kg > 0.0
-                && !is_valid_inertia_matrix(
-                    &body.inertia_about_com_spinner_kg_m2,
-                    DEFAULT_TOLERANCE,
-                )
+            if body.mass_kg > 0.0 && !is_valid_inertia_matrix(&body.inertia_about_com_spinner_kg_m2)
             {
                 return Err(format!(
                     "spinning body {index}: inertia_about_com_spinner_kg_m2 must be a valid \
@@ -370,6 +373,46 @@ impl SpinningBodyNDofStateEffector {
                 sigma_bn: dcm_to_mrp(k.dcm_bs.transpose() * dcm_bn),
                 omega_radps: k.dcm_bs.transpose() * (k.omega_sb_b + omega_bn_b),
                 ..Default::default()
+            })
+            .collect()
+    }
+
+    /// Sum of each body's attached effector loads, as a force at its frame
+    /// origin and a torque about it, in hub axes (upstream
+    /// `computeSpinningBodyInertialStates` and the loads of
+    /// `computeDependentEffectors`).
+    fn attached_loads_b(
+        &self,
+        k: &[SpinnerKinematics],
+        hub_state: &SpacecraftStateMsg,
+    ) -> Vec<(Vector3<f64>, Vector3<f64>)> {
+        let dcm_bn = mrp_to_dcm(hub_state.sigma_bn);
+        let dcm_nb = dcm_bn.transpose();
+        let omega_bn_b = hub_state.omega_radps;
+        k.iter()
+            .zip(&self.dynamic_effectors)
+            .map(|(ki, effectors)| {
+                if effectors.is_empty() {
+                    return (Vector3::zeros(), Vector3::zeros());
+                }
+                let frame_state = SpacecraftStateMsg {
+                    position_m: hub_state.position_m + dcm_nb * ki.r_sb_b,
+                    velocity_mps: hub_state.velocity_mps
+                        + dcm_nb * (ki.r_prime_sb_b + omega_bn_b.cross(&ki.r_sb_b)),
+                    sigma_bn: dcm_to_mrp(ki.dcm_bs.transpose() * dcm_bn),
+                    omega_radps: ki.dcm_bs.transpose() * (ki.omega_sb_b + omega_bn_b),
+                    ..Default::default()
+                };
+                effectors.iter().fold(
+                    (Vector3::zeros(), Vector3::zeros()),
+                    |(force, torque), effector| {
+                        let output = effector.compute_output_at(&frame_state, self.stage_nanos);
+                        (
+                            force + dcm_bn * output.force_inertial_n,
+                            torque + ki.dcm_bs * output.torque_body_nm,
+                        )
+                    },
+                )
             })
             .collect()
     }
@@ -455,12 +498,14 @@ impl SpinningBodyNDofStateEffector {
         chain
     }
 
-    /// Upstream `updateContributions`, with 0-based body indices.
+    /// Upstream `updateContributions`, with 0-based body indices, for the
+    /// attached loads `loads_b` of [`Self::attached_loads_b`].
     fn back_sub_terms(
         &self,
         k: &[SpinnerKinematics],
         omega_bn_b: Vector3<f64>,
         gravity_body_mps2: Vector3<f64>,
+        loads_b: &[(Vector3<f64>, Vector3<f64>)],
     ) -> NDofTerms {
         let n = k.len();
         let mass = |index: usize| self.bodies[index].mass_kg;
@@ -477,20 +522,9 @@ impl SpinningBodyNDofStateEffector {
             (omega_si_sj, link_accel)
         };
 
-        // Upstream `computeDependentEffectors`: the attached loads in B, and
-        // the torque of body `row`'s and its outboard bodies' loads about
-        // body `row`'s frame origin (upstream `extTorquePntS_S`, in B).
-        let loads_b: Vec<(Vector3<f64>, Vector3<f64>)> = k
-            .iter()
-            .enumerate()
-            .map(|(index, ki)| {
-                let load = self.attached_load(index);
-                (
-                    ki.dcm_bs * load.force_spinner_n,
-                    ki.dcm_bs * load.torque_spinner_nm,
-                )
-            })
-            .collect();
+        // Upstream `computeDependentEffectors`: the torque of body `row`'s
+        // and its outboard bodies' loads about body `row`'s frame origin
+        // (upstream `extTorquePntS_S`, in B).
         let attached_torque_b = |row: usize| -> Vector3<f64> {
             (row..n)
                 .map(|i| loads_b[i].1 + (k[i].r_sb_b - k[row].r_sb_b).cross(&loads_b[i].0))
@@ -659,7 +693,10 @@ impl StateEffector for SpinningBodyNDofStateEffector {
     ///
     /// If a torque or lock array was connected after initialization to a chain
     /// longer than [`MAX_EFF_COUNT`].
-    fn pre_integration(&mut self, _current_sim_nanos: u64, _dt_seconds: f64) {
+    fn pre_integration(&mut self, current_sim_nanos: u64, dt_seconds: f64) {
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.pre_integration(current_sim_nanos, dt_seconds);
+        }
         if let Err(message) = self.validate_command_capacity() {
             panic!("SpinningBodyNDofStateEffector '{}': {message}", self.name);
         }
@@ -684,15 +721,28 @@ impl StateEffector for SpinningBodyNDofStateEffector {
         }
     }
 
+    fn begin_stage(&mut self, stage_nanos: u64) {
+        self.stage_nanos = stage_nanos;
+        for effector in self.dynamic_effectors.iter_mut().flatten() {
+            effector.begin_stage(stage_nanos);
+        }
+    }
+
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
         let kinematics = self.kinematics(effector_state);
-        let terms = self.back_sub_terms(&kinematics, body_omega_radps, gravity_body_mps2);
+        let loads_b = self.attached_loads_b(&kinematics, hub_state);
+        let terms = self.back_sub_terms(
+            &kinematics,
+            hub_state.omega_radps,
+            gravity_body_mps2,
+            &loads_b,
+        );
         add_back_sub(back_sub, &terms.back_sub);
         self.back_sub.replace(terms);
     }
@@ -870,7 +920,8 @@ mod tests {
     //! "reset" and "attachment" paths are one check here,
     //! [`SpinningBodyNDofStateEffector::validate`].
 
-    use super::{SpinnerLoad, SpinningBody, SpinningBodyNDofStateEffector};
+    use super::{SpinningBody, SpinningBodyNDofStateEffector};
+    use crate::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
     use crate::dynamics::spinning_body_two_dof_state_effector::{
         SpinningBodyTwoDofConfig, SpinningBodyTwoDofStateEffector,
     };
@@ -880,6 +931,7 @@ mod tests {
     };
     use crate::messages::{
         ArrayEffectorLockMsg, ArrayMotorTorqueMsg, EffectorLock, MAX_EFF_COUNT, Output,
+        SpacecraftStateMsg,
     };
     use crate::spacecraft::StateEffector;
     use nalgebra::{Matrix3, Vector3};
@@ -1238,8 +1290,12 @@ mod tests {
         let gravity = Vector3::new(0.3, -0.1, 0.2);
         let mut chain_back_sub = Default::default();
         let mut pair_back_sub = Default::default();
-        chain.update_contributions(&chain_state, omega, gravity, &mut chain_back_sub);
-        two_dof.update_contributions(&pair_state, omega, gravity, &mut pair_back_sub);
+        let hub = SpacecraftStateMsg {
+            omega_radps: omega,
+            ..Default::default()
+        };
+        chain.update_contributions(&chain_state, &hub, gravity, &mut chain_back_sub);
+        two_dof.update_contributions(&pair_state, &hub, gravity, &mut pair_back_sub);
         let accel = Vector3::new(-0.2, 0.4, 0.1);
         let omega_dot = Vector3::new(0.01, 0.03, -0.02);
         let chain_dot = chain.compute_derivatives(&chain_state, accel, omega_dot);
@@ -1268,12 +1324,76 @@ mod tests {
         );
     }
 
+    /// Upstream's `extForceTorque` with a constant `extForce_B` and
+    /// `extTorquePntB_B`: attached to a body, a force at its frame origin and
+    /// a torque about it, in its frame.
+    fn attached_load(force_n: Vector3<f64>, torque_nm: Vector3<f64>) -> ExtForceTorque {
+        ExtForceTorque::new(ExtForceTorqueConfig {
+            name: "extForceTorque".to_string(),
+            ext_force_body_n: force_n,
+            ext_torque_body_nm: torque_nm,
+            ..Default::default()
+        })
+    }
+
     /// A hub so heavy it stays put, in deep space, carrying `effector`.
     fn on_fixed_hub(effector: SpinningBodyNDofStateEffector) -> crate::spacecraft::Spacecraft {
         let mut hub = HubSetup::hinged_body_hub();
         hub.mass_kg = 1e12;
         hub.inertia_kg_m2 = Matrix3::identity() * 1e12;
         spacecraft_with_effectors(&hub, 1_000_000, vec![Box::new(effector)])
+    }
+
+    /// Records the state it is evaluated at and applies no load.
+    struct StateProbe(std::sync::Arc<std::sync::Mutex<Option<SpacecraftStateMsg>>>);
+
+    impl crate::spacecraft::DynamicEffector for StateProbe {
+        fn name(&self) -> &str {
+            "probe"
+        }
+
+        fn compute_output(&self, state: &SpacecraftStateMsg) -> crate::spacecraft::EffectorOutput {
+            *self.0.lock().unwrap() = Some(state.clone());
+            crate::spacecraft::EffectorOutput::default()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// An attached effector sees its body's frame at the joint (upstream
+    /// `r_SN_N`, `v_SN_N`, `sigma_SN`, `omega_SN_S`): the attitude and rate
+    /// of `spinning_body_state_out`, at the origin rather than the center of
+    /// mass.
+    #[test]
+    fn attached_effector_sees_the_body_frame() {
+        let mut effector = upstream_chain(3, true);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        effector.add_dynamic_effector(1, StateProbe(seen.clone()));
+        let state = [0.3, -0.2, 0.4, 0.1, 0.05, -0.04, 0.02, 0.03];
+        let hub = SpacecraftStateMsg {
+            position_m: Vector3::new(7.0e6, -1.0e5, 2.0e5),
+            velocity_mps: Vector3::new(10.0, 7.5e3, -3.0),
+            sigma_bn: Vector3::new(0.1, -0.3, 0.2),
+            omega_radps: Vector3::new(0.02, -0.01, 0.03),
+            ..Default::default()
+        };
+        effector.load_state(&state);
+        effector.update_contributions(&state, &hub, Vector3::zeros(), &mut Default::default());
+
+        let seen = seen.lock().unwrap().clone().expect("effector evaluated");
+        let body = &effector.spinner_inertial_states(&hub)[1];
+        assert!((seen.sigma_bn - body.sigma_bn).norm() < 1e-14);
+        assert!((seen.omega_radps - body.omega_radps).norm() < 1e-15);
+        let dcm_ns = crate::utilities::rigid_body_kinematics::mrp_to_dcm(seen.sigma_bn).transpose();
+        let com_s = effector.spinning_body(1).center_of_mass_spinner_m;
+        assert!((seen.position_m + dcm_ns * com_s - body.position_m).norm() < 1e-8);
+        assert!(
+            (seen.velocity_mps + dcm_ns * seen.omega_radps.cross(&com_s) - body.velocity_mps)
+                .norm()
+                < 1e-10
+        );
     }
 
     /// An attached torque about a body's spin axis drives its joint: with
@@ -1286,12 +1406,9 @@ mod tests {
             inertia_about_com_spinner_kg_m2: Matrix3::from_diagonal(&Vector3::new(2.0, 3.0, 4.0)),
             ..SpinningBody::default()
         }]);
-        effector.set_attached_load(
+        effector.add_dynamic_effector(
             0,
-            SpinnerLoad {
-                force_spinner_n: Vector3::zeros(),
-                torque_spinner_nm: Vector3::new(0.0, 0.0, 0.8),
-            },
+            attached_load(Vector3::zeros(), Vector3::new(0.0, 0.0, 0.8)),
         );
         let theta = effector.spinning_body_out[0].clone();
         let mut spacecraft = on_fixed_hub(effector);
@@ -1321,14 +1438,11 @@ mod tests {
             ..SpinningBody::default()
         };
         let mut effector = chain_of(vec![connector, tip]);
-        effector.set_attached_load(
+        effector.add_dynamic_effector(
             1,
-            SpinnerLoad {
-                force_spinner_n: Vector3::new(0.0, 2.0, 0.0),
-                torque_spinner_nm: Vector3::zeros(),
-            },
+            attached_load(Vector3::new(0.0, 2.0, 0.0), Vector3::zeros()),
         );
-        assert_eq!(effector.attached_load(0), SpinnerLoad::default());
+        assert!(effector.dynamic_effectors(0).is_empty());
         let joints = [
             effector.spinning_body_out[0].clone(),
             effector.spinning_body_out[1].clone(),
@@ -1348,13 +1462,7 @@ mod tests {
     fn attached_torque_changes_the_total_angular_momentum() {
         let mut effector = upstream_chain(5, true);
         let torque_s = Vector3::new(0.3, -0.2, 0.5);
-        effector.set_attached_load(
-            3,
-            SpinnerLoad {
-                force_spinner_n: Vector3::zeros(),
-                torque_spinner_nm: torque_s,
-            },
-        );
+        effector.add_dynamic_effector(3, attached_load(Vector3::zeros(), torque_s));
         let tip_state = effector.spinning_body_state_out[3].clone();
         let mut hub = HubSetup::hinged_body_hub();
         hub.omega_bn_b_radps = Vector3::new(0.1, -0.1, 0.1);

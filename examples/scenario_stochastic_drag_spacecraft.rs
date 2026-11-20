@@ -151,16 +151,12 @@ impl<E: StateEffector + 'static> StateEffector for CorrectionTap<E> {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
-        self.inner.update_contributions(
-            effector_state,
-            body_omega_radps,
-            gravity_body_mps2,
-            back_sub,
-        );
+        self.inner
+            .update_contributions(effector_state, hub_state, gravity_body_mps2, back_sub);
     }
     fn compute_derivatives(
         &self,

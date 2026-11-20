@@ -512,21 +512,32 @@ impl StateEffector for PrescribedMotionStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
         let k = self.kinematics(effector_state);
-        let omega_bn_b = body_omega_radps;
+        let omega_bn_b = hub_state.omega_radps;
         self.hub_omega_radps.set(omega_bn_b);
         let dcm_pb = k.dcm_bp.transpose();
         if !self.attached.is_empty() {
             let motion = k.frame_motion(omega_bn_b);
             let omega_pn_p = k.omega_pm_p + dcm_pb * omega_bn_b;
             let gravity_p = dcm_pb * gravity_body_mps2;
+            // The attached effectors' hub is the platform frame P.
+            let dcm_bn = mrp_to_dcm(hub_state.sigma_bn);
+            let dcm_nb = dcm_bn.transpose();
+            let platform_state = SpacecraftStateMsg {
+                position_m: hub_state.position_m + dcm_nb * k.r_pb_b,
+                velocity_mps: hub_state.velocity_mps
+                    + dcm_nb * (k.r_prime_pm_b + omega_bn_b.cross(&k.r_pb_b)),
+                sigma_bn: dcm_to_mrp(dcm_pb * dcm_bn),
+                omega_radps: omega_pn_p,
+                ..Default::default()
+            };
             for (effector, slice) in self.attached_states(effector_state) {
                 let mut terms = BackSubMatrices::default();
-                effector.update_contributions(slice, omega_pn_p, gravity_p, &mut terms);
+                effector.update_contributions(slice, &platform_state, gravity_p, &mut terms);
                 effector.add_prescribed_motion_coupling(slice, &motion, &mut terms);
                 add_back_sub(
                     back_sub,
@@ -1371,10 +1382,14 @@ mod tests {
 
         let omega = Vector3::new(0.2, -0.1, 0.3);
         let gravity = Vector3::new(1.0, -2.0, 0.5);
+        let hub = crate::messages::SpacecraftStateMsg {
+            omega_radps: omega,
+            ..Default::default()
+        };
         let mut platform_terms = BackSubMatrices::default();
         let mut expected_terms = BackSubMatrices::default();
-        platform.update_contributions(&platform_state, omega, gravity, &mut platform_terms);
-        equivalent.update_contributions(child_state, omega, gravity, &mut expected_terms);
+        platform.update_contributions(&platform_state, &hub, gravity, &mut platform_terms);
+        equivalent.update_contributions(child_state, &hub, gravity, &mut expected_terms);
         for (a, b, what) in [
             (platform_terms.matrix_a, expected_terms.matrix_a, "A"),
             (platform_terms.matrix_b, expected_terms.matrix_b, "B"),
@@ -1573,10 +1588,14 @@ mod tests {
 
         let omega = Vector3::new(0.2, -0.1, 0.3);
         let gravity = Vector3::new(1.0, -2.0, 0.5);
+        let hub = crate::messages::SpacecraftStateMsg {
+            omega_radps: omega,
+            ..Default::default()
+        };
         let mut platform_terms = BackSubMatrices::default();
         let mut expected_terms = BackSubMatrices::default();
-        platform.update_contributions(&platform_state, omega, gravity, &mut platform_terms);
-        rigid.update_contributions(&rigid_state, omega, gravity, &mut expected_terms);
+        platform.update_contributions(&platform_state, &hub, gravity, &mut platform_terms);
+        rigid.update_contributions(&rigid_state, &hub, gravity, &mut expected_terms);
         for matrix in [
             platform_terms.matrix_a,
             platform_terms.matrix_b,

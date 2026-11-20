@@ -727,10 +727,11 @@ impl StateEffector for FuelTank {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         self.assert_state_length(effector_state);
         if !self.config.update_only {
             let depletion = self.depletion(effector_state);
@@ -755,7 +756,7 @@ impl StateEffector for FuelTank {
             .iter()
             .zip(self.particle_states(effector_state))
         {
-            particle.update_contributions(state, body_omega_radps, gravity_body_mps2, back_sub);
+            particle.update_contributions(state, hub_state, gravity_body_mps2, back_sub);
         }
     }
 

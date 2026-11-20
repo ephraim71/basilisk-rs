@@ -532,10 +532,11 @@ impl StateEffector for LinearTranslationNDofStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let kinematics = self.kinematics(effector_state, &self.commands);
         let terms = self.back_sub_terms(&kinematics, body_omega_radps, gravity_body_mps2);
         add_back_sub(back_sub, &terms.back_sub);

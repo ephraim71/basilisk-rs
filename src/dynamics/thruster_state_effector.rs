@@ -457,7 +457,7 @@ impl StateEffector for ThrusterStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
+        _hub_state: &SpacecraftStateMsg,
         _gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
@@ -884,7 +884,12 @@ mod tests {
         thrusters.load_state(&[0.75]);
         thrusters.begin_stage(10_000_000);
         let mut back_sub = BackSubMatrices::default();
-        thrusters.update_contributions(&[0.75], Vector3::zeros(), Vector3::zeros(), &mut back_sub);
+        thrusters.update_contributions(
+            &[0.75],
+            &crate::messages::SpacecraftStateMsg::default(),
+            Vector3::zeros(),
+            &mut back_sub,
+        );
         assert_eq!(back_sub.vec_trans, Vector3::new(0.5, 0.0, 0.0));
         assert_eq!(back_sub.vec_rot, Vector3::new(0.125, 0.0, -0.5));
         assert!((thrusters.mass_flow_rate_kgps() - 1.5 / (9.80665 * 200.0)).abs() < 1e-15);

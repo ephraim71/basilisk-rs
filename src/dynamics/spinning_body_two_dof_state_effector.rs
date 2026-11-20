@@ -563,10 +563,11 @@ impl StateEffector for SpinningBodyTwoDofStateEffector {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let k = self.kinematics(effector_state);
         let terms = self.back_sub_terms(&k, body_omega_radps, gravity_body_mps2);
         add_back_sub(back_sub, &terms.back_sub);
@@ -1176,8 +1177,12 @@ mod tests {
         let (state2, state1) = ([0.1, 0.05, 0.0, 0.0], [0.1, 0.05]);
         let mut back_sub2 = Default::default();
         let mut back_sub1 = Default::default();
-        two_dof.update_contributions(&state2, omega, gravity, &mut back_sub2);
-        one_dof.update_contributions(&state1, omega, gravity, &mut back_sub1);
+        let hub = crate::messages::SpacecraftStateMsg {
+            omega_radps: omega,
+            ..Default::default()
+        };
+        two_dof.update_contributions(&state2, &hub, gravity, &mut back_sub2);
+        one_dof.update_contributions(&state1, &hub, gravity, &mut back_sub1);
         let accel = Vector3::new(0.3, -0.1, 0.2);
         let omega_dot = Vector3::new(-0.01, 0.02, 0.005);
         let derivative2 = two_dof.compute_derivatives(&state2, accel, omega_dot);

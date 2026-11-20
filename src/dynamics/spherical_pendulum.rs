@@ -38,6 +38,7 @@ use std::cell::RefCell;
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
 use super::fuel_slosh::{DepletionMassProps, FuelSlosh, FuelSloshFlow, point_mass_slosh_props};
+use crate::messages::SpacecraftStateMsg;
 use crate::spacecraft::{BackSubMatrices, StateEffector, StateEffectorMassProps};
 use crate::utilities::avs_eigen_support::{DEFAULT_TOLERANCE, is_positive_semidefinite};
 
@@ -307,10 +308,11 @@ impl StateEffector for SphericalPendulum {
     fn update_contributions(
         &self,
         effector_state: &[f64],
-        body_omega_radps: Vector3<f64>,
+        hub_state: &SpacecraftStateMsg,
         gravity_body_mps2: Vector3<f64>,
         back_sub: &mut BackSubMatrices,
     ) {
+        let body_omega_radps = hub_state.omega_radps;
         let kinematics = self.kinematics(effector_state);
         let mass = self.fuel_mass_kg(effector_state);
         if mass <= 0.0 {
@@ -847,7 +849,10 @@ mod tests {
 
         pendulum.update_contributions(
             &state,
-            Vector3::new(0.1, 0.2, 0.3),
+            &crate::messages::SpacecraftStateMsg {
+                omega_radps: Vector3::new(0.1, 0.2, 0.3),
+                ..Default::default()
+            },
             Vector3::z(),
             &mut back_sub,
         );

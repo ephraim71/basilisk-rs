@@ -826,7 +826,7 @@ impl Spacecraft {
         {
             effector.update_contributions(
                 effector_state,
-                state.omega_radps,
+                &state_msg,
                 gravity_body_mps2,
                 &mut back_sub,
             );

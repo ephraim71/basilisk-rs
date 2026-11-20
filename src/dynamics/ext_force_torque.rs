@@ -128,8 +128,8 @@ mod tests {
     //! written, then their sum. Its sampling cases (an unscheduled effector
     //! never sampling, held samples cleared by `Reset`) have no counterpart,
     //! since commands are read at each evaluation; nor does its attachment to a
-    //! spinning-body appendage, since basilisk-rs state effectors do not host
-    //! dynamic effectors.
+    //! one-DOF spinning-body appendage, which does not host dynamic effectors
+    //! here (the hinged panel and the N-DOF spinning bodies do).
 
     use hifitime::Epoch;
     use nalgebra::Matrix3;

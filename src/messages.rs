@@ -71,6 +71,8 @@ mod device_command;
 mod device_status;
 mod dipole_request_body;
 mod downlink_handling;
+#[cfg(feature = "mujoco")]
+mod drag_geometry;
 mod dv_burn_command;
 mod dv_execution_data;
 mod earth_radiation;
@@ -104,6 +106,8 @@ mod magnetic_dipole_command;
 mod magnetic_field;
 mod mass_flow_rate;
 mod mj_joint_reactions;
+#[cfg(feature = "mujoco")]
+mod mj_scene_state;
 mod mj_system_mass_matrix;
 mod motor_step_command;
 mod motor_torque;
@@ -206,6 +210,8 @@ pub use device_command::DeviceCommandMsg;
 pub use device_status::{DeviceState, DeviceStatusMsg};
 pub use dipole_request_body::DipoleRequestBodyMsg;
 pub use downlink_handling::{DownlinkHandlingMsg, RemovalPolicy};
+#[cfg(feature = "mujoco")]
+pub use drag_geometry::DragGeometryMsg;
 pub use dv_burn_command::DvBurnCommandMsg;
 pub use dv_execution_data::DvExecutionDataMsg;
 pub use earth_radiation::EarthRadiationMsg;
@@ -240,6 +246,8 @@ pub use magnetic_dipole_command::MagneticDipoleCommandMsg;
 pub use magnetic_field::MagneticFieldMsg;
 pub use mass_flow_rate::MassFlowRateMsg;
 pub use mj_joint_reactions::{MjJointReactionsMsg, MjJointType};
+#[cfg(feature = "mujoco")]
+pub use mj_scene_state::MjSceneStateMsg;
 pub use mj_system_mass_matrix::MjSystemMassMatrixMsg;
 pub use motor_step_command::MotorStepCommandMsg;
 pub use motor_torque::MotorTorqueMsg;

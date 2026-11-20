@@ -80,6 +80,27 @@ just fetch-anise-assets fetch-spice-kernels
 cargo test --features spice
 ```
 
+### Optional: MuJoCo multibody dynamics
+
+`mujoco_dynamics`, the port of upstream's `simulation/mujocoDynamics`
+(`MJScene` and the models that run in it), is behind the `mujoco` cargo
+feature. It links the MuJoCo 3.17.0 shared library (the version upstream
+builds against) through the [`mujoco-rs`](https://crates.io/crates/mujoco-rs)
+crate. Nothing is installed system-wide: the first build downloads the
+official release,
+`https://github.com/google-deepmind/mujoco/releases/download/3.17.0/mujoco-3.17.0-linux-x86_64.tar.gz`,
+checks its SHA-256 and unpacks it into `assets/mujoco/` (set by
+`MUJOCO_DOWNLOAD_DIR` in `.cargo/config.toml`). The test and example
+binaries find the library there through their runtime search path. To use
+a MuJoCo 3.17.0 you already have instead, point `MUJOCO_DYNAMIC_LINK_DIR` at
+its `lib/` directory (an absolute path) and put that directory on
+`LD_LIBRARY_PATH` when running.
+
+```bash
+just fetch-gravity   # GGM03S, for the spherical-harmonics gravity test
+cargo test --features mujoco mujoco_dynamics
+```
+
 ## Basic orbit scenario
 
 Run the simulation:

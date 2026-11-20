@@ -1,0 +1,5 @@
+# Where the `mujoco` feature's build downloads the MuJoCo release (mujoco-rs
+# `auto-download-mujoco`). Inert without the feature; set
+# MUJOCO_DYNAMIC_LINK_DIR to use an existing MuJoCo 3.17.0 install instead.
+[env]
+MUJOCO_DOWNLOAD_DIR = { value = "assets/mujoco", relative = true }

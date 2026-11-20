@@ -1,11 +1,27 @@
-//! Build script. Its only job is generating the Vizard protobuf types for the
-//! `vizard` feature; without that feature it does nothing, so a default build
-//! needs neither `protoc` nor libzmq.
+//! Build script. It generates the Vizard protobuf types for the `vizard`
+//! feature and records where the MuJoCo library is for the `mujoco` feature;
+//! without those features it does nothing, so a default build needs neither
+//! `protoc`, libzmq nor MuJoCo.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     #[cfg(feature = "vizard")]
     vizard::generate_protobuf_types();
+    #[cfg(feature = "mujoco")]
+    mujoco::link_runtime_path();
+}
+
+#[cfg(feature = "mujoco")]
+mod mujoco {
+    /// MuJoCo is a shared library outside the system's search path, so the
+    /// crate's tests, examples and binaries record its directory (which
+    /// mujoco-rs reports as `DEP_MUJOCO_LIB_DIR`) as a runtime search path.
+    pub fn link_runtime_path() {
+        println!("cargo:rerun-if-env-changed=DEP_MUJOCO_LIB_DIR");
+        if let Ok(lib_dir) = std::env::var("DEP_MUJOCO_LIB_DIR") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
+        }
+    }
 }
 
 #[cfg(feature = "vizard")]

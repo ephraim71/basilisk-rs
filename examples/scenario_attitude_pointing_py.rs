@@ -71,6 +71,7 @@ impl Module for ScenarioMrpPd {
         let torque = -(guidance.sigma_br * self.k + guidance.omega_br_b_radps * self.p);
         self.cmd_torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: torque,
+            ..Default::default()
         });
         // Upstream's (disabled) sample of module logging.
         log::debug!(

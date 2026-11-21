@@ -1,6 +1,6 @@
 use crate::dynamics::gravity::{GravBodyData, GravityEffector, GravityError};
 use crate::integrators::traits::DynamicObject;
-use crate::integrators::{Integrator, Rk4};
+use crate::integrators::{Integrator, Rk4, relative_error_ratio};
 use crate::messages::{
     AttitudeReferenceMsg, Input, Output, PlanetStateMsg, SpacecraftDiagnosticsMsg,
     SpacecraftMassPropsMsg, SpacecraftStateMsg, TranslationReferenceMsg,
@@ -1011,6 +1011,65 @@ impl DynamicObject for Spacecraft {
             return Some(0.0);
         }
         Some((sum_of_squares / count as f64).sqrt())
+    }
+
+    /// Upstream `computeFlatMaxRelativeError` over the spacecraft's states,
+    /// each compared as a whole (`ErrorControlMode::WholeState`): the hub
+    /// position, velocity, attitude and rate, each state effector's state
+    /// vector (one block per effector; upstream may register an effector's
+    /// states as several), and upstream's `hubGravVelocity`, the integrated
+    /// gravity, which starts from the hub velocity at every step: here the
+    /// hub velocity plus the step's gravity Δv. Upstream also integrates
+    /// `BcGravVelocity`, the same for the center of mass, which matches
+    /// `hubGravVelocity` while the center of mass is at `B`; it is not
+    /// formed here.
+    fn max_relative_error(
+        &self,
+        state: &IntegratedState,
+        low: &[(&StateDerivative, f64)],
+        high: &[(&StateDerivative, f64)],
+        step: f64,
+        abs_tol: f64,
+        rel_tol: f64,
+    ) -> Option<f64> {
+        let low_state = self.state_with_derivatives(state, low, step);
+        let high_state = self.state_with_derivatives(state, high, step);
+        let gravity_velocity = |weighted: &[(&StateDerivative, f64)]| {
+            weighted
+                .iter()
+                .fold(state.velocity_wrt_central_body_mps, |sum, (k, w)| {
+                    sum + k.gravity_accel_inertial_mps2 * (w * step)
+                })
+        };
+        let vector = |low: Vector3<f64>, high: Vector3<f64>| {
+            relative_error_ratio((high - low).norm(), high.norm(), rel_tol, abs_tol)
+        };
+        let mut largest = vector(
+            low_state.position_wrt_central_body_m,
+            high_state.position_wrt_central_body_m,
+        )
+        .max(vector(
+            low_state.velocity_wrt_central_body_mps,
+            high_state.velocity_wrt_central_body_mps,
+        ))
+        .max(vector(low_state.sigma_bn, high_state.sigma_bn))
+        .max(vector(low_state.omega_radps, high_state.omega_radps))
+        .max(vector(gravity_velocity(low), gravity_velocity(high)));
+        for (low, high) in low_state
+            .effector_states
+            .iter()
+            .zip(&high_state.effector_states)
+        {
+            let error = low
+                .iter()
+                .zip(high)
+                .map(|(l, h)| (h - l) * (h - l))
+                .sum::<f64>()
+                .sqrt();
+            let magnitude = high.iter().map(|h| h * h).sum::<f64>().sqrt();
+            largest = largest.max(relative_error_ratio(error, magnitude, rel_tol, abs_tol));
+        }
+        Some(largest)
     }
 
     /// Every state effector's noise sources, effector by effector in the

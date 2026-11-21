@@ -46,9 +46,10 @@
 //!   `VehicleConfigMsg_C_addAuthor`;
 //! * upstream's array pointing-mode change at 3 h (`saMomManagement`) is a
 //!   [`Staged`] change and reset;
-//! * upstream logs the SRP force and torque with a variable logger; the SRP
-//!   effector is inside the spacecraft here and has no output message, so
-//!   the SRP torque figures are not reproduced.
+//! * upstream logs the SRP effector's `forceExternal_B` and
+//!   `torqueExternalPntB_B` with a variable logger; here the spacecraft's
+//!   diagnostics message carries them (`srp_force_body_n`,
+//!   `srp_torque_body_nm`, the effectors named for SRP).
 //!
 //! Writes `examples/output/scenarios/scenarioSepMomentumManagement<s><t><a><c>.csv`
 //! (the four flags).
@@ -115,8 +116,9 @@ use basilisk_rs::fsw_algorithms::state_estimation::thrust_cm_estimation::{
 };
 use basilisk_rs::messages::{
     AttitudeGuidanceMsg, AttitudeReferenceMsg, BoreAngleMsg, CmEstimationDataMsg,
-    HingedRigidBodyMsg, NavigationAttitudeMsg, Output, PlanetStateMsg, RwSpeedMsg, SunEphemerisMsg,
-    ThrusterCommandMsg, ThrusterConfigMsg, ThrusterOutputMsg, VehicleConfigMsg,
+    HingedRigidBodyMsg, NavigationAttitudeMsg, Output, PlanetStateMsg, RwSpeedMsg,
+    SpacecraftDiagnosticsMsg, SunEphemerisMsg, ThrusterCommandMsg, ThrusterConfigMsg,
+    ThrusterOutputMsg, VehicleConfigMsg,
 };
 use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::sensors::simple_mass_props::SimpleMassProps;
@@ -205,6 +207,9 @@ struct Results {
     array_angles: Vec<MessageLog<HingedRigidBodyMsg>>,
     array_references: Vec<MessageLog<HingedRigidBodyMsg>>,
     array_boresights: Vec<MessageLog<BoreAngleMsg>>,
+    /// Upstream `srpForceLog` and `srpTorqueLog`: the SRP force and torque
+    /// about `B` in the spacecraft diagnostics.
+    srp: MessageLog<SpacecraftDiagnosticsMsg>,
     /// Upstream `RW.Js` and `RW.gsHat_B` of each wheel.
     wheel_axes: Vec<(f64, Vector3<f64>)>,
     csv_path: Option<PathBuf>,
@@ -554,6 +559,7 @@ fn run(config: Config) -> Results {
     let mut wheel_speed_log = MessageLog::<RwSpeedMsg>::default();
     let mut true_cm_log = MessageLog::<VehicleConfigMsg>::default();
     let mut cm_estimate_log = MessageLog::<CmEstimationDataMsg>::default();
+    let mut srp_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
     let mut array_angle_logs: Vec<MessageLog<HingedRigidBodyMsg>> =
         (0..2).map(|_| MessageLog::default()).collect();
     let mut array_reference_logs: Vec<MessageLog<HingedRigidBodyMsg>> =
@@ -655,6 +661,7 @@ fn run(config: Config) -> Results {
         &wheel_speed_msg => &mut wheel_speed_log.input,
         &mass_props.vehicle_config_out_msg => &mut true_cm_log.input,
         &cm_estimator.cm_est_data_out_msg => &mut cm_estimate_log.input,
+        &spacecraft.diagnostics_out => &mut srp_log.input,
     );
     for index in 0..2 {
         let reference = &mut array_references[index].module;
@@ -720,6 +727,13 @@ fn run(config: Config) -> Results {
         &hub_boresight.ang_out_msg => recorder.add_source::<BoreAngleMsg>(
             CsvSourceConfig::columns([("miss_angle_rad", "hubMissAngle_rad")]),
         ),
+        &spacecraft.diagnostics_out => recorder.add_source::<SpacecraftDiagnosticsMsg>(
+            CsvSourceConfig::columns(
+                vector_columns("srp_force_body_n", "srpForce_B_N")
+                    .into_iter()
+                    .chain(vector_columns("srp_torque_body_nm", "srpTorquePntB_B_Nm")),
+            ),
+        ),
         &thruster_output => recorder.add_source::<ThrusterOutputMsg>(CsvSourceConfig::columns(
             vector_columns("thruster_location_m", "thrLoc_F_m")
                 .into_iter()
@@ -748,6 +762,7 @@ fn run(config: Config) -> Results {
         "wheel_speed_log" => &mut wheel_speed_log, period=FSW_PERIOD_NANOS, priority=0;
         "true_cm_log" => &mut true_cm_log, period=FSW_PERIOD_NANOS, priority=0;
         "cm_estimate_log" => &mut cm_estimate_log, period=FSW_PERIOD_NANOS, priority=0;
+        "srp_log" => &mut srp_log, period=FSW_PERIOD_NANOS, priority=0;
     }
     for boresight in &mut array_boresights {
         simulation.add_module("sa_boresight", boresight, DYNAMICS_PERIOD_NANOS, 260);
@@ -779,6 +794,7 @@ fn run(config: Config) -> Results {
         wheel_speeds: wheel_speed_log,
         true_cm: true_cm_log,
         cm_estimate: cm_estimate_log,
+        srp: srp_log,
         array_angles: array_angle_logs,
         array_references: array_reference_logs,
         array_boresights: array_boresight_logs,
@@ -861,6 +877,22 @@ mod tests {
                     boresight.last().miss_angle_rad.to_degrees() < 5.0,
                     "{config:?}"
                 );
+            }
+            // The SRP the figures show: about 1e-5 Pa at 100 million km on
+            // some 90 m^2 of sunlit array and hub, so a force of a few
+            // tenths of a mN, and a torque about the center of mass.
+            assert_eq!(results.srp.values.len(), results.guidance.values.len());
+            for (diagnostics, true_cm) in results.srp.values[1..]
+                .iter()
+                .zip(&results.true_cm.values[1..])
+            {
+                let force = diagnostics.srp_force_body_n.norm();
+                assert!((1.0e-4..5.0e-3).contains(&force), "{config:?}: {force} N");
+                let torque_about_cm = diagnostics.srp_torque_body_nm
+                    - true_cm
+                        .center_of_mass_body_m
+                        .cross(&diagnostics.srp_force_body_n);
+                assert!(torque_about_cm.norm() > 0.0, "{config:?}");
             }
         }
     }

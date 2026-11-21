@@ -219,7 +219,7 @@ pub fn simulate(config: &McConfig, sim_time_min: f64) -> RetainedOpNav {
         &hub_init(r_n, v_n, scenario.sigma_bn()),
         cameras,
     );
-    models.dynamics.simple_nav.seed = config.nav_seed;
+    models.dynamics.simple_nav.set_rng_seed(config.nav_seed);
     let fsw = &mut models.fsw;
     let r_init = r_n + Vector3::from(R_ERROR_M);
     let v_init = v_n + Vector3::from(V_ERROR_MPS);

@@ -16,7 +16,10 @@
 //! momentum-dumping module turns it into thruster firings. The request
 //! travels in a body torque command message, as upstream. Upstream's
 //! `thrMomentumDumping` notices the one-time write through the message's
-//! `timeWritten` header, which the Rust message bus does not carry.
+//! `timeWritten` header, which the Rust message bus does not carry; the
+//! stand-in is the payload stamp
+//! [`BodyTorqueCommandMsg::command_time_nanos`], set to the update time of
+//! each request.
 
 use nalgebra::Vector3;
 
@@ -128,15 +131,18 @@ impl Module for ThrMomentumManagement {
         self.reset_state();
     }
 
-    fn update(&mut self, _context: &SimulationContext) {
+    fn update(&mut self, context: &SimulationContext) {
         if !self.init_request {
             return;
         }
         let wheel_speeds_radps = self.rw_speeds_in_msg.read().wheel_speeds_radps;
         let delta_h_nms = self.momentum_change(&wheel_speeds_radps);
         self.init_request = false;
+        // Stamped with the update time, the stand-in for upstream's header
+        // `timeWritten` that `thrMomentumDumping` compares.
         self.delta_h_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: delta_h_nms,
+            command_time_nanos: context.current_sim_nanos,
         });
     }
 }
@@ -321,6 +327,47 @@ mod tests {
             Vector3::new(0.0, -4.0, 0.0),
             1e-15,
         );
+    }
+
+    /// The stand-in for upstream's header `timeWritten`: every request
+    /// carries the time of the update that wrote it, so a request equal to
+    /// the previous one is still told apart; init's zero request carries
+    /// upstream's never-written time 0.
+    #[test]
+    fn stamps_each_request_with_its_update_time() {
+        let mut config = RwArrayConfigMsg {
+            num_rw: 1,
+            ..Default::default()
+        };
+        config.spin_axes_body[0] = Vector3::x();
+        config.spin_axis_inertias_kg_m2[0] = 1.0;
+        let speeds = Output::new(speeds_msg(&[3.0]));
+        let wheels = Output::new(config);
+        let mut module = ThrMomentumManagement::new(ThrMomentumManagementConfig {
+            hs_min_nms: 1.0,
+            ..Default::default()
+        });
+        speeds.connect_to(&mut module.rw_speeds_in_msg);
+        wheels.connect_to(&mut module.rw_config_data_in_msg);
+        module.init();
+        assert_eq!(module.delta_h_out_msg.read().command_time_nanos, 0);
+
+        module.update(&context(TASK_RATE_NANOS));
+        let first = module.delta_h_out_msg.read();
+        assert_eq!(first.command_time_nanos, TASK_RATE_NANOS);
+
+        // No new request until the next reset; then the same request again,
+        // with the new time.
+        module.update(&context(2 * TASK_RATE_NANOS));
+        assert_eq!(
+            module.delta_h_out_msg.read().command_time_nanos,
+            TASK_RATE_NANOS
+        );
+        Module::reset(&mut module, &context(3 * TASK_RATE_NANOS));
+        module.update(&context(4 * TASK_RATE_NANOS));
+        let second = module.delta_h_out_msg.read();
+        assert_eq!(second.torque_request_body_nm, first.torque_request_body_nm);
+        assert_eq!(second.command_time_nanos, 4 * TASK_RATE_NANOS);
     }
 
     // Not upstream: hs_min is read at the update that runs the check, so a

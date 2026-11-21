@@ -134,6 +134,7 @@ impl CannonballDrag {
         });
         self.torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: geometry.r_cp_s_m.cross(&force_s),
+            ..Default::default()
         });
     }
 }

@@ -31,20 +31,17 @@
 //!
 //! # Differences from upstream
 //!
-//! * basilisk-rs's `SimpleNavigation` has no error model, so both
-//!   navigation instances are [`small_body_simple_nav::NoisySimpleNav`],
-//!   upstream's 18-state `simpleNav` errors on the crate's `GaussMarkov`
-//!   (upstream's model, as `planetNav`); the noise streams are not
-//!   upstream's, and the two instances draw different ones.
+//! * The noise streams of the two `simpleNav` instances (basilisk-rs's
+//!   [`SimpleNavigation`] with upstream's error model) are not upstream's,
+//!   and the two instances draw different ones.
 //! * Upstream's filter updates only on measurements written at the current
 //!   time (message headers). The task switch that stands in for upstream's
 //!   `disableTask` also tells the filter when the measurement task ran,
 //!   through [`MeasurementGatedEkf`] and
 //!   `SmallBodyNavEkf::update_with_measurement_status`.
 //! * The wheels take one command each (`arrayMotorTorqueToSingleActuators`),
-//!   `radiationPressure` reads a constant full-sun eclipse message (upstream
-//!   leaves it unlinked), and the force command reaches the spacecraft at the
-//!   next integration, one step earlier than upstream's `extForceTorque`.
+//!   and the force command reaches the spacecraft at the next integration,
+//!   one step earlier than upstream's `extForceTorque`.
 //!
 //! Upstream's test only runs the scenario (`test_scenarioTest.py`); `tests`
 //! checks the filter's convergence, its consistency with its covariance,
@@ -88,9 +85,10 @@ use basilisk_rs::fsw_algorithms::small_body_navigation::small_body_nav_ekf::{
     SmallBodyNavEkf, SmallBodyNavEkfConfig, SmallBodyNavMatrix, SmallBodyNavState,
 };
 use basilisk_rs::messages::{
-    EclipseMsg, EphemerisMsg, NavigationTranslationMsg, Output, PlanetStateMsg, SmallBodyNavMsg,
+    EphemerisMsg, NavigationTranslationMsg, Output, PlanetStateMsg, SmallBodyNavMsg,
     SpacecraftStateMsg, SunEphemerisMsg, ThrusterOutputMsg, VehicleConfigMsg,
 };
+use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::astro_constants::{D2R, MU_SUN};
@@ -106,7 +104,7 @@ use small_body::{
     BENNU_MU_M3PS2, BENNU_STEP_NANOS, SPACECRAFT_MASS_KG, bennu_ephemeris, bennu_spacecraft,
     ephemeris_converter, planet_nav, spacecraft_inertia_kg_m2, wheel_cluster,
 };
-use small_body_simple_nav::{NavSigmas, NoisySimpleNav, grouped};
+use small_body_simple_nav::{NavSigmas, grouped};
 use task_switch::{Switched, TaskSwitch};
 
 const STEM: &str = "scenarioSmallBodyNav";
@@ -240,9 +238,6 @@ fn run(config: Config) -> Results {
     let sun_state_msg = Output::new(SunEphemerisMsg::default());
     let sun_ephemeris_msg = Output::new(EphemerisMsg::default());
     let thruster_msg = Output::new(ThrusterOutputMsg::default());
-    let full_sun_msg = Output::new(EclipseMsg {
-        illumination_factor: 1.0,
-    });
     let mut srp = RadiationPressure::new(RadiationPressureConfig {
         name: "radiationPressure".to_string(),
         area_m2: 3.0,
@@ -257,10 +252,11 @@ fn run(config: Config) -> Results {
     };
     let walk_bounds = grouped([10.0, 0.01, 0.005, 0.002, 0.0, 0.0]);
     let mut measurement_nav = Switched::new(
-        NoisySimpleNav::new("SimpleNav", nav_sigmas.p_matrix(), walk_bounds),
+        SimpleNavigation::with_errors("SimpleNav", nav_sigmas.p_matrix(), walk_bounds),
         &measurement_task,
     );
-    let mut attitude_nav = NoisySimpleNav::new("SimpleNav2", nav_sigmas.p_matrix(), walk_bounds);
+    let mut attitude_nav =
+        SimpleNavigation::with_errors("SimpleNav2", nav_sigmas.p_matrix(), walk_bounds);
     let mut asteroid_navigation = Switched::new(
         planet_nav(
             "planetNav",
@@ -362,7 +358,6 @@ fn run(config: Config) -> Results {
     }
     connect!(&simulation,
         &sun_state_msg => &mut srp.input_sun_msg,
-        &full_sun_msg => &mut srp.input_eclipse_msg,
         &waypoint_feedback.force_out_msg => &mut ext_force.cmd_force_body_in_msg,
     );
     spacecraft.add_state_effector(wheels.effector);

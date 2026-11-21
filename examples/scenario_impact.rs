@@ -325,6 +325,7 @@ pub fn run() -> Results {
         });
         impact_torque.write(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::from(IMPACT_TORQUE_NM),
+            ..Default::default()
         });
         stop_nanos += STEP_NANOS;
         run_until(&mut simulation, stop_nanos);

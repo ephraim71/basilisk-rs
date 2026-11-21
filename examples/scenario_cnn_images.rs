@@ -149,7 +149,7 @@ fn simulate(config: &CnnConfig, image_dir: Option<&Path>) -> anyhow::Result<Reta
         &hub_init(config.r_cn_n_init_m, config.v_cn_n_init_mps, [0.0; 3]),
         cameras,
     );
-    models.dynamics.simple_nav.seed = config.nav_seed;
+    models.dynamics.simple_nav.set_rng_seed(config.nav_seed);
     models.fsw.tracking_error_cam.config.sigma_r0r = config.sigma_r0r;
     let (mode, runner) = (models.fsw.mode_request(), models.base.runner());
 

@@ -27,15 +27,10 @@
 //!
 //! # Differences from upstream
 //!
-//! * basilisk-rs's `SimpleNavigation` has no error model, so the noisy
-//!   navigation is [`small_body_simple_nav::NoisySimpleNav`], upstream's
-//!   18-state `simpleNav` errors on the crate's `GaussMarkov` (upstream's
-//!   model, as `planetNav` here); the noise streams are not upstream's.
+//! * The noise streams of `simpleNav` ([`SimpleNavigation`] with
+//!   upstream's error model) and `planetNav` are not upstream's.
 //! * The wheels take one command each, so `rwMotorTorque`'s array command
 //!   goes through `arrayMotorTorqueToSingleActuators`.
-//! * `radiationPressure` reads an eclipse message for its illumination,
-//!   which upstream leaves unlinked (full sun); here a constant message with
-//!   `illumination_factor = 1` stands in.
 //! * The force command reaches the spacecraft through the effector's input
 //!   at the next integration, one step earlier than upstream's
 //!   `extForceTorque`, which buffers its input in its own update.
@@ -77,10 +72,11 @@ use basilisk_rs::fsw_algorithms::orbit_control::small_body_waypoint_feedback::{
 };
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
 use basilisk_rs::messages::{
-    AttitudeGuidanceMsg, BodyForceCommandMsg, EclipseMsg, EphemerisMsg, NavigationAttitudeMsg,
+    AttitudeGuidanceMsg, BodyForceCommandMsg, EphemerisMsg, NavigationAttitudeMsg,
     NavigationTranslationMsg, Output, PlanetStateMsg, SpacecraftStateMsg, SunEphemerisMsg,
     VehicleConfigMsg,
 };
+use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::astro_constants::{D2R, MU_SUN};
@@ -96,7 +92,7 @@ use small_body::{
     BENNU_MU_M3PS2, BENNU_STEP_NANOS, SPACECRAFT_MASS_KG, bennu_ephemeris, bennu_spacecraft,
     ephemeris_converter, planet_nav, spacecraft_inertia_kg_m2, wheel_cluster,
 };
-use small_body_simple_nav::{NavSigmas, NoisySimpleNav, grouped};
+use small_body_simple_nav::{NavSigmas, grouped};
 
 const STEM: &str = "scenarioSmallBodyFeedbackControl";
 /// Upstream `simulationTime_1 = macros.sec2nano(15000.0)`.
@@ -175,9 +171,6 @@ fn run(config: Config) -> Results {
     // Upstream's zeroed `SpicePlanetStateMsg` and `EphemerisMsg` of the Sun.
     let sun_state_msg = Output::new(SunEphemerisMsg::default());
     let sun_ephemeris_msg = Output::new(EphemerisMsg::default());
-    let full_sun_msg = Output::new(EclipseMsg {
-        illumination_factor: 1.0,
-    });
     let mut srp = RadiationPressure::new(RadiationPressureConfig {
         name: "radiationPressure".to_string(),
         area_m2: 1.0,
@@ -185,7 +178,7 @@ fn run(config: Config) -> Results {
     });
 
     let mut converter = ephemeris_converter("bennu");
-    let mut navigation = NoisySimpleNav::new(
+    let mut navigation = SimpleNavigation::with_errors(
         "SimpleNav",
         NavSigmas {
             position: 30.0,
@@ -266,7 +259,6 @@ fn run(config: Config) -> Results {
     }
     connect!(&simulation,
         &sun_state_msg => &mut srp.input_sun_msg,
-        &full_sun_msg => &mut srp.input_eclipse_msg,
         &waypoint_feedback.force_out_msg => &mut ext_force.cmd_force_body_in_msg,
     );
     spacecraft.add_state_effector(wheels.effector);

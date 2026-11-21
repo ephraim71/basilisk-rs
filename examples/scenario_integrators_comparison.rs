@@ -8,10 +8,12 @@
 //! | `euler` | Euler | [`basilisk_rs::integrators::Euler`] |
 //! | `rk2` | Heun | [`basilisk_rs::integrators::Heun`] |
 //! | `rk4` | RK 4 | [`basilisk_rs::integrators::Rk4`] |
-//! | `rkf45 10`, `rkf45 0.1` | RKF4(5), epsilon = 10, 0.1 | [`integrators::UpstreamAdaptive::rkf45`] |
-//! | `rkf78 10`, `rkf78 0.1` | RKF7(8), epsilon = 10, 0.1 | [`integrators::UpstreamAdaptive::rkf78`] |
+//! | `rkf45 10`, `rkf45 0.1` | RKF4(5), epsilon = 10, 0.1 | [`Rkf45::upstream`] |
+//! | `rkf78 10`, `rkf78 0.1` | RKF7(8), epsilon = 10, 0.1 | [`Rkf78::upstream`] |
 //!
-//! The adaptive cases set `relTol = 0` and `absTol = epsilon`, as upstream.
+//! The adaptive cases use upstream's step-size control
+//! ([`basilisk_rs::integrators::StepControl::Upstream`]) and set
+//! `relTol = 0` and `absTol = epsilon`, as upstream.
 //! The results go to `scenarioIntegratorsComparison.csv`: one row per time
 //! step, with each integrator's position error (m) and wall-clock run time
 //! (s), the two panels of upstream's figure.
@@ -25,8 +27,6 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
-#[path = "support/integrators.rs"]
-mod integrators;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/scenario_args.rs"]
@@ -36,7 +36,7 @@ mod table_csv;
 
 use std::time::Instant;
 
-use basilisk_rs::integrators::{Euler, Heun, Integrator, Rk4};
+use basilisk_rs::integrators::{AdaptiveController, Euler, Heun, Integrator, Rk4, Rkf45, Rkf78};
 use basilisk_rs::schedule;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -45,7 +45,6 @@ use basilisk_rs::utilities::orbital_motion::{
 };
 use grav_factory::Body;
 use hifitime::Epoch;
-use integrators::UpstreamAdaptive;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{kepler_state, orbit_period_s, sec2nano};
 use scenario_args::ScenarioArgs;
@@ -109,12 +108,8 @@ impl IntegratorData {
             (Some("euler"), _) => Box::new(Euler),
             (Some("rk2"), _) => Box::new(Heun),
             (Some("rk4"), _) => Box::new(Rk4),
-            (Some("rkf45"), Some(abs_tol)) => {
-                Box::new(UpstreamAdaptive::rkf45().with_tolerances(0.0, abs_tol))
-            }
-            (Some("rkf78"), Some(abs_tol)) => {
-                Box::new(UpstreamAdaptive::rkf78().with_tolerances(0.0, abs_tol))
-            }
+            (Some("rkf45"), Some(abs_tol)) => Box::new(Rkf45::new(upstream_control(abs_tol))),
+            (Some("rkf78"), Some(abs_tol)) => Box::new(Rkf78::new(upstream_control(abs_tol))),
             _ => unreachable!("unknown integrator {}", self.key),
         }
     }
@@ -122,6 +117,15 @@ impl IntegratorData {
     /// The CSV column prefix: the key with `_` for the space.
     pub fn column(&self) -> String {
         self.key.replace(' ', "_")
+    }
+}
+
+/// Upstream's adaptive step control with `relTol = 0` and `absTol = abs_tol`.
+fn upstream_control(abs_tol: f64) -> AdaptiveController {
+    AdaptiveController {
+        rtol: 0.0,
+        atol: abs_tol,
+        ..AdaptiveController::upstream()
     }
 }
 

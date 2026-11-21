@@ -10,10 +10,11 @@
 //! | `--integrator` | here |
 //! |---|---|
 //! | `rk4` | basilisk-rs's default [`basilisk_rs::integrators::Rk4`] (no tolerances) |
-//! | `rkf45` | [`integrators::UpstreamAdaptive::rkf45`] |
-//! | `rkf78` (default) | [`integrators::UpstreamAdaptive::rkf78`] |
+//! | `rkf45` | [`Rkf45`] with [`AdaptiveController::upstream`] |
+//! | `rkf78` (default) | [`Rkf78`] with [`AdaptiveController::upstream`] |
 //!
-//! and `--rel-tol`, `--abs-tol` (defaults `1e-5`, `1e-8`, upstream's
+//! (upstream's step-size control,
+//! [`basilisk_rs::integrators::StepControl::Upstream`]) and `--rel-tol`, `--abs-tol` (defaults `1e-5`, `1e-8`, upstream's
 //! `__main__`) and `--step-s` (default 7200). It records the state at every
 //! task update (upstream's `samplingTime` rounds down to 1 ns) to
 //! `scenarioVariableTimeStepIntegrators<case><tolerances>.csv`, where
@@ -30,8 +31,6 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
-#[path = "support/integrators.rs"]
-mod integrators;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -41,7 +40,7 @@ mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
-use basilisk_rs::integrators::Integrator;
+use basilisk_rs::integrators::{AdaptiveController, Integrator, Rkf45, Rkf78};
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -51,7 +50,6 @@ use basilisk_rs::utilities::orbital_motion::{
 use basilisk_rs::{connect, schedule};
 use grav_factory::Body;
 use hifitime::Epoch;
-use integrators::UpstreamAdaptive;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{kepler_state, nano2sec, orbit_period_s, sec2nano};
 use recording::{History, sampling_time, scenario_csv, state_columns};
@@ -113,15 +111,20 @@ impl Config {
         format!("{}{tolerances}{step}", self.integrator.label())
     }
 
+    /// Upstream's adaptive step control with `relTol` and `absTol`.
+    fn controller(&self) -> AdaptiveController {
+        AdaptiveController {
+            rtol: self.rel_tol,
+            atol: self.abs_tol,
+            ..AdaptiveController::upstream()
+        }
+    }
+
     fn integrator(&self) -> Option<Box<dyn Integrator<Spacecraft>>> {
         match self.integrator {
             IntegratorCase::Rk4 => None,
-            IntegratorCase::Rkf45 => Some(Box::new(
-                UpstreamAdaptive::rkf45().with_tolerances(self.rel_tol, self.abs_tol),
-            )),
-            IntegratorCase::Rkf78 => Some(Box::new(
-                UpstreamAdaptive::rkf78().with_tolerances(self.rel_tol, self.abs_tol),
-            )),
+            IntegratorCase::Rkf45 => Some(Box::new(Rkf45::new(self.controller()))),
+            IntegratorCase::Rkf78 => Some(Box::new(Rkf78::new(self.controller()))),
         }
     }
 }

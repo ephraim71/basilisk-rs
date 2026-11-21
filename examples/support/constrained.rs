@@ -13,10 +13,8 @@
 //! | `subMRP(sigma_B2N, sigma_B1N)` | [`attitude_violation`] |
 //! | `4 arctan(sigma_B2B1)` in degrees | [`violation_angles_deg`] |
 //!
-//! basilisk-rs's [`Rkf45`] controls its step with its own error norm (an RMS
-//! over every scalar) rather than upstream's largest whole-state ratio; with
-//! upstream's tolerances (`relTol = 1e-4`, `absTol = 1e-8`) and step factors
-//! the two take comparable sub-steps.
+//! [`upstream_rkf45`] is basilisk-rs's [`Rkf45`] with upstream's step-size
+//! control, tolerances and step factors ([`Rkf45::upstream`]).
 
 #![allow(dead_code)]
 
@@ -24,7 +22,7 @@ use basilisk_rs::dynamics::constraint_dynamic_effector::{
     ConstraintDynamicEffector, ConstraintDynamicEffectorConfig,
 };
 use basilisk_rs::dynamics::gravity::GravBodyData;
-use basilisk_rs::integrators::{AdaptiveController, Rkf45};
+use basilisk_rs::integrators::Rkf45;
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
@@ -40,14 +38,7 @@ pub const MU_EARTH_M3PS2: f64 = 0.3986004415e15;
 /// Upstream `svIntegratorRKF45` with its default tolerances and step
 /// factors.
 pub fn upstream_rkf45() -> Rkf45 {
-    Rkf45::new(AdaptiveController {
-        atol: 1.0e-8,
-        rtol: 1.0e-4,
-        safety: 0.9,
-        min_scale: 0.1,
-        max_scale: 4.0,
-        ..AdaptiveController::default()
-    })
+    Rkf45::upstream()
 }
 
 /// Upstream's `gravityEffector.GravBodyData()` named `earth_planet_data`,

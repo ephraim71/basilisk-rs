@@ -52,7 +52,7 @@ use attitude::{
     sampling_period_nanos, scenario_recorder, spacecraft, vehicle_config,
 };
 use basilisk_rs::dynamics::thruster_state_effector::ThrusterStateEffector;
-use basilisk_rs::integrators::{AdaptiveController, Rkf78};
+use basilisk_rs::integrators::Rkf78;
 use basilisk_rs::messages::{
     AttitudeGuidanceMsg, BodyTorqueCommandMsg, NavigationAttitudeMsg, NavigationTranslationMsg,
     Output, ThrusterArrayForceCommandMsg, ThrusterCommandMsg, ThrusterOutputMsg,
@@ -115,11 +115,7 @@ fn run(config: Config) -> Results {
     let inertia = hub_inertia_kg_m2();
     let mut spacecraft = spacecraft(inertia, &HubState::on_orbit(0.01));
     // Upstream `svIntegratorRKF78(scObject)` with its default tolerances.
-    spacecraft.config.integrator = Some(Box::new(Rkf78::new(AdaptiveController {
-        rtol: 1.0e-4,
-        atol: 1.0e-8,
-        ..AdaptiveController::default()
-    })));
+    spacecraft.config.integrator = Some(Box::new(Rkf78::upstream()));
     add_point_mass_earth(&mut spacecraft);
     spacecraft.add_dynamic_effector(external_disturbance(Vector3::from(UNMODELED_TORQUE_NM)));
     let mut navigation = SimpleNavigation::new("SimpleNavigation");

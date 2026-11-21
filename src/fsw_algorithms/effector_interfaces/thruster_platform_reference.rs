@@ -227,6 +227,7 @@ impl ThrusterPlatformReference {
             },
             thruster_torque: BodyTorqueCommandMsg {
                 torque_request_body_nm: dcm_fb.tr_mul(&torque_f),
+                ..Default::default()
             },
             thruster_config_b: ThrusterConfigMsg {
                 position_thrust_b_m: r_cb_b + dcm_fb.tr_mul(&r_tc_f),

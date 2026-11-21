@@ -220,6 +220,7 @@ mod tests {
         let torque_request_body_nm = Vector3::new(0.01, -0.02, 0.03);
         let torque_request_out = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm,
+            ..Default::default()
         });
 
         let mut rw_motor_torque = RwMotorTorque::new(RwMotorTorqueConfig {

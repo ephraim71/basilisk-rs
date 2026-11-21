@@ -151,6 +151,7 @@ pub fn run_bsm(
     }
     let torque_msg = Output::new(BodyTorqueCommandMsg {
         torque_request_body_nm: case.torque_b.unwrap_or_else(Vector3::zeros),
+        ..Default::default()
     });
     let mut ext_torque = ExtForceTorque::new(ExtForceTorqueConfig {
         name: "extTorque".to_string(),
@@ -223,6 +224,7 @@ mod mujoco_side {
         let origin = scene.body("hub").origin().name().to_string();
         let torque_msg = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: case.torque_b.unwrap_or_else(Vector3::zeros),
+            ..Default::default()
         });
         if case.torque_b.is_some() {
             torque_msg.connect_to(

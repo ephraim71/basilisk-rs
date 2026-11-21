@@ -162,6 +162,7 @@ mod tests {
         let mut effector = ExtForceTorque::new(config);
         let torque_cmd = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: torque,
+            ..Default::default()
         });
         let force_n_cmd = Output::new(InertialForceCommandMsg {
             force_request_inertial_n: force_n,
@@ -260,6 +261,7 @@ mod tests {
             });
             torque_b.write(BodyTorqueCommandMsg {
                 torque_request_body_nm: scale * command_torque_b,
+                ..Default::default()
             });
             check(scale);
             check(scale);

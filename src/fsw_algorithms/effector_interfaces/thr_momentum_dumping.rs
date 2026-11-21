@@ -15,19 +15,13 @@
 //! Upstream never reads the `deltaHInMsg` payload: it starts a new cycle when
 //! the message's write time (`timeWritten`) differs from the one it last acted
 //! on, and Reset takes the current write time (0 while never written) as
-//! already acted on. Rust messages carry no write metadata, so here the request
-//! counts as rewritten when its torque changes, at the call time the change is
-//! first seen (`WriteTime`). This keeps upstream's comparison and its quirk
-//! that a request with write time 0 never starts a cycle: here, one already
-//! seen at the t = 0 update (a producer scheduled ahead of this module). Unlike
-//! upstream, rewriting the same torque does not start a new cycle, and a
-//! request written after this module's t = 0 update counts as written at the
-//! next update (upstream would stamp it 0 and ignore it). Two different
-//! requests first seen at the same call time (possible only when updates
-//! repeat a time, e.g. after the clock restarts) count as one write, as two
-//! upstream writes with the same write time do.
-
-use nalgebra::Vector3;
+//! already acted on. Rust messages carry no write metadata; the stand-in is
+//! the write stamp the producer puts in the payload,
+//! [`BodyTorqueCommandMsg::command_time_nanos`] (`thrMomentumManagement`
+//! stamps each request with its update time). So, as upstream, a request
+//! rewritten with the same value after a reset starts a new cycle, and a
+//! request stamped 0 (upstream's never-written time, also the time of a
+//! request written at t = 0) never does.
 
 use crate::messages::{
     BodyTorqueCommandMsg, Input, MAX_EFF_COUNT, Output, ThrusterArrayConfigMsg,
@@ -70,8 +64,9 @@ pub struct ThrMomentumDumping {
     pub thruster_impulse_in_msg: Input<ThrusterArrayForceCommandMsg>,
     /// Upstream `thrusterConfInMsg`: thruster cluster, read at reset.
     pub thruster_conf_in_msg: Input<ThrusterArrayConfigMsg>,
-    /// Upstream `deltaHInMsg`: momentum-change request whose (re)writing starts
-    /// a dumping cycle; its torque is not used otherwise.
+    /// Upstream `deltaHInMsg`: momentum-change request whose (re)writing,
+    /// told by its write stamp `command_time_nanos`, starts a dumping cycle;
+    /// its torque is not used.
     pub delta_h_in_msg: Input<BodyTorqueCommandMsg>,
     /// Upstream `thrusterOnTimeOutMsg`: commanded on-time of each thruster,
     /// one output per thruster in cluster order, registered with
@@ -80,9 +75,9 @@ pub struct ThrMomentumDumping {
     thrusters: Vec<DumpingThruster>,
     /// Upstream `thrDumpingCounter`: control periods left to rest.
     thr_dumping_counter: i32,
-    /// Upstream `lastDeltaHInMsgTime`.
+    /// Upstream `lastDeltaHInMsgTime`: the write stamp of the request last
+    /// acted on.
     last_delta_h_in_msg_nanos: u64,
-    delta_h_write_time: WriteTime,
     /// Upstream `priorTime`; zero means "first call after reset".
     prior_time_nanos: u64,
 }
@@ -94,28 +89,6 @@ struct DumpingThruster {
     max_thrust_n: f64,
     /// Upstream `thrOnTimeRemaining` \[s\].
     on_time_remaining_s: f64,
-}
-
-/// Stand-in for the write time (`timeWritten`) of upstream's `deltaHInMsg`:
-/// the request counts as written when its torque differs from the previous
-/// observation, at the call time the change is first seen. Starts at upstream's
-/// never-written state (zero payload, write time 0). A torque holding NaN never
-/// compares equal and so counts as rewritten on every observation.
-#[derive(Clone, Debug, Default)]
-struct WriteTime {
-    torque_nm: Vector3<f64>,
-    written_nanos: u64,
-}
-
-impl WriteTime {
-    /// Records the request as read at `call_time_nanos`; returns its write time.
-    fn observe(&mut self, request: &BodyTorqueCommandMsg, call_time_nanos: u64) -> u64 {
-        if request.torque_request_body_nm != self.torque_nm {
-            self.torque_nm = request.torque_request_body_nm;
-            self.written_nanos = call_time_nanos;
-        }
-        self.written_nanos
-    }
 }
 
 impl ThrMomentumDumping {
@@ -131,7 +104,6 @@ impl ThrMomentumDumping {
             thrusters: Vec::new(),
             thr_dumping_counter: 0,
             last_delta_h_in_msg_nanos: 0,
-            delta_h_write_time: WriteTime::default(),
             prior_time_nanos: 0,
         }
     }
@@ -151,8 +123,8 @@ impl ThrMomentumDumping {
     }
 
     /// Upstream `Reset_thrMomentumDumping`: cache the thruster limits and
-    /// restart the dumping logic.
-    pub fn reset(&mut self, call_time_nanos: u64) {
+    /// restart the dumping logic. The call time is unused, as upstream.
+    pub fn reset(&mut self, _call_time_nanos: u64) {
         self.prior_time_nanos = 0;
 
         if !self.thruster_conf_in_msg.is_connected() {
@@ -182,9 +154,7 @@ impl ThrMomentumDumping {
         self.thr_dumping_counter = 0;
 
         // The request standing at reset counts as already acted on.
-        self.last_delta_h_in_msg_nanos = self
-            .delta_h_write_time
-            .observe(&self.delta_h_in_msg.read(), call_time_nanos);
+        self.last_delta_h_in_msg_nanos = self.delta_h_in_msg.read().command_time_nanos;
 
         if self.config.max_counter_value < 1 {
             log::warn!("thrMomentumDumping.max_counter_value must be set to a positive value");
@@ -192,9 +162,7 @@ impl ThrMomentumDumping {
     }
 
     fn compute_on_times(&mut self, call_time_nanos: u64) -> [f64; MAX_EFF_COUNT] {
-        let delta_h_written_nanos = self
-            .delta_h_write_time
-            .observe(&self.delta_h_in_msg.read(), call_time_nanos);
+        let delta_h_written_nanos = self.delta_h_in_msg.read().command_time_nanos;
         let mut output = [0.0; MAX_EFF_COUNT];
 
         // Preserve upstream's zero-time sentinel: the first call after a reset
@@ -296,9 +264,9 @@ mod tests {
     //!
     //! Upstream writes the zero torque to `deltaHInMsg` at 0.5 s (and again at
     //! 3.5 s in the reset case); only the write time matters to the module.
-    //! The Rust stand-in sees a write when the torque changes (see the module
-    //! docs), so these tests write distinct non-zero torques instead. The
-    //! truth tables are upstream's, verbatim.
+    //! These tests write the same zero torque with those write times as its
+    //! stamp (see the module docs). The truth tables are upstream's,
+    //! verbatim.
 
     use hifitime::Epoch;
     use nalgebra::Vector3;
@@ -394,9 +362,11 @@ mod tests {
         ThrusterArrayConfigMsg::from_active(&thrusters)
     }
 
-    fn request(torque_x_nm: f64) -> BodyTorqueCommandMsg {
+    /// A momentum-change request with the producer's write stamp.
+    fn request(torque_x_nm: f64, written_s: f64) -> BodyTorqueCommandMsg {
         BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(torque_x_nm, 0.0, 0.0),
+            command_time_nanos: seconds(written_s),
         }
     }
 
@@ -455,12 +425,14 @@ mod tests {
         };
 
         run(&mut module, &[0.0, 0.5]);
-        delta_h_out.write(request(1.0));
+        // Upstream `deltaHInMsg.write(DeltaHInMsgData, sec2nano(0.5))`.
+        delta_h_out.write(request(0.0, 0.5));
         run(&mut module, &[1.0, 1.5, 2.0, 2.5, 3.0]);
         if reset_check {
             module.reset(seconds(3.0));
             run(&mut module, &[3.5]);
-            delta_h_out.write(request(2.0));
+            // The same request, rewritten at 3.5 s.
+            delta_h_out.write(request(0.0, 3.5));
             run(&mut module, &[4.0, 4.5, 5.0, 5.5]);
         }
         samples
@@ -512,7 +484,7 @@ mod tests {
         module.update(&context(seconds(0.5)));
         let impulse = Output::new(ThrusterArrayForceCommandMsg::from_active(&[2.4]));
         impulse.connect_to(&mut module.thruster_impulse_in_msg);
-        delta_h_out.write(request(1.0));
+        delta_h_out.write(request(1.0, 0.5));
 
         for (time_s, expected_s) in [(1.0, 0.5), (1.5, 0.5), (2.0, 0.2), (2.5, 0.0), (3.0, 0.0)] {
             module.update(&context(seconds(time_s)));
@@ -527,14 +499,14 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_request_after_reset_does_not_restart_the_cycle() {
+    fn request_standing_at_reset_does_not_start_a_cycle() {
         let (mut module, _delta_h_out) = wired_module(
             ThrMomentumDumpingConfig {
                 max_counter_value: 2,
                 thr_min_fire_time_s: 0.02,
                 ..Default::default()
             },
-            request(1.0),
+            request(1.0, 0.25),
         );
         for time_s in [0.5, 1.0, 1.5, 2.0, 2.5] {
             module.update(&context(seconds(time_s)));
@@ -545,8 +517,39 @@ mod tests {
         }
     }
 
+    /// The case value comparison missed: the producer rewrites an identical
+    /// request after a reset (`thrMomentumManagement` after its own reset),
+    /// and its new write stamp starts a new cycle, as upstream's new
+    /// `timeWritten` does.
     #[test]
-    fn request_seen_at_time_zero_is_ignored_like_upstream() {
+    fn identical_request_rewritten_after_a_reset_restarts_the_cycle() {
+        let (mut module, delta_h_out) = wired_module(
+            ThrMomentumDumpingConfig {
+                max_counter_value: 2,
+                thr_min_fire_time_s: 0.02,
+                ..Default::default()
+            },
+            BodyTorqueCommandMsg::default(),
+        );
+        module.update(&context(seconds(0.5)));
+        delta_h_out.write(request(1.0, 0.5));
+        module.update(&context(seconds(1.0)));
+        assert_eq!(on_times(&module)[..4], [0.5, 0.1, 0.0, 0.5]);
+        for time_s in [1.5, 2.0, 2.5, 3.0] {
+            module.update(&context(seconds(time_s)));
+        }
+
+        module.reset(seconds(3.0));
+        module.update(&context(seconds(3.5)));
+        module.update(&context(seconds(4.0)));
+        assert!(fires_nothing(&module), "no new request yet");
+        delta_h_out.write(request(1.0, 4.0));
+        module.update(&context(seconds(4.5)));
+        assert_eq!(on_times(&module)[..4], [0.5, 0.1, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn request_stamped_zero_is_ignored_like_upstream() {
         // Upstream compares write times, and a request written at t = 0 has
         // the never-written write time 0.
         let (mut module, delta_h_out) = wired_module(
@@ -556,14 +559,14 @@ mod tests {
             },
             BodyTorqueCommandMsg::default(),
         );
-        delta_h_out.write(request(1.0));
+        delta_h_out.write(request(1.0, 0.0));
         for time_s in [0.0, 0.5, 1.0, 1.5, 2.0] {
             module.update(&context(seconds(time_s)));
             assert!(fires_nothing(&module), "fired at {time_s} s");
         }
 
         // A later write does start a cycle.
-        delta_h_out.write(request(2.0));
+        delta_h_out.write(request(1.0, 2.0));
         module.update(&context(seconds(2.5)));
         assert_eq!(on_times(&module)[..4], [0.5, 0.1, 0.0, 0.5]);
     }
@@ -578,7 +581,7 @@ mod tests {
             BodyTorqueCommandMsg::default(),
         );
         module.update(&context(seconds(1.0)));
-        delta_h_out.write(request(1.0));
+        delta_h_out.write(request(1.0, 1.0));
         // dt is negative and clamped to zero, so every on-time is capped at 0.
         module.update(&context(seconds(0.5)));
         assert_eq!(on_times(&module), [0.0; NUM_THRUSTERS]);

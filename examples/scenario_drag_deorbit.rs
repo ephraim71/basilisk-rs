@@ -43,7 +43,7 @@ use basilisk_rs::environment::atmosphere::exponential_atmosphere::{
 use basilisk_rs::environment::atmosphere::msis_atmosphere::{MsisAtmosphere, MsisAtmosphereConfig};
 use basilisk_rs::messages::{
     AtmosphereMsg, Input, Output, PlanetOrientation, PlanetStateMsg, SpacecraftDiagnosticsMsg,
-    SpacecraftStateMsg,
+    SpacecraftStateMsg, SwDataMsg,
 };
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -148,10 +148,24 @@ fn atmosphere(
                 ],
                 inertial_frame: EARTH_J2000,
                 fixed_frame: IAU_EARTH_FRAME,
+                // Unused: the space-weather messages below set the indices.
                 ap_array: [8.0; 7],
                 f107_daily: 110.0,
                 f107_average: 110.0,
             });
+            // Upstream's mocked `sw_msg`: Ap 8 on the 21 Ap channels and
+            // F10.7 110 sfu on the two F10.7 channels, one message each.
+            let (ap, f107) = (8.0, 110.0);
+            let space_weather: Vec<Output<SwDataMsg>> = (0..atmosphere.sw_data_in_msgs.len())
+                .map(|channel| {
+                    Output::new(SwDataMsg {
+                        data_value: if channel < 21 { ap } else { f107 },
+                    })
+                })
+                .collect();
+            for (message, input) in space_weather.iter().zip(&mut atmosphere.sw_data_in_msgs) {
+                simulation.connect(message, input);
+            }
             // The source module defaults to an identity planet DCM when no
             // ephemeris message is supplied. Supplying that state explicitly
             // avoids ANISE's rotating-Earth fallback while retaining the

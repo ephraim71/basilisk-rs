@@ -367,6 +367,7 @@ mod tests {
         let params_out = Output::new(VscmgArrayConfigMsg::from_active(&elements));
         let control_out = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::from(LR),
+            ..Default::default()
         });
         let att_out = Output::new(NavigationAttitudeMsg {
             omega_bn_b_radps: Vector3::from(OMEGA_BN_B),

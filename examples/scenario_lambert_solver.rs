@@ -13,20 +13,16 @@
 //! (`fswProcess.disableAllTasks()`, here a [`task_switch::TaskSwitch`]) and the
 //! run continues to the final time.
 //!
-//! # Differences from upstream
-//!
-//! Upstream's `simpleNav` adds Gauss-Markov errors (1 m and 1 cm/s
-//! standard deviations, `PMatrix` and `walkBounds`); basilisk-rs's
-//! [`SimpleNavigation`] has no error model, so the navigation here is the
-//! truth. The validator still disperses the maneuver state with upstream's
-//! uncertainties. Without the navigation errors the transfer reaches the
-//! target more closely than upstream's.
+//! The navigation is [`SimpleNavigation`] with upstream's Gauss-Markov
+//! errors (1 m and 1 cm/s standard deviations, `PMatrix`, and `walkBounds`
+//! of 10 m and 1 m/s); its noise stream is not upstream's.
 //!
 //! Writes `scenarioLambertSolver.csv` (truth and navigation states every
 //! 10 s) and `scenarioLambertSolverFsw.csv` (the flight-software outputs every
 //! 30 s up to the maneuver). Upstream has no test for this scenario; `tests`
-//! checks that the spacecraft reaches the target within the validator's
-//! `maxDistanceTarget`.
+//! checks that the validator accepts the burn and the spacecraft reaches the
+//! target within the validator's `maxDistanceTarget` plus what the
+//! navigation errors at the maneuver account for.
 
 #[path = "support/common.rs"]
 mod common;
@@ -54,7 +50,7 @@ use basilisk_rs::messages::{
     DvBurnCommandMsg, LambertPerformanceMsg, LambertProblemMsg, LambertSolutionMsg,
     LambertValidatorMsg, NavigationTranslationMsg, SpacecraftStateMsg,
 };
-use basilisk_rs::sensors::navigation::SimpleNavigation;
+use basilisk_rs::sensors::navigation::{SimpleNavMatrix, SimpleNavVector, SimpleNavigation};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
@@ -79,6 +75,8 @@ pub const MAX_DISTANCE_TARGET_M: f64 = 500.0;
 
 pub struct Results {
     pub truth: Vec<(u64, SpacecraftStateMsg)>,
+    /// The navigation solution, every 10 s.
+    pub navigation: Vec<(u64, NavigationTranslationMsg)>,
     pub dv_commands: Vec<(u64, DvBurnCommandMsg)>,
     pub validator: Vec<(u64, LambertValidatorMsg)>,
     /// Upstream `r_TN_N` (m).
@@ -124,7 +122,17 @@ pub fn run() -> Results {
         .add_grav_body(Body::Earth.point_mass(true))
         .expect("one central body");
     let hub = spacecraft.hub_state_handle();
-    let mut navigation = SimpleNavigation::new("SimpleNav");
+    // Upstream's `p_matrix_sc` (1-sigma) and `walk_bounds_sc`: position and
+    // velocity errors only.
+    let mut p_matrix_sc = SimpleNavMatrix::zeros();
+    let mut walk_bounds_sc = SimpleNavVector::zeros();
+    for axis in 0..3 {
+        p_matrix_sc[(axis, axis)] = pos_sigma;
+        p_matrix_sc[(axis + 3, axis + 3)] = vel_sigma;
+        walk_bounds_sc[axis] = 10.0;
+        walk_bounds_sc[axis + 3] = 1.0;
+    }
+    let mut navigation = SimpleNavigation::with_errors("SimpleNav", p_matrix_sc, walk_bounds_sc);
 
     let fsw = TaskSwitch::new(true);
     let mut planner = Switched::new(
@@ -159,6 +167,7 @@ pub fn run() -> Results {
 
     let mut truth_csv = scenario_csv("scenarioLambertSolver");
     let mut truth = MessageLog::<SpacecraftStateMsg>::default();
+    let mut navigation_history = MessageLog::<NavigationTranslationMsg>::default();
     // Upstream's FSW recorders sit in the FSW task, and stop with it.
     let mut fsw_csv = Switched::new(scenario_csv("scenarioLambertSolverFsw"), &fsw);
     let mut dv_commands = Switched::new(MessageLog::<DvBurnCommandMsg>::default(), &fsw);
@@ -184,6 +193,7 @@ pub fn run() -> Results {
                 ),
             ),
             &spacecraft.state_out => &mut truth.input,
+            &navigation.translation_out_msg => &mut navigation_history.input,
             &planner.module.lambert_problem_out_msg => fsw_csv.module.add_source::<LambertProblemMsg>(
                 CsvSourceConfig::columns(vector_columns("r1_n_m", "r1_N_m")),
             ),
@@ -217,6 +227,7 @@ pub fn run() -> Results {
             "lambertValidator" => &mut validator, period=fsw_step_nanos, priority=96;
             "truth_csv" => &mut truth_csv, period=sim_step_nanos, priority=0;
             "truth" => &mut truth, period=sim_step_nanos, priority=0;
+            "navigation_history" => &mut navigation_history, period=sim_step_nanos, priority=0;
             "fsw_csv" => &mut fsw_csv, period=fsw_step_nanos, priority=0;
             "dv_commands" => &mut dv_commands, period=fsw_step_nanos, priority=0;
             "validator_history" => &mut validator_history, period=fsw_step_nanos, priority=0;
@@ -234,6 +245,7 @@ pub fn run() -> Results {
 
     Results {
         truth: truth.into_samples(),
+        navigation: navigation_history.into_samples(),
         dv_commands: dv_commands.module.into_samples(),
         validator: validator_history.module.into_samples(),
         target_m,
@@ -260,18 +272,43 @@ mod tests {
     use super::{MAX_DISTANCE_TARGET_M, run};
     use crate::orbit_tools::sec2nano;
 
-    /// No upstream test. The validated burn puts the spacecraft within the
-    /// validator's `maxDistanceTarget` of the target at the final time, and
-    /// the validator accepted it: no failure flags at the last FSW update.
+    /// No upstream test. The validator accepted the burn (no failure flags
+    /// at the last FSW update), and the spacecraft reaches the target as
+    /// closely as the navigation errors allow: the burn is planned from the
+    /// navigation state, so its error at the maneuver, a velocity error
+    /// drifting over the transfer time and a position error, adds to the
+    /// validator's `maxDistanceTarget`. The errors stay within upstream's
+    /// `walkBounds` (10 m, 1 m/s).
     #[test]
     fn transfer_reaches_the_target() {
         let results = run();
         let (time, last) = results.truth.last().expect("samples");
         assert_eq!(*time, sec2nano(results.final_time_s));
+
+        let maneuver_nanos = sec2nano(results.maneuver_time_s);
+        let at_maneuver = |nanos: u64| nanos <= maneuver_nanos;
+        let (_, truth) = results
+            .truth
+            .iter()
+            .rfind(|(nanos, _)| at_maneuver(*nanos))
+            .expect("truth at the maneuver");
+        let (_, navigation) = results
+            .navigation
+            .iter()
+            .rfind(|(nanos, _)| at_maneuver(*nanos))
+            .expect("navigation at the maneuver");
+        let position_error = (navigation.position_bn_n_m - truth.position_m).norm();
+        let velocity_error = (navigation.velocity_bn_n_mps - truth.velocity_mps).norm();
+        assert!(position_error > 0.0 && position_error <= 10.0 * 3.0_f64.sqrt());
+        assert!(velocity_error > 0.0 && velocity_error <= 3.0_f64.sqrt());
+
+        let transfer_s = results.final_time_s - results.maneuver_time_s;
         let miss = (last.position_m - results.target_m).norm();
+        let allowed = MAX_DISTANCE_TARGET_M + 3.0 * (velocity_error * transfer_s + position_error);
         assert!(
-            miss < MAX_DISTANCE_TARGET_M,
-            "missed the target by {miss} m"
+            miss < allowed,
+            "missed the target by {miss} m (navigation errors {position_error} m, \
+             {velocity_error} m/s; allowed {allowed} m)"
         );
 
         let (_, validator) = results.validator.last().expect("FSW samples");

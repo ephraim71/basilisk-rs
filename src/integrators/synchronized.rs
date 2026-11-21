@@ -24,9 +24,10 @@
 //! [`DynamicObject`] methods do, so a one-member group integrates exactly like
 //! the member alone. Across members:
 //! - adaptive error control takes the largest member
-//!   [`error_norm`](DynamicObject::error_norm), so a step is accepted only when
-//!   every member meets the tolerance (upstream takes the largest relative error
-//!   over every state of every object);
+//!   [`error_norm`](DynamicObject::error_norm) or
+//!   [`max_relative_error`](DynamicObject::max_relative_error), so a step is
+//!   accepted only when every member meets the tolerance (upstream takes the
+//!   largest relative error over every state of every object);
 //! - noise sources are numbered member by member, as upstream numbers the
 //!   registered states of its objects in order, and a member's diffusion
 //!   depends only on its own state.
@@ -279,6 +280,36 @@ impl<D: DynamicObject, C: Coupling<D>> DynamicObject for Synchronized<D, C> {
                 member
                     .error_norm(high, low, atol, rtol)
                     .map(|norm| largest.max(norm))
+            },
+        )
+    }
+
+    /// The largest member ratio, or `None` when any member opts out:
+    /// upstream takes the largest relative error over every state of every
+    /// synchronized object.
+    fn max_relative_error(
+        &self,
+        state: &Self::State,
+        low: &[(&Self::Derivative, f64)],
+        high: &[(&Self::Derivative, f64)],
+        step: f64,
+        abs_tol: f64,
+        rel_tol: f64,
+    ) -> Option<f64> {
+        self.assert_member_count(state.len(), "states");
+        self.members.iter().zip(state).enumerate().try_fold(
+            0.0_f64,
+            |largest, (index, (member, member_state))| {
+                member
+                    .max_relative_error(
+                        member_state,
+                        &member_terms(low, index),
+                        &member_terms(high, index),
+                        step,
+                        abs_tol,
+                        rel_tol,
+                    )
+                    .map(|ratio| largest.max(ratio))
             },
         )
     }

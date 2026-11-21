@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Figures of upstream scenarioSepMomentumManagement.py from the Rust CSV.
 
-Figure numbers follow upstream's. The SRP torque figures (7 and 9) are not
-reproduced: the Rust SRP effector publishes no force or torque.
+Figure numbers follow upstream's. The SRP force and torque about B come
+from the spacecraft diagnostics (upstream logs the effector's
+`forceExternal_B` and `torqueExternalPntB_B`).
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from scenario_plotting import (
 
 STEM = "scenarioSepMomentumManagement"
 VARIANTS = ("0101", "0000")
+# Upstream `THRConfig.swirlTorque = 1e-3 maxThrust` with `swirlTorque`.
+MAX_THRUST_N = 0.27
 
 
 def _euler123_to_dcm(theta1: float, theta2: float) -> list[list[float]]:
@@ -94,7 +97,7 @@ def build(plt: Any, table: CsvTable, variant: str) -> dict[str, Any]:
     location_f = _vector_rows(table, "thrLoc_F_m")
     direction_f = _vector_rows(table, "thrDir_F")
     thrust = table.column("thrustForce_N")
-    offsets, torques = [], []
+    offsets, torques, thrust_b = [], [], []
     for row in range(len(time)):
         dcm_fb = _euler123_to_dcm(nu[0][row], nu[1][row])
         to_b = lambda v: [sum(dcm_fb[j][i] * v[j] for j in range(3)) for i in range(3)]
@@ -105,13 +108,40 @@ def build(plt: Any, table: CsvTable, variant: str) -> dict[str, Any]:
         cross = _cross(r_ct_b, direction_b)
         offsets.append(math.degrees(-angle if math.atan2(cross[1], cross[0]) < 0 else angle))
         torques.append(_cross([-value for value in r_ct_b], [thrust[row] * d for d in direction_b]))
+        thrust_b.append([thrust[row] * d for d in direction_b])
     figures[f"{STEM}6{suffix}"] = _lines(
         plt, time, [(offsets, r"$\Delta \theta$", "-")], "Thrust-CM offset [deg]"
+    )
+    # Upstream: the SRP torque mapped from B to the center of mass,
+    # `L_B - r_CB x F` (`plot_external_torque(..., 'SRP')`), in mN m.
+    srp_force = _vector_rows(table, "srpForce_B_N")
+    srp_torque_b = _vector_rows(table, "srpTorquePntB_B_Nm")
+    srp_torque_c = [
+        [srp_torque_b[row][i] - _cross(cm[row], srp_force[row])[i] for i in range(3)]
+        for row in range(len(time))
+    ]
+    figures[f"{STEM}7{suffix}"] = _lines(
+        plt, time,
+        [([1000.0 * torque[i] for torque in srp_torque_c], rf"${{}}^BL_{i + 1}$", "-")
+         for i in range(3)],
+        "SRP Torque [mNm]",
     )
     figures[f"{STEM}8{suffix}"] = _lines(
         plt, time,
         [([torque[i] for torque in torques], rf"${{}}^BL_{i + 1}$", "-") for i in range(3)],
         "Thruster Torque [Nm]",
+    )
+    # Upstream `plot_net_torques`: the SRP and thruster torques (with the
+    # swirl torque along the thrust) about the center of mass, in mN m.
+    swirl = 1.0e-3 * MAX_THRUST_N if variant[0] == "1" else 0.0
+    net = [
+        [srp_torque_c[row][i] + torques[row][i] + swirl * thrust_b[row][i] for i in range(3)]
+        for row in range(len(time))
+    ]
+    figures[f"{STEM}9{suffix}"] = _lines(
+        plt, time,
+        [([1000.0 * torque[i] for torque in net], rf"${{}}^BL_{i + 1}$", "-") for i in range(3)],
+        "Net Ext. Torque [mNm]",
     )
     figures[f"{STEM}10{suffix}"] = _lines(
         plt, time,

@@ -112,6 +112,7 @@ impl Module for MrpPd {
         let guidance = self.guid_in_msg.read();
         self.cmd_torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: self.control_torque(&guidance),
+            ..Default::default()
         });
     }
 }
@@ -257,6 +258,7 @@ mod tests {
         let mut module = MrpPd::new(MrpPdConfig::default());
         module.cmd_torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(1.0, 2.0, 3.0),
+            ..Default::default()
         });
         module.init();
         assert_eq!(

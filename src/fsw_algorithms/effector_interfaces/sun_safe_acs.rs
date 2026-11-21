@@ -159,6 +159,7 @@ mod tests {
     fn maps_the_sun_safe_torque_onto_the_longest_on_times() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.2, -0.6, 0.01),
+            ..Default::default()
         });
         let mut module = SunSafeAcs::new(SunSafeAcsConfig {
             thr_data: six_thruster_group(),
@@ -197,6 +198,7 @@ mod tests {
     fn nominal_on_time_is_added_before_the_minimum_check() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.0, 0.0, 0.01),
+            ..Default::default()
         });
         let mut module = SunSafeAcs::new(SunSafeAcsConfig {
             thr_data: ThrustGroupConfig {
@@ -227,6 +229,7 @@ mod tests {
     fn reset_keeps_the_last_command_like_upstream() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.2, -0.6, 0.01),
+            ..Default::default()
         });
         let mut module = SunSafeAcs::new(SunSafeAcsConfig {
             thr_data: six_thruster_group(),

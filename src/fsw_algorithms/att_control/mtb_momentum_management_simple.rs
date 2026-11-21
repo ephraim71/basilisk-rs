@@ -122,6 +122,7 @@ impl Module for MtbMomentumManagementSimple {
         let momentum_nms = self.wheel_momentum_body(&wheel_speeds_radps);
         self.tau_mtb_request_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: -self.config.kp_per_s * momentum_nms,
+            ..Default::default()
         });
     }
 }

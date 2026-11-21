@@ -156,6 +156,7 @@ impl Module for LowPassFilterTorqueCommand {
         let torque_request_body_nm = self.filter(command_nm);
         self.cmd_torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm,
+            ..Default::default()
         });
     }
 }
@@ -184,6 +185,7 @@ mod tests {
     fn torque(torque_request_body_nm: Vector3<f64>) -> BodyTorqueCommandMsg {
         BodyTorqueCommandMsg {
             torque_request_body_nm,
+            ..Default::default()
         }
     }
 

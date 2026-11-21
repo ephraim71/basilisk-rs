@@ -42,7 +42,7 @@
 //!   OpNav flight software reads them, as upstream.
 //! * The eight ACS thrusters are added without commands, as upstream: they
 //!   never fire.
-//! * `simpleNav` is [`NoisySimpleNav`] with upstream's `PMatrix` (as 1-sigma
+//! * `simpleNav` is [`SimpleNavigation`] with upstream's `PMatrix` (as 1-sigma
 //!   steps, see there), `walkBounds` and `crossTrans`.
 //! * The camera's cosmic rays are seeded with [`COSMIC_RAY_SEED`] instead of
 //!   the wall clock, so runs repeat.
@@ -58,6 +58,7 @@ use basilisk_rs::environment::eclipse::{Eclipse, EclipseConfig};
 use basilisk_rs::environment::ephemeris_converter::{EphemerisConverter, EphemerisConverterConfig};
 use basilisk_rs::messages::{Output, PlanetStateMsg, ReactionWheelStateMsg, RwSpeedMsg};
 use basilisk_rs::sensors::camera::{Camera, CameraConfig};
+use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{HubStateHandle, Spacecraft, SpacecraftConfig};
 use hifitime::Epoch;
@@ -67,7 +68,7 @@ use super::bsk_sim::dynamics::{
     CSS_NORMALS_B, CssConstellation, HUB_MASS_KG, THRUSTER_DIRECTION, THRUSTER_POSITION_M,
     WHEEL_COUNT, css, hub_inertia_kg_m2, rw_factory,
 };
-use super::bsk_sim::simple_nav::{NavSigmas, NoisySimpleNav, grouped};
+use super::bsk_sim::simple_nav::{NavSigmas, grouped};
 use super::grav_factory::{Body, GGM2B};
 use super::multi_sat_environment::SunEphemerisFromPlanet;
 use super::planet_renderer::{PlanetRenderer, PlanetRendererConfig};
@@ -146,12 +147,7 @@ pub fn simple_nav_walk_bounds() -> [f64; 6] {
 /// The navigation sensor's error seed when none is set (upstream's
 /// `RNGSeed` default): a hash of its name.
 pub fn simple_nav_default_seed() -> u64 {
-    NoisySimpleNav::new(
-        "SimpleNavigation",
-        simple_nav_sigmas().p_matrix(),
-        grouped(simple_nav_walk_bounds()),
-    )
-    .seed
+    SimpleNavigation::new("SimpleNavigation").rng_seed()
 }
 
 /// Upstream `SetCamera` (`instrument`).
@@ -202,7 +198,7 @@ pub struct OpNavDynamics {
     pub spacecraft: Spacecraft,
     /// Upstream `ephemObject`: Mars's ephemeris.
     pub ephem_object: EphemerisConverter,
-    pub simple_nav: NoisySimpleNav,
+    pub simple_nav: SimpleNavigation,
     /// The stand-in for Vizard rendering `cameraMod`'s images.
     pub renderer: PlanetRenderer,
     /// The stand-in for Vizard rendering `cameraMod2`'s images.
@@ -292,7 +288,7 @@ impl OpNavDynamics {
         }));
 
         // `SetSimpleNavObject`.
-        let mut simple_nav = NoisySimpleNav::new(
+        let mut simple_nav = SimpleNavigation::with_errors(
             "SimpleNavigation",
             simple_nav_sigmas().p_matrix(),
             grouped(simple_nav_walk_bounds()),

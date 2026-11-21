@@ -808,6 +808,7 @@ fn inertia_rescales_with_mass() {
     .expect("scene");
     let torque_msg = Output::new(BodyTorqueCommandMsg {
         torque_request_body_nm: Vector3::new(torque, 0.0, 0.0),
+        ..Default::default()
     });
     torque_msg.connect_to(
         &mut scene

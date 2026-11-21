@@ -146,21 +146,56 @@ pub fn propagate_explicit_rk<D: DynamicObject>(
     object.combine(state, weighted, dt_seconds)
 }
 
+/// How [`propagate_adaptive_rk`] measures a trial's error, which solution it
+/// keeps and how it sizes the next trial.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StepControl {
+    /// basilisk-rs's scheme: the error is the weighted RMS norm of
+    /// [`DynamicObject::error_norm`] over every scalar, an accepted trial
+    /// keeps the `b` (higher-order) solution, and the step scale
+    /// `safety · err^(-1/(q+1))` is clamped to `[1, max_scale]` after an
+    /// accepted trial and to `[min_scale, 1]` after a rejected one.
+    #[default]
+    RmsNorm,
+    /// Upstream `svIntegratorAdaptiveRungeKutta::integrateImpl`:
+    ///
+    /// * every outer step starts with the trial step equal to the whole step;
+    /// * each trial forms the `b` (upstream `bArray`) and `b_embedded`
+    ///   (`bStarArray`) candidates and accepts when the largest error ratio
+    ///   over the states, [`DynamicObject::max_relative_error`]
+    ///   (`computeFlatMaxRelativeError`), is at most one;
+    /// * an accepted trial keeps the `b_embedded` candidate, as upstream keeps
+    ///   `bStarArray`'s (for [`RKF45`] and [`RKF78`] the lower-order one);
+    /// * the next trial step is `safety · h · (1/err)^(1/p)`, clamped to
+    ///   `[min_scale · h, max_scale · h]` and to the rest of the outer step,
+    ///   with `p = error_estimate_order + 1` (upstream `methodLargestOrder`).
+    ///
+    /// Use it with [`AdaptiveController::upstream`]'s factors and tolerances.
+    /// An object that does not implement `max_relative_error` takes the
+    /// whole step at once.
+    Upstream,
+}
+
 /// Tuning parameters for adaptive (embedded) Runge-Kutta step-size control.
 #[derive(Clone, Copy, Debug)]
 pub struct AdaptiveController {
-    /// Absolute tolerance floor per state component.
+    /// Absolute tolerance floor per state component (upstream `absTol`).
     pub atol: f64,
-    /// Relative tolerance per state component.
+    /// Relative tolerance per state component (upstream `relTol`).
     pub rtol: f64,
-    /// Safety factor applied to the ideal step scale (typically `0.9`).
+    /// Safety factor applied to the ideal step scale (typically `0.9`;
+    /// upstream `safetyFactorForNextStepSize`).
     pub safety: f64,
-    /// Smallest allowed step-shrink factor after a rejected step.
+    /// Smallest allowed step-shrink factor (upstream
+    /// `minimumFactorDecreaseForNextStepSize`).
     pub min_scale: f64,
-    /// Largest allowed step-growth factor after an accepted step.
+    /// Largest allowed step-growth factor (upstream
+    /// `maximumFactorIncreaseForNextStepSize`).
     pub max_scale: f64,
     /// Hard cap on sub-steps per outer step, guarding against a stuck controller.
     pub max_substeps: u32,
+    /// The step-size control scheme.
+    pub step_control: StepControl,
 }
 
 impl Default for AdaptiveController {
@@ -172,18 +207,62 @@ impl Default for AdaptiveController {
             min_scale: 0.2,
             max_scale: 5.0,
             max_substeps: 10_000,
+            step_control: StepControl::RmsNorm,
         }
+    }
+}
+
+impl AdaptiveController {
+    /// Upstream `svIntegratorAdaptiveRungeKutta`'s step control with its
+    /// defaults: `relTol = 1e-4`, `absTol = 1e-8`, safety 0.9, step factors
+    /// in `[0.1, 4]`. Set `rtol` and `atol` for other tolerances.
+    pub fn upstream() -> Self {
+        Self {
+            atol: 1.0e-8,
+            rtol: 1.0e-4,
+            safety: 0.9,
+            min_scale: 0.1,
+            max_scale: 4.0,
+            max_substeps: 10_000,
+            step_control: StepControl::Upstream,
+        }
+    }
+}
+
+/// Upstream's error-to-tolerance ratio of one state: `error / (magnitude ·
+/// rel_tol + abs_tol)`, where `error` is the norm of the high-minus-low
+/// candidate difference and `magnitude` the norm of the high-order candidate
+/// (whole-state control), or the absolute values of one component
+/// (per-component control). A zero threshold gives 0 for a zero error and
+/// infinity otherwise.
+///
+/// # Panics
+///
+/// On a non-finite error or magnitude, as upstream raises.
+pub fn relative_error_ratio(error: f64, magnitude: f64, rel_tol: f64, abs_tol: f64) -> f64 {
+    assert!(
+        error.is_finite() && magnitude.is_finite(),
+        "adaptive Runge-Kutta produced a nonfinite state or truncation error"
+    );
+    let threshold = magnitude * rel_tol + abs_tol;
+    if threshold == 0.0 {
+        if error == 0.0 { 0.0 } else { f64::INFINITY }
+    } else {
+        error / threshold
     }
 }
 
 /// Advances across the fixed outer step `dt_seconds` using an embedded pair,
 /// sub-stepping internally so each accepted sub-step meets `controller`'s
-/// tolerance. The per-sub-step [`StepOutput`](DynamicObject::StepOutput)s are
-/// reduced into one via [`merge_step_outputs`](DynamicObject::merge_step_outputs).
+/// tolerance, with the scheme of its [`StepControl`]. The per-sub-step
+/// [`StepOutput`](DynamicObject::StepOutput)s are reduced into one via
+/// [`merge_step_outputs`](DynamicObject::merge_step_outputs).
 ///
 /// Falls back to a single [`propagate_explicit_rk`] step if the tableau has no
-/// embedded row or the object does not implement
-/// [`error_norm`](DynamicObject::error_norm).
+/// embedded row, and takes the rest of the outer step at once if the object
+/// does not implement the error measure of the scheme
+/// ([`error_norm`](DynamicObject::error_norm) or
+/// [`max_relative_error`](DynamicObject::max_relative_error)).
 pub fn propagate_adaptive_rk<D: DynamicObject>(
     tableau: &ButcherTableau,
     controller: &AdaptiveController,
@@ -203,6 +282,19 @@ pub fn propagate_adaptive_rk<D: DynamicObject>(
             dt_seconds,
         );
     };
+
+    if controller.step_control == StepControl::Upstream {
+        return propagate_upstream_adaptive_rk(
+            tableau,
+            b_embedded,
+            controller,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        );
+    }
 
     let exponent = 1.0 / (tableau.error_estimate_order as f64 + 1.0);
     let mut y = state.clone();
@@ -279,6 +371,123 @@ pub fn propagate_adaptive_rk<D: DynamicObject>(
 
     (
         y,
+        accumulated.expect("adaptive integrator produced no accepted sub-step"),
+    )
+}
+
+/// [`StepControl::Upstream`]: port of upstream
+/// `svIntegratorAdaptiveRungeKutta::integrateImpl` (see there).
+#[allow(clippy::too_many_arguments)]
+fn propagate_upstream_adaptive_rk<D: DynamicObject>(
+    tableau: &ButcherTableau,
+    b_embedded: &[f64],
+    controller: &AdaptiveController,
+    object: &mut D,
+    state: &D::State,
+    current_sim_nanos: u64,
+    current_epoch: Epoch,
+    dt_seconds: f64,
+) -> (D::State, D::StepOutput) {
+    // Upstream `validateTolerance`.
+    for (tolerance, name) in [(controller.rtol, "relative"), (controller.atol, "absolute")] {
+        assert!(
+            tolerance.is_finite() && tolerance >= 0.0,
+            "adaptive Runge-Kutta {name} tolerance must be finite and nonnegative"
+        );
+    }
+    assert!(
+        dt_seconds.is_finite() && dt_seconds >= 0.0,
+        "adaptive Runge-Kutta integration requires a finite, nonnegative time step"
+    );
+    if dt_seconds == 0.0 {
+        return propagate_explicit_rk(
+            tableau,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        );
+    }
+
+    // Upstream `methodLargestOrder`.
+    let largest_order = tableau.error_estimate_order as f64 + 1.0;
+    let mut base = state.clone();
+    let mut elapsed = 0.0_f64;
+    let mut step = dt_seconds;
+    let mut accumulated: Option<D::StepOutput> = None;
+    let mut substeps = 0u32;
+    while elapsed < dt_seconds {
+        assert!(
+            step.is_finite() && step > 0.0 && elapsed + step > elapsed,
+            "adaptive Runge-Kutta integration cannot make representable forward progress"
+        );
+        let ks = compute_stages(
+            tableau,
+            object,
+            &base,
+            current_sim_nanos,
+            current_epoch,
+            elapsed,
+            step,
+        );
+        let max_error = {
+            let low: Vec<(&D::Derivative, f64)> =
+                ks.iter().zip(tableau.b.iter().copied()).collect();
+            let high: Vec<(&D::Derivative, f64)> =
+                ks.iter().zip(b_embedded.iter().copied()).collect();
+            object.max_relative_error(&base, &low, &high, step, controller.atol, controller.rtol)
+        };
+        let Some(max_error) = max_error else {
+            // The object opts out of error control: take the rest at once.
+            let weighted = ks.into_iter().zip(b_embedded.iter().copied()).collect();
+            let (next, out) = object.combine(&base, weighted, dt_seconds - elapsed);
+            base = next;
+            accumulated = Some(match accumulated {
+                Some(acc) => object.merge_step_outputs(acc, out),
+                None => out,
+            });
+            break;
+        };
+        assert!(
+            !max_error.is_nan(),
+            "adaptive Runge-Kutta produced a nonfinite truncation error"
+        );
+
+        if max_error <= 1.0 {
+            elapsed += step;
+            let weighted = ks.into_iter().zip(b_embedded.iter().copied()).collect();
+            let (next, out) = object.combine(&base, weighted, step);
+            base = next;
+            accumulated = Some(match accumulated {
+                Some(acc) => object.merge_step_outputs(acc, out),
+                None => out,
+            });
+        }
+
+        let next_step = (controller.safety * step * (1.0 / max_error).powf(1.0 / largest_order))
+            .min(step * controller.max_scale)
+            .max(step * controller.min_scale)
+            .min(dt_seconds - elapsed);
+        if elapsed < dt_seconds {
+            assert!(
+                next_step.is_finite() && next_step > 0.0 && elapsed + next_step > elapsed,
+                "adaptive Runge-Kutta error control reduced the time step below representable \
+                 forward progress"
+            );
+        }
+        step = next_step;
+
+        substeps += 1;
+        assert!(
+            substeps <= controller.max_substeps,
+            "adaptive integrator exceeded {} sub-steps in one step; tolerances may be too tight",
+            controller.max_substeps
+        );
+    }
+
+    (
+        base,
         accumulated.expect("adaptive integrator produced no accepted sub-step"),
     )
 }

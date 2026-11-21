@@ -109,6 +109,37 @@ pub trait DynamicObject {
         None
     }
 
+    /// Upstream `svIntegratorAdaptiveRungeKutta::computeFlatMaxRelativeError`:
+    /// the largest error-to-tolerance ratio over the object's states of the
+    /// two embedded candidates `state + step · Σ wᵢ kᵢ`, `low` the `b` weights
+    /// (upstream `bArray`) and `high` the `b_embedded` ones (`bStarArray`).
+    /// A result `<= 1.0` accepts the trial; used by
+    /// [`StepControl::Upstream`](super::StepControl::Upstream).
+    ///
+    /// Upstream compares each registered state as a whole
+    /// (`ErrorControlMode::WholeState`): the norm of `high - low` over
+    /// `‖high‖ rel_tol + abs_tol`, see
+    /// [`relative_error_ratio`](super::relative_error_ratio); a state with
+    /// `ErrorControlMode::PerComponent` compares each scalar instead. The
+    /// candidates are given as weights rather than states so an object can
+    /// include quantities it integrates outside its state, as upstream
+    /// integrates them as states.
+    ///
+    /// The default returns `None`: the object does not support upstream's
+    /// error control, and the driver takes the whole step at once.
+    #[allow(clippy::too_many_arguments)]
+    fn max_relative_error(
+        &self,
+        _state: &Self::State,
+        _low: &[(&Self::Derivative, f64)],
+        _high: &[(&Self::Derivative, f64)],
+        _step: f64,
+        _abs_tol: f64,
+        _rel_tol: f64,
+    ) -> Option<f64> {
+        None
+    }
+
     /// Number of independent Wiener processes `W_k` in
     /// `dx = f(t, x) dt + Σ_k g_k(t, x) dW_k` (upstream: the global noise
     /// sources of the registered states).

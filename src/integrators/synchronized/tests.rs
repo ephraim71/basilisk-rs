@@ -22,6 +22,7 @@ use crate::integrators::stochastic::{
 };
 use crate::integrators::{
     AdaptiveController, DynamicObject, Integrator, RKF45, RKF78, Rk4, Rkf45, Rkf78,
+    relative_error_ratio,
 };
 
 fn epoch() -> Epoch {
@@ -91,6 +92,26 @@ impl DynamicObject for Oscillator {
             .map(|(high, low)| ((high - low) / (atol + rtol * high.abs().max(low.abs()))).powi(2))
             .sum();
         Some((sum_of_squares / 6.0).sqrt())
+    }
+
+    /// Upstream's whole-state ratio of the 2×3 oscillator state.
+    fn max_relative_error(
+        &self,
+        state: &Self::State,
+        low: &[(&Self::Derivative, f64)],
+        high: &[(&Self::Derivative, f64)],
+        step: f64,
+        abs_tol: f64,
+        rel_tol: f64,
+    ) -> Option<f64> {
+        let low = self.state_with_derivatives(state, low, step);
+        let high = self.state_with_derivatives(state, high, step);
+        Some(relative_error_ratio(
+            (high - low).norm(),
+            high.norm(),
+            rel_tol,
+            abs_tol,
+        ))
     }
 }
 
@@ -167,7 +188,8 @@ fn expect_valid_trials(stage_nanos: &[u64], nodes: &[f64], end_nanos: u64) {
 /// `x₂' = -ω x₁` split across two synchronized objects, integrated over 8 s
 /// in one call. At the tighter tolerance the global error is below `1e-6` and
 /// a hundredth of the looser tolerance's, and both objects see the same
-/// stage times.
+/// stage times; under basilisk-rs's and upstream's step control, the latter
+/// taking the largest ratio over the two objects' states, as upstream.
 #[test]
 fn coupled_oscillator_converges_with_tighter_tolerance() {
     let duration_s: f64 = 8.0;
@@ -191,13 +213,20 @@ fn coupled_oscillator_converges_with_tighter_tolerance() {
             RKF78.c,
         ),
     ];
-    for (name, factory, nodes) in methods {
+    let controls = [
+        AdaptiveController::default(),
+        AdaptiveController::upstream(),
+    ];
+    for ((name, factory, nodes), control) in methods
+        .into_iter()
+        .flat_map(|method| controls.map(|control| (method, control)))
+    {
         let mut previous_error = f64::INFINITY;
         for tolerance in [1.0e-4, 1.0e-8] {
             let integrator = factory(AdaptiveController {
                 rtol: tolerance,
                 atol: tolerance * 0.01,
-                ..AdaptiveController::default()
+                ..control
             });
             let mut group = Synchronized::new(
                 vec![

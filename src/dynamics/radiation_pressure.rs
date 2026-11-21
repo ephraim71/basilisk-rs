@@ -1,3 +1,14 @@
+//! Cannonball solar radiation pressure: port of upstream Basilisk
+//! `radiationPressure` with its cannonball model.
+//!
+//! The force pushes the spacecraft away from the Sun, scaled by the
+//! reflection coefficient, the area and the inverse square of the Sun
+//! distance, and by the illumination factor of the optional eclipse input
+//! (upstream `sunEclipseInMsg`). As upstream, an unconnected eclipse input
+//! means full sun: upstream's illumination factor starts at 1 and is
+//! replaced only by a linked, written eclipse message. Stand-in for upstream's
+//! `isWritten`: connected ⇒ written.
+
 use nalgebra::Vector3;
 use std::any::Any;
 
@@ -39,6 +50,8 @@ impl RadiationPressureConfig {
 pub struct RadiationPressure {
     pub config: RadiationPressureConfig,
     pub input_sun_msg: Input<SunEphemerisMsg>,
+    /// Upstream `sunEclipseInMsg` (optional): the Sun's illumination factor;
+    /// full sun when unconnected.
     pub input_eclipse_msg: Input<EclipseMsg>,
 }
 
@@ -56,7 +69,12 @@ impl RadiationPressure {
 
     pub fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
         let sun = self.input_sun_msg.read();
-        let eclipse = self.input_eclipse_msg.read();
+        // Upstream `sunVisibilityFactor`: 1 unless an eclipse message is linked.
+        let illumination_factor = if self.input_eclipse_msg.is_connected() {
+            self.input_eclipse_msg.read().illumination_factor
+        } else {
+            1.0
+        };
         let spacecraft_position = state.position_m;
         let sun_to_spacecraft = spacecraft_position - sun.sun_position_inertial_m;
         let sun_distance_m = sun_to_spacecraft.norm();
@@ -72,7 +90,7 @@ impl RadiationPressure {
             / (SPEED_OF_LIGHT_MPS * sun_distance_m.powi(3));
 
         EffectorOutput {
-            force_inertial_n: scale_factor * sun_to_spacecraft * eclipse.illumination_factor,
+            force_inertial_n: scale_factor * sun_to_spacecraft * illumination_factor,
             torque_body_nm: Vector3::zeros(),
         }
     }
@@ -258,6 +276,31 @@ mod tests {
             half,
             0.5 * full
         );
+    }
+
+    /// Upstream's `sunVisibilityFactor` starts at full sun and only a linked
+    /// eclipse message changes it: without one, the force is the full-sun
+    /// force, not zero.
+    #[test]
+    fn unconnected_eclipse_input_means_full_sun() {
+        let sc_pos = Vector3::new(-16937711153.5, -138435806556.0, -60051616256.6);
+        let sun_out = Output::new(SunEphemerisMsg {
+            sun_position_inertial_m: Vector3::new(507128401.716, 22652490.9092, -14854379.6232),
+            sun_velocity_inertial_mps: Vector3::zeros(),
+        });
+        let mut srp = RadiationPressure::new(RadiationPressureConfig {
+            name: "srp".to_string(),
+            area_m2: 4.0,
+            coefficient_reflection: 1.2,
+        });
+        srp.input_sun_msg.connect(sun_out.slot());
+        let unconnected = srp.compute_output(&make_state(sc_pos)).force_inertial_n;
+
+        let (mut lit, _sun, _eclipse) = make_srp(4.0, 1.2);
+        lit.input_sun_msg.connect(sun_out.slot());
+        let full_sun = lit.compute_output(&make_state(sc_pos)).force_inertial_n;
+        assert!(unconnected.norm() > 0.0);
+        assert_eq!(unconnected, full_sun);
     }
 
     #[test]

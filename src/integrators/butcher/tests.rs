@@ -500,6 +500,32 @@ impl DynamicObject for MixedScale {
     fn error_norm(&self, high: &[f64; 2], low: &[f64; 2], atol: f64, rtol: f64) -> Option<f64> {
         componentwise_error_norm(high, low, atol, rtol)
     }
+
+    /// Upstream `ErrorControlMode::PerComponent`.
+    fn max_relative_error(
+        &self,
+        state: &[f64; 2],
+        low: &[(&[f64; 2], f64)],
+        high: &[(&[f64; 2], f64)],
+        step: f64,
+        atol: f64,
+        rtol: f64,
+    ) -> Option<f64> {
+        let low = self.state_with_derivatives(state, low, step);
+        let high = self.state_with_derivatives(state, high, step);
+        Some(
+            (0..2)
+                .map(|index| {
+                    relative_error_ratio(
+                        (high[index] - low[index]).abs(),
+                        high[index].abs(),
+                        rtol,
+                        atol,
+                    )
+                })
+                .fold(0.0, f64::max),
+        )
+    }
 }
 
 /// Upstream `expectValidTrials`: the stage times split into trials of one
@@ -622,4 +648,276 @@ fn componentwise_control_preserves_small_state_accuracy() {
         assert!((state[1] - exact).abs() <= 1.0e-6 * exact, "{}", state[1]);
         expect_valid_trials(&object.stages, tableau, 4_000_000_000);
     }
+}
+
+// Upstream step control (`StepControl::Upstream`): the same accuracy tests
+// with upstream's error measure, where each upstream state is compared as a
+// whole (the two 2×3 oscillator blocks) or per component (the mixed-scale
+// state), and checks of the trial sequence itself.
+
+/// Upstream whole-state ratio of the components `range` of two candidates.
+fn whole_state_ratio(
+    low: &[f64],
+    high: &[f64],
+    range: std::ops::Range<usize>,
+    atol: f64,
+    rtol: f64,
+) -> f64 {
+    let error = range
+        .clone()
+        .map(|index| (high[index] - low[index]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let magnitude = range.map(|index| high[index].powi(2)).sum::<f64>().sqrt();
+    relative_error_ratio(error, magnitude, rtol, atol)
+}
+
+impl CoupledOscillator {
+    /// The two candidates `state + step Σ w k`.
+    fn candidates(
+        &self,
+        state: &[f64; 12],
+        low: &[(&[f64; 12], f64)],
+        high: &[(&[f64; 12], f64)],
+        step: f64,
+    ) -> ([f64; 12], [f64; 12]) {
+        (
+            self.state_with_derivatives(state, low, step),
+            self.state_with_derivatives(state, high, step),
+        )
+    }
+}
+
+/// Upstream's two `OscillatorDynamics` objects, one whole state each.
+struct UpstreamOscillator(CoupledOscillator);
+
+impl DynamicObject for UpstreamOscillator {
+    type State = [f64; 12];
+    type Derivative = [f64; 12];
+    type StepOutput = ();
+
+    fn equations_of_motion(&mut self, state: &[f64; 12], nanos: u64, epoch: Epoch) -> [f64; 12] {
+        self.0.equations_of_motion(state, nanos, epoch)
+    }
+
+    fn state_with_derivative(
+        &self,
+        state: &[f64; 12],
+        derivative: &[f64; 12],
+        dt: f64,
+    ) -> [f64; 12] {
+        self.0.state_with_derivative(state, derivative, dt)
+    }
+
+    fn combine(
+        &self,
+        state: &[f64; 12],
+        weighted: Vec<([f64; 12], f64)>,
+        step: f64,
+    ) -> ([f64; 12], ()) {
+        self.0.combine(state, weighted, step)
+    }
+
+    fn merge_step_outputs(&self, _: (), _: ()) {}
+
+    fn max_relative_error(
+        &self,
+        state: &[f64; 12],
+        low: &[(&[f64; 12], f64)],
+        high: &[(&[f64; 12], f64)],
+        step: f64,
+        atol: f64,
+        rtol: f64,
+    ) -> Option<f64> {
+        let (low, high) = self.0.candidates(state, low, high, step);
+        Some(
+            whole_state_ratio(&low, &high, 0..6, atol, rtol).max(whole_state_ratio(
+                &low,
+                &high,
+                6..12,
+                atol,
+                rtol,
+            )),
+        )
+    }
+}
+
+/// Upstream `CoupledOscillatorConvergesWithTighterTolerance` under upstream's
+/// step control.
+#[test]
+fn upstream_control_coupled_oscillator_converges_with_tighter_tolerance() {
+    let duration = 8.0;
+    let frequency = 1.0;
+    for tableau in [&RKF45, &RKF78] {
+        let mut previous_error = f64::INFINITY;
+        for tolerance in [1.0e-4, 1.0e-8] {
+            let mut object = UpstreamOscillator(CoupledOscillator {
+                frequency,
+                stages: Vec::new(),
+            });
+            let mut initial = [0.0; 12];
+            initial[..6].fill(1.0);
+            let controller = AdaptiveController {
+                rtol: tolerance,
+                atol: tolerance * 0.01,
+                ..AdaptiveController::upstream()
+            };
+            let (state, ()) = propagate_adaptive_rk(
+                tableau,
+                &controller,
+                &mut object,
+                &initial,
+                0,
+                epoch(),
+                duration,
+            );
+            assert!(state.iter().all(|value| value.is_finite()));
+            let error = (0..6)
+                .map(|index| {
+                    let first = (state[index] - (frequency * duration).cos()).abs();
+                    let second = (state[index + 6] + (frequency * duration).sin()).abs();
+                    first.max(second)
+                })
+                .fold(0.0, f64::max);
+            if tolerance == 1.0e-8 {
+                assert!(error < 1.0e-6, "global error {error}");
+                assert!(error < previous_error * 0.01, "{error} vs {previous_error}");
+            }
+            previous_error = error;
+            expect_valid_trials(&object.0.stages, tableau, 8_000_000_000);
+        }
+    }
+}
+
+/// Upstream `ComponentwiseControlPreservesSmallStateAccuracy` under
+/// upstream's step control.
+#[test]
+fn upstream_control_componentwise_preserves_small_state_accuracy() {
+    let duration: f64 = 4.0;
+    let exact = (-duration).exp();
+    for tableau in [&RKF45, &RKF78] {
+        let mut object = MixedScale { stages: Vec::new() };
+        let controller = AdaptiveController {
+            rtol: 1.0e-8,
+            atol: 1.0e-10,
+            ..AdaptiveController::upstream()
+        };
+        let (state, ()) = propagate_adaptive_rk(
+            tableau,
+            &controller,
+            &mut object,
+            &[1.0e9, 1.0],
+            0,
+            epoch(),
+            duration,
+        );
+        assert_eq!(state[0], 1.0e9);
+        assert!((state[1] - exact).abs() <= 1.0e-6 * exact, "{}", state[1]);
+        expect_valid_trials(&object.stages, tableau, 4_000_000_000);
+    }
+}
+
+/// An accepted trial keeps upstream's `bStarArray` candidate, the
+/// `b_embedded` row (RKF45's fourth-order one), not the `b` row.
+#[test]
+fn upstream_control_keeps_the_b_star_candidate() {
+    const RKF45_B_STAR: ButcherTableau = ButcherTableau {
+        b: match RKF45.b_embedded {
+            Some(b_star) => b_star,
+            None => RKF45.b,
+        },
+        b_embedded: None,
+        ..RKF45
+    };
+    let mut object = UpstreamOscillator(CoupledOscillator {
+        frequency: 1.0,
+        stages: Vec::new(),
+    });
+    let mut initial = [0.0; 12];
+    initial[..6].fill(1.0);
+    let loose = AdaptiveController {
+        rtol: 1.0,
+        atol: 1.0,
+        ..AdaptiveController::upstream()
+    };
+    let (adaptive, ()) =
+        propagate_adaptive_rk(&RKF45, &loose, &mut object, &initial, 0, epoch(), 0.1);
+    assert_eq!(object.0.stages.len(), RKF45.c.len(), "one accepted trial");
+    let (b_star, ()) = propagate_explicit_rk(&RKF45_B_STAR, &mut object, &initial, 0, epoch(), 0.1);
+    let (b, ()) = propagate_explicit_rk(&RKF45, &mut object, &initial, 0, epoch(), 0.1);
+    assert_eq!(adaptive, b_star);
+    assert_ne!(adaptive, b);
+}
+
+/// Upstream's trial sizing: a rejected whole-interval trial is followed by
+/// one of `0.9 h (1/err)^(1/5)` (RKF45, `methodLargestOrder = 5`), at least
+/// `0.1 h`, from the same start; an accepted one by at most `4 h`, capped at
+/// the rest of the interval.
+#[test]
+fn upstream_control_sizes_trials_like_upstream() {
+    let dt = 2.0;
+    let controller = AdaptiveController {
+        rtol: 1.0e-6,
+        atol: 1.0e-8,
+        ..AdaptiveController::upstream()
+    };
+    let mut initial = [0.0; 12];
+    initial[..6].fill(1.0);
+    let mut object = UpstreamOscillator(CoupledOscillator {
+        frequency: 1.0,
+        stages: Vec::new(),
+    });
+
+    // The first trial's error, from its own stages.
+    let ks = compute_stages(&RKF45, &mut object, &initial, 0, epoch(), 0.0, dt);
+    let low: Vec<_> = ks.iter().zip(RKF45.b.iter().copied()).collect();
+    let high: Vec<_> = ks
+        .iter()
+        .zip(RKF45.b_embedded.unwrap().iter().copied())
+        .collect();
+    let first_error = object
+        .max_relative_error(&initial, &low, &high, dt, controller.atol, controller.rtol)
+        .unwrap();
+    assert!(first_error > 1.0, "the whole interval is rejected");
+    let second_step = (0.9 * dt * (1.0 / first_error).powf(0.2)).clamp(0.1 * dt, 4.0 * dt);
+
+    object.0.stages.clear();
+    propagate_adaptive_rk(&RKF45, &controller, &mut object, &initial, 0, epoch(), dt);
+    let trials: Vec<&[u64]> = object.0.stages.chunks(RKF45.c.len()).collect();
+    // Stage 4 has `c = 1`: it sits one trial step after the trial start.
+    let step_of = |trial: &[u64]| (trial[4] - trial[0]) as f64 * 1.0e-9;
+    assert_eq!(trials[1][0], 0, "the second trial restarts at the start");
+    assert!(
+        (step_of(trials[1]) - second_step).abs() < 3.0e-9,
+        "{} vs {second_step}",
+        step_of(trials[1])
+    );
+    for pair in trials.windows(2) {
+        let (trial, next) = (pair[0], pair[1]);
+        if next[0] != trial[0] {
+            assert!(step_of(next) <= 4.0 * step_of(trial) + 3.0e-9);
+        }
+    }
+    expect_valid_trials(&object.0.stages, &RKF45, 2_000_000_000);
+}
+
+/// An object without `max_relative_error` takes the whole step at once.
+#[test]
+fn upstream_control_without_the_error_measure_takes_one_step() {
+    let mut object = CoupledOscillator {
+        frequency: 1.0,
+        stages: Vec::new(),
+    };
+    let mut initial = [0.0; 12];
+    initial[..6].fill(1.0);
+    propagate_adaptive_rk(
+        &RKF45,
+        &AdaptiveController::upstream(),
+        &mut object,
+        &initial,
+        0,
+        epoch(),
+        2.0,
+    );
+    assert_eq!(object.stages.len(), RKF45.c.len());
 }

@@ -223,6 +223,7 @@ impl MsmForceTorque {
                     },
                     BodyTorqueCommandMsg {
                         torque_request_body_nm: torque_b,
+                        ..Default::default()
                     },
                     ChargeMsmMsg {
                         charges_c: charges_c.as_slice()[spheres].to_vec(),

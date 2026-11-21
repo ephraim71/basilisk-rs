@@ -23,12 +23,16 @@ pub use butcher::{
     RK4_THREE_EIGHTHS,
     RKF45,
     RKF78,
+    StepControl,
     // Low-level drivers.
     propagate_adaptive_rk,
     propagate_explicit_rk,
+    relative_error_ratio,
 };
 
 pub use methods::{
+    // Integrators of a user tableau.
+    AdaptiveRungeKutta,
     // Built-in integrator structs.
     Dopri45,
     Euler,
@@ -41,4 +45,5 @@ pub use methods::{
     Rk4ThreeEighths,
     Rkf45,
     Rkf78,
+    RungeKutta,
 };

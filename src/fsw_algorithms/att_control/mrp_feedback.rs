@@ -149,9 +149,11 @@ impl MrpFeedback {
         (
             BodyTorqueCommandMsg {
                 torque_request_body_nm: requested,
+                ..Default::default()
             },
             BodyTorqueCommandMsg {
                 torque_request_body_nm: -integral_feedback,
+                ..Default::default()
             },
         )
     }

@@ -26,10 +26,8 @@
 //!
 //! # Differences from upstream
 //!
-//! * basilisk-rs's `SimpleNavigation` has no error model, so the navigation
-//!   is [`small_body_simple_nav::NoisySimpleNav`], upstream's 18-state
-//!   `simpleNav` errors on the crate's `GaussMarkov` (upstream's model, as
-//!   `planetNav`); the noise stream is not upstream's.
+//! * The noise stream of `simpleNav` ([`SimpleNavigation`] with upstream's
+//!   error model) is not upstream's.
 //! * Upstream evaluates the true Vesta-fixed state and the non-Keplerian
 //!   acceleration (`spherHarm.computeField(r, 14, False)`) from its recorded
 //!   histories after the run; here [`VestaFixedTruth`] does it at every step,
@@ -67,6 +65,7 @@ use basilisk_rs::fsw_algorithms::small_body_navigation::small_body_nav_ukf::{
 use basilisk_rs::messages::{
     EphemerisMsg, Input, NavigationTranslationMsg, Output, SmallBodyNavUkfMsg, SpacecraftStateMsg,
 };
+use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::{CsvSourceConfig, TelemetryField, TelemetryMessage};
@@ -81,7 +80,7 @@ use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use serde::{Deserialize, Serialize};
 use small_body::{ephemeris_converter, planet_nav};
-use small_body_simple_nav::{NavSigmas, NoisySimpleNav, grouped};
+use small_body_simple_nav::{NavSigmas, grouped};
 
 const STEM: &str = "scenarioSmallBodyNavUKF";
 /// Upstream `simulationTimeStep = macros.sec2nano(15)`.
@@ -282,7 +281,7 @@ fn run(config: Config) -> Results {
         .expect("one central body");
 
     let mut converter = ephemeris_converter("vesta");
-    let mut navigation = NoisySimpleNav::new(
+    let mut navigation = SimpleNavigation::with_errors(
         "SimpleNav",
         NavSigmas {
             position: 10.0,

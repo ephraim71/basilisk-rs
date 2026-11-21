@@ -321,6 +321,7 @@ impl Module for ScenarioMrpFeedback {
         torque += self.known_torque_body_nm;
         self.cmd_torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: -torque,
+            ..Default::default()
         });
     }
 }

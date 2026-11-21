@@ -131,6 +131,7 @@ impl Module for MtbFeedforward {
         let rod_torque_nm = self.net_rod_dipole(&dipole_cmds_am2).cross(&field_t);
         self.veh_control_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: commanded_nm - rod_torque_nm,
+            ..Default::default()
         });
     }
 }
@@ -305,6 +306,7 @@ mod tests {
         let inputs = Inputs {
             torque: Output::new(BodyTorqueCommandMsg {
                 torque_request_body_nm: Vector3::new(1e-4, -2e-4, 3e-4),
+                ..Default::default()
             }),
             dipoles: Output::new(MtbArrayCommandMsg::from_active(&[2.0])),
             field: Output::new(field_msg(Vector3::new(0.0, 3e-5, 0.0))),

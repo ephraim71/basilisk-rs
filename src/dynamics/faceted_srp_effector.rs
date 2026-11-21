@@ -22,7 +22,16 @@
 //! input panics at evaluation, as does a Sun at the spacecraft's position,
 //! where the Sun direction is undefined.
 //!
+//! Upstream publishes no message from this effector (nor from
+//! [`FacetSRPDynamicEffector`]); scenarios log its `forceExternal_B` and
+//! `torqueExternalPntB_B` members. Here the spacecraft publishes them, for
+//! every dynamic effector whose name contains "srp" or "solar", in
+//! [`SpacecraftDiagnosticsMsg::srp_force_body_n`] and
+//! [`SpacecraftDiagnosticsMsg::srp_torque_body_nm`] (torque about `B`).
+//!
 //! [`FacetSRPDynamicEffector`]: super::facet_srp_dynamic_effector::FacetSRPDynamicEffector
+//! [`SpacecraftDiagnosticsMsg::srp_force_body_n`]: crate::messages::SpacecraftDiagnosticsMsg::srp_force_body_n
+//! [`SpacecraftDiagnosticsMsg::srp_torque_body_nm`]: crate::messages::SpacecraftDiagnosticsMsg::srp_torque_body_nm
 
 use std::any::Any;
 

@@ -34,14 +34,9 @@
 //! Upstream's `thrMomentumManagement` writes its request once after each
 //! reset: at 0 s and, reset, at 11 s, with the same value. `thrMomentumDumping`
 //! starts a firing cycle when the request's write time changes and ignores
-//! one written at 0 s, so upstream dumps from 11 s. basilisk-rs messages
-//! carry no write time, and `thrMomentumDumping` counts the request as
-//! rewritten when its value changes, so it cannot see the 11 s rewrite of an
-//! unchanged request. The momentum management is therefore held (not
-//! updated) until its reset: its first request is the 11 s one, which starts
-//! the dumping when upstream's does. The only difference is that the
-//! request and the mapped thruster forces read zero, not the request, for
-//! the first 11 s.
+//! one written at 0 s, so upstream dumps from 11 s. Here the request carries
+//! its write time as a stamp (`BodyTorqueCommandMsg::command_time_nanos`,
+//! the stand-in for upstream's message header), so the same happens.
 //!
 //! Writes `examples/output/scenarios/scenarioMomentumDumping.csv`.
 
@@ -312,7 +307,6 @@ fn run(config: Config) -> Results {
         name: "thrMomentumManagement".to_string(),
         hs_min_nms: HS_MIN_NMS,
     }))
-    .held_until(RESET_TIME_NANOS)
     .reset_after(RESET_TIME_NANOS);
     let mut force_mapping = ThrForceMapping::new(ThrForceMappingConfig {
         name: "thrForceMapping".to_string(),

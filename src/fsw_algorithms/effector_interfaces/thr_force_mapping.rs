@@ -617,6 +617,7 @@ mod tests {
         .connect_to(&mut module.veh_config_in_msg);
         Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: requested_torque_nm,
+            ..Default::default()
         })
         .connect_to(&mut module.cmd_torque_in_msg);
 
@@ -1008,6 +1009,7 @@ mod tests {
 
         let request = |z: f64| BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.0, 0.0, z),
+            ..Default::default()
         };
         torque.write(request(-2.0));
         module.update(&context(0));

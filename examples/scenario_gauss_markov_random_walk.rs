@@ -44,7 +44,7 @@ use attitude::{
     DURATION_NANOS, DYNAMICS_PERIOD_NANOS, HUB_MASS_KG, hub_inertia_kg_m2, scenario_recorder,
 };
 use basilisk_rs::dynamics::gravity::GravBodyData;
-use basilisk_rs::integrators::{AdaptiveController, Rkf45};
+use basilisk_rs::integrators::Rkf45;
 use basilisk_rs::messages::{ImuMsg, SpacecraftStateMsg};
 use basilisk_rs::sensors::imu_sensor::{ImuSensor, ImuSensorConfig};
 use basilisk_rs::simulation::Simulation;
@@ -125,11 +125,7 @@ fn run(config: Config) -> Results {
         initial_sigma_bn: Vector3::new(0.1, 0.2, -0.3),
         initial_omega_radps: Vector3::new(0.001, -0.01, 0.03),
         // Upstream `svIntegratorRKF45` with its default tolerances.
-        integrator: Some(Box::new(Rkf45::new(AdaptiveController {
-            atol: 1e-8,
-            rtol: 1e-4,
-            ..AdaptiveController::default()
-        }))),
+        integrator: Some(Box::new(Rkf45::upstream())),
     });
     spacecraft
         .add_grav_body(

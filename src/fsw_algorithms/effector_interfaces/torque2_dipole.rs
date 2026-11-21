@@ -167,6 +167,7 @@ mod tests {
     fn torque_msg(torque_request_body_nm: Vector3<f64>) -> BodyTorqueCommandMsg {
         BodyTorqueCommandMsg {
             torque_request_body_nm,
+            ..Default::default()
         }
     }
 

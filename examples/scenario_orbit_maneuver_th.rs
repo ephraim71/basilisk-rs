@@ -41,7 +41,7 @@ use basilisk_rs::fsw_algorithms::att_guidance::velocity_point::{
 };
 use basilisk_rs::fsw_algorithms::att_tracking_error::{AttTrackingError, AttTrackingErrorConfig};
 use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
-use basilisk_rs::integrators::{AdaptiveController, Rkf45};
+use basilisk_rs::integrators::Rkf45;
 use basilisk_rs::messages::{
     AttitudeGuidanceMsg, BodyTorqueCommandMsg, Output, SpacecraftStateMsg, ThrusterCommandMsg,
     ThrusterOutputMsg, VehicleConfigMsg,
@@ -118,14 +118,7 @@ pub fn run() -> Results {
         initial_sigma_bn: Vector3::zeros(),
         initial_omega_radps: Vector3::new(0.0, 0.03, 0.01),
         // Upstream `svIntegratorRKF45` with its default tolerances.
-        integrator: Some(Box::new(Rkf45::new(AdaptiveController {
-            atol: 1.0e-8,
-            rtol: 1.0e-4,
-            safety: 0.9,
-            min_scale: 0.1,
-            max_scale: 4.0,
-            ..AdaptiveController::default()
-        }))),
+        integrator: Some(Box::new(Rkf45::upstream())),
     });
     spacecraft
         .add_grav_body(Body::Earth.point_mass(true))

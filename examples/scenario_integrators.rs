@@ -5,19 +5,20 @@
 //! | `--integrator` | upstream class | here |
 //! |---|---|---|
 //! | `rk4` (default) | `svIntegratorRK4` | basilisk-rs's default [`basilisk_rs::integrators::Rk4`] |
-//! | `rkf45` | `svIntegratorRKF45` | [`integrators::UpstreamAdaptive::rkf45`] |
-//! | `rkf78` | `svIntegratorRKF78` | [`integrators::UpstreamAdaptive::rkf78`] |
+//! | `rkf45` | `svIntegratorRKF45` | [`Rkf45::upstream`] |
+//! | `rkf78` | `svIntegratorRKF78` | [`Rkf78::upstream`] |
 //! | `euler` | `svIntegratorEuler` | [`basilisk_rs::integrators::Euler`] |
 //! | `rk2` | `svIntegratorRK2` | [`basilisk_rs::integrators::Heun`] |
-//! | `rk3` | `svIntegratorRungeKutta` with Kutta's tableau | [`integrators::FixedTableau`] of [`integrators::RK3`] |
-//! | `bogackiShampine` | `svIntegratorAdaptiveRungeKutta` | [`integrators::UpstreamAdaptive`] of [`integrators::BOGACKI_SHAMPINE`] |
+//! | `rk3` | `svIntegratorRungeKutta` with Kutta's tableau | [`RungeKutta`] of [`RK3`] |
+//! | `bogackiShampine` | `svIntegratorAdaptiveRungeKutta` | [`AdaptiveRungeKutta`] of [`BOGACKI_SHAMPINE`] |
 //!
-//! The user-defined `svIntegratorRungeKutta` and
-//! `svIntegratorAdaptiveRungeKutta` upstream builds from Python coefficient
-//! lists are, here, custom [`basilisk_rs::integrators::Integrator`]s of a
-//! [`basilisk_rs::integrators::ButcherTableau`]; see `support/integrators.rs`
-//! for why the adaptive ones port upstream's step-size control rather than
-//! use basilisk-rs's.
+//! The adaptive methods use upstream's step-size control
+//! ([`basilisk_rs::integrators::StepControl::Upstream`]) with its default
+//! tolerances, which upstream's truth depends on. The user-defined
+//! `svIntegratorRungeKutta` and `svIntegratorAdaptiveRungeKutta` upstream
+//! builds from Python coefficient lists are, here, basilisk-rs's
+//! [`RungeKutta`] and [`AdaptiveRungeKutta`] of a
+//! [`ButcherTableau`].
 //!
 //! The run lasts 0.75 orbits and records the state at every 120 s step
 //! (upstream's `samplingTime` rounds down to 1 ns, below the task period) in
@@ -30,8 +31,6 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
-#[path = "support/integrators.rs"]
-mod integrators;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -39,7 +38,9 @@ mod recording;
 #[path = "support/scenario_args.rs"]
 mod scenario_args;
 
-use basilisk_rs::integrators::{Euler, Heun, Integrator};
+use basilisk_rs::integrators::{
+    AdaptiveRungeKutta, ButcherTableau, Euler, Heun, Integrator, Rkf45, Rkf78, RungeKutta,
+};
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
@@ -49,7 +50,6 @@ use basilisk_rs::utilities::orbital_motion::{
 use basilisk_rs::{connect, schedule};
 use grav_factory::Body;
 use hifitime::Epoch;
-use integrators::{BOGACKI_SHAMPINE, FixedTableau, RK3, UpstreamAdaptive};
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, sec2nano};
 use recording::{History, sampling_time, scenario_csv, state_columns};
@@ -58,6 +58,33 @@ use scenario_args::ScenarioArgs;
 const USAGE: &str = "\
 scenario_integrators [--integrator rk4|rkf45|rkf78|euler|rk2|rk3|bogackiShampine]
 scenario_integrators --all     run every upstream test parametrization";
+
+/// `scenarioIntegrators`' `rk3`: Kutta's third-order method through
+/// `svIntegratorRungeKutta`.
+pub const RK3: ButcherTableau = ButcherTableau {
+    a: &[&[], &[0.5], &[-1.0, 2.0]],
+    c: &[0.0, 0.5, 1.0],
+    b: &[1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
+    b_embedded: None,
+    error_estimate_order: 3,
+};
+
+/// `scenarioIntegrators`' `bogackiShampine` through
+/// `svIntegratorAdaptiveRungeKutta(scObject, 3, ...)`: `b` is upstream's
+/// `b_coefficients`, `b_embedded` its `b_star_coefficients` (the propagated
+/// ones), and `methodLargestOrder = error_estimate_order + 1 = 3`.
+pub const BOGACKI_SHAMPINE: ButcherTableau = ButcherTableau {
+    a: &[
+        &[],
+        &[0.5],
+        &[0.0, 0.75],
+        &[2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0],
+    ],
+    c: &[0.0, 0.5, 0.75, 1.0],
+    b: &[7.0 / 24.0, 0.25, 1.0 / 3.0, 0.125],
+    b_embedded: Some(&[2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0]),
+    error_estimate_order: 2,
+};
 
 /// Upstream `simulationTimeStep`.
 const STEP_NANOS: u64 = 120_000_000_000;
@@ -101,12 +128,17 @@ impl IntegratorCase {
     fn integrator(self) -> Option<Box<dyn Integrator<Spacecraft>>> {
         match self {
             Self::Rk4 => None,
-            Self::Rkf45 => Some(Box::new(UpstreamAdaptive::rkf45())),
-            Self::Rkf78 => Some(Box::new(UpstreamAdaptive::rkf78())),
+            Self::Rkf45 => Some(Box::new(Rkf45::upstream())),
+            Self::Rkf78 => Some(Box::new(Rkf78::upstream())),
             Self::Euler => Some(Box::new(Euler)),
             Self::Rk2 => Some(Box::new(Heun)),
-            Self::Rk3 => Some(Box::new(FixedTableau(RK3))),
-            Self::BogackiShampine => Some(Box::new(UpstreamAdaptive::new(BOGACKI_SHAMPINE, 3.0))),
+            Self::Rk3 => Some(Box::new(
+                RungeKutta::new(RK3).expect("Kutta's tableau is a valid Runge-Kutta method"),
+            )),
+            Self::BogackiShampine => Some(Box::new(
+                AdaptiveRungeKutta::new(BOGACKI_SHAMPINE)
+                    .expect("Bogacki-Shampine is a valid embedded pair"),
+            )),
         }
     }
 }

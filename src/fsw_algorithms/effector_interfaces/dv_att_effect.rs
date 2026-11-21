@@ -326,6 +326,7 @@ mod tests {
     fn maps_the_torque_onto_the_longest_on_times_of_every_group() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.3, -0.2, 0.25),
+            ..Default::default()
         });
         let mut module = DvAttEffect::new(DvAttEffectConfig {
             thr_groups: vec![rcs_group(2), dv_group()],
@@ -392,6 +393,7 @@ mod tests {
     fn reset_zeros_every_group_output() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(0.3, -0.2, 0.25),
+            ..Default::default()
         });
         let mut module = DvAttEffect::new(DvAttEffectConfig {
             thr_groups: vec![rcs_group(2), dv_group()],

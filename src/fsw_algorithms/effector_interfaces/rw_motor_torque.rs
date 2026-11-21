@@ -320,6 +320,7 @@ mod tests {
         rw_config.spin_axes_body[..4].copy_from_slice(&axes);
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: requested,
+            ..Default::default()
         });
         let params = Output::new(rw_config);
         let availability = Output::new(RwAvailabilityMsg::default());
@@ -386,6 +387,7 @@ mod tests {
 
                     let command = Output::new(BodyTorqueCommandMsg {
                         torque_request_body_nm: requested,
+                        ..Default::default()
                     });
                     let params = Output::new(rw_config);
                     let availability_output = Output::new(availability);
@@ -436,6 +438,7 @@ mod tests {
     fn uses_axes_verbatim_without_normalizing_them() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(2.0, 0.0, 0.0),
+            ..Default::default()
         });
         let mut config = RwArrayConfigMsg {
             num_rw: 1,
@@ -459,6 +462,7 @@ mod tests {
     fn stops_counting_control_axes_at_the_first_zero_row() {
         let command = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: Vector3::new(1.0, -0.5, 0.7),
+            ..Default::default()
         });
         let mut config = RwArrayConfigMsg {
             num_rw: 3,

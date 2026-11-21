@@ -31,8 +31,8 @@
 //!   eight sensors in one module and publishes eight messages.
 //! * The eight ACS thrusters are added to the spacecraft without commands,
 //!   as upstream, which never schedules their effector: they never fire.
-//! * `simpleNav` is [`NoisySimpleNav`] (upstream's error model), with
-//!   upstream's default zero `PMatrix`; `scenario_LambertGuidance` sets it.
+//! * `simpleNav` has upstream's default zero `PMatrix`;
+//!   `scenario_LambertGuidance` sets it.
 //! * The WMM epoch is the simulation epoch ([`WmmField`] evaluates the model
 //!   at the simulation clock, upstream reads `epochMsg`, the same instant).
 //!   Upstream subscribes no planet message to the WMM module, so the field
@@ -75,6 +75,7 @@ use basilisk_rs::messages::{
 use basilisk_rs::overrides::{Registry, Request, TargetKind};
 use basilisk_rs::sensors::coarse_sun_sensor::{CoarseSunSensor, CoarseSunSensorConfig};
 use basilisk_rs::sensors::magnetometer::{Magnetometer, MagnetometerConfig};
+use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{HubStateHandle, Spacecraft, SpacecraftConfig};
 use basilisk_rs::utilities::rigid_body_kinematics::{Axis, mi};
@@ -88,7 +89,6 @@ use serde_json::json;
 use super::events::Check;
 use super::grav_factory::{Body, PLANETARY_SPK};
 use super::rw_factory::RwFactory;
-use super::simple_nav::{NoisySimpleNav, SimpleNavMatrix, SimpleNavVector};
 use super::staged::UpdatedAtInit;
 use super::thruster_factory::{ThrusterFactory, ThrusterModel};
 use super::{BskSim, HubInit};
@@ -350,7 +350,7 @@ pub struct BskDynamics {
     pub wmm: WmmField,
     pub tam: Magnetometer,
     pub earth_ephemeris: EphemerisConverter,
-    pub simple_nav: NoisySimpleNav,
+    pub simple_nav: SimpleNavigation,
     pub css: CssConstellation,
     /// Upstream `extForceTorqueObject.cmdTorqueInMsg`, which the FSW connects
     /// to its `cmdTorqueDirectMsg`.
@@ -437,11 +437,7 @@ impl BskDynamics {
         spacecraft.add_dynamic_effector(parameters);
 
         // `SetSimpleNavObject`.
-        let mut simple_nav = NoisySimpleNav::new(
-            "SimpleNavigation",
-            SimpleNavMatrix::zeros(),
-            SimpleNavVector::zeros(),
-        );
+        let mut simple_nav = SimpleNavigation::new("SimpleNavigation");
         spacecraft
             .state_out
             .connect_to(&mut simple_nav.spacecraft_state_in_msg);

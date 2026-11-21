@@ -228,6 +228,7 @@ impl SceneModel for CmdTorqueBodyToTorqueAtSite {
         self.torque_out_msg.write(BodyTorqueCommandMsg {
             torque_request_body_nm: self.dcm_sb
                 * self.cmd_torque_in_msg.read().torque_request_body_nm,
+            ..Default::default()
         });
     }
 }

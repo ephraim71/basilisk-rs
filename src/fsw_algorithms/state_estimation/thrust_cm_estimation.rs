@@ -289,6 +289,7 @@ mod tests {
                 let measurement_noise = Vector3::from_fn(|_, _| noise.sample(&mut rng));
                 torque.write(BodyTorqueCommandMsg {
                     torque_request_body_nm: -r.cross(t) + measurement_noise,
+                    ..Default::default()
                 });
                 module.update(&context());
                 log.update(&context());
@@ -370,6 +371,7 @@ mod tests {
         });
         let torque = Output::new(BodyTorqueCommandMsg {
             torque_request_body_nm: -((r_tb - r_cb_true).cross(&thrust) + swirl * t_hat),
+            ..Default::default()
         });
         guidance.connect_to(&mut module.att_guid_in_msg);
         thruster.connect_to(&mut module.thruster_config_b_in_msg);

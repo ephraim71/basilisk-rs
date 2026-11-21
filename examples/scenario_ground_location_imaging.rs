@@ -34,16 +34,21 @@
 //! finite-difference rate error jumps with it (to about 2 rad/s);
 //! `mrpFeedback`'s rate and gyroscopic feed-forward terms then command about
 //! 160 N m, and with the boresight spin the loop spins the spacecraft up: its
-//! rate passes 1 rad/s 11 s after the switch and grows without bound. An
-//! independent re-implementation of upstream's `locationPointing`,
-//! `mrpFeedback` and rigid-body equations, run from `t = 0`, reproduces the
-//! state at the switch and diverges at the same step, so this is upstream's
-//! behaviour rather than an artifact of the port (with no boresight spin at
-//! the switch the same slew converges). Upstream's documentation describes
-//! the switch to Santiago and its image; its test only checks that the
-//! script raises no `OSError`, which non-finite states do not. Here the run stops at the
-//! first step whose body rate exceeds [`DIVERGED_RATE_RADPS`] and reports
-//! it; the CSV ends there.
+//! rate passes 1 rad/s 11 s after the switch, and from 1217 s the state is
+//! no longer finite (with no boresight spin at the switch the same slew
+//! converges).
+//!
+//! Upstream's scenario does the same, although its text describes the
+//! Santiago image. Its published attitude-error figure
+//! (`scenarioGroundLocationImaging1.svg` in the Basilisk docs) is this
+//! port's `|sigma_BR|` to seven digits at every sample it keeps, from
+//! 0.370479 at 0 s through 0.002124382 at the switch and 0.9307144 at
+//! 1209 s to 0.63356 at 1216 s, after which upstream's curve drops off the
+//! plot. Its other figures match too: Boulder in view from 12 s to 505 s,
+//! its one image at 122 s, and no Santiago image. Upstream's test only
+//! checks that the script raises no `OSError`, which non-finite states do
+//! not. Here the run stops at the first step whose body rate exceeds
+//! [`DIVERGED_RATE_RADPS`] and reports it; the CSV ends there.
 //!
 //! Writes `examples/output/scenarios/scenarioGroundLocationImaging.csv` every
 //! step with upstream's recorders: `sigma_BR_<i>`, the target's `hasAccess`,
@@ -498,5 +503,41 @@ mod tests {
         );
         let last = results.guidance.times_nanos.last().copied();
         assert_eq!(last, Some(stopped * TASK_PERIOD_NANOS));
+    }
+
+    /// Upstream's run diverges the same way: the samples its published
+    /// figure `scenarioGroundLocationImaging1.svg` keeps (digitized from the
+    /// SVG path, to about 1e-7) are this run's, before the switch and
+    /// through the slew to Santiago until the run stops.
+    #[test]
+    fn the_slew_matches_upstreams_published_figure() {
+        let results = quiet();
+        assert_eq!(results.diverged_at_s, Some(1211));
+        let upstream = [
+            (0, 0.370479),
+            (4, 0.377049),
+            (10, 0.3726815),
+            (20, 0.331518),
+            (1197, 0.002172812),
+            (1200, 0.002124382),
+            (1201, 0.5746764),
+            (1202, 0.5613354),
+            (1204, 0.5328749),
+            (1206, 0.6037641),
+            (1209, 0.9307144),
+        ];
+        for (time_s, upstream_norm) in upstream {
+            let norm = results
+                .guidance
+                .at(time_s * TASK_PERIOD_NANOS)
+                .sigma_br
+                .norm();
+            assert!(
+                (norm - upstream_norm).abs() < 1.0e-6,
+                "{time_s} s: |sigma_BR| {norm} vs upstream {upstream_norm}"
+            );
+        }
+        // Upstream's one image, of Boulder.
+        assert_eq!(images(&results), [(122 * TASK_PERIOD_NANOS, 0)]);
     }
 }

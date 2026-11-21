@@ -231,6 +231,11 @@ mod tests {
     /// Upstream `test_scenarioHingedRigidBody.py`: the speed after the burn,
     /// `|v_BN_N|` of the last recorded state, is `8470.84340921` m/s within
     /// `345.1819`.
+    ///
+    /// The speed here, 8816.02526 m/s, passes by only 4.5e-5 m/s. That
+    /// margin is upstream's own: the truth and tolerance date from 2017, and
+    /// the tolerance just covers upstream's current result, which this run
+    /// reproduces (see the next test).
     #[test]
     fn post_maneuver_speed_matches_upstream() {
         let results = run(Config { write_csv: false });
@@ -244,6 +249,35 @@ mod tests {
         // Samples every 0.5 s from 0 to the last tick before 0.01 P + 935 s.
         assert_eq!(results.states.times_nanos[1], 500_000_000);
         assert_eq!(results.states.values.len(), results.panel1.values.len());
+    }
+
+    /// The orbit radius matches upstream's published figure
+    /// `scenarioHingedRigidBody20.svg` (digitized from the SVG path, to
+    /// about 1 cm) through the coast and the burn: no systematic offset in
+    /// the burn's timing or force shifts the final speed.
+    #[test]
+    fn the_radius_matches_upstreams_published_figure() {
+        let results = run(Config { write_csv: false });
+        let upstream_km = [
+            (0.0, 6999.942573),
+            (147.0, 7001.002251),
+            (301.0, 7019.674048),
+            (465.5, 7091.996485),
+            (607.0, 7221.809615),
+            (742.0, 7419.696749),
+            (878.0, 7701.248325),
+            (993.0, 8006.400226),
+        ];
+        for (time_s, radius_km) in upstream_km {
+            let state = results.states.at(sec2nano(time_s));
+            let radius_m = state.position_m.norm();
+            assert!(
+                (radius_m - radius_km * 1e3).abs() < 0.02,
+                "{time_s} s: {radius_m} m vs upstream {} m",
+                radius_km * 1e3
+            );
+        }
+        assert_eq!(*results.states.times_nanos.last().unwrap(), sec2nano(993.0));
     }
 
     /// What the scenario shows: during the coast the undamped panels swing

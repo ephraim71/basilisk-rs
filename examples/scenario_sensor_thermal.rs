@@ -25,23 +25,27 @@
 //!   `ExecuteSimulation` calls is a [`Staged`] change after the first orbit
 //!   (`int(P)` seconds).
 //!
-//! # The second orbit diverges
+//! # The second orbit diverges, upstream too
 //!
 //! The flip asks for a 180 deg slew, where `locationPointing`'s eigen axis
 //! is undefined and its finite-difference rate error jumps (from zero to
 //! about 2 rad/s in one 1 s step). With the boresight spin the first orbit
 //! leaves (about 1 deg/s, which pointing does not constrain),
 //! `mrpFeedback`'s gyroscopic feed-forward terms then turn the eigen axis
-//! from step to step and the attitude loop spins the spacecraft up: 4 s
-//! after the flip its rate exceeds 1 rad/s and, about 10 s after it, the
-//! state is no longer finite. The same happens with a `Reset` of
-//! `locationPointing` at the flip, a 0.01 rad `smallAngle`, boresight rate
-//! damping or a 0.1 s task, so it is not an artifact of the stand-ins above;
-//! both modules implement upstream's equations. Upstream's documentation
-//! shows the plate cooling over the second orbit; upstream's test only
-//! checks that the script raises no `OSError`, which non-finite states do
-//! not. Here the run stops at the first step whose body rate exceeds
-//! [`DIVERGED_RATE_RADPS`] and reports it; the CSV ends there.
+//! by about 40 deg a step and the attitude loop spins the spacecraft up:
+//! 4 s after the flip (`t = 5805 s`) its rate exceeds 1 rad/s, at 5809 s it
+//! is about 1e52 rad/s and from 5810 s the state is no longer finite.
+//!
+//! Upstream's scenario does the same. Its published figure
+//! (`scenario_ThermalSensor.svg` in the Basilisk docs) ends at 5809 s, at
+//! 97.18 °C, with no second orbit: matplotlib drops the non-finite samples
+//! after it. Digitized from that figure, the temperature at 5803 s, 5804 s
+//! and 5809 s is 97.95678, 97.92794 and 97.18152 °C; this port gives
+//! 97.95678, 97.92794 and 97.18152 °C (the test checks the first two).
+//! Upstream's test only checks that the script raises no `OSError`, which
+//! non-finite states do not. Here the run stops at the first step whose
+//! body rate exceeds [`DIVERGED_RATE_RADPS`] and reports it; the CSV ends
+//! there.
 //!
 //! Writes `examples/output/scenarios/scenarioSensorThermal.csv` with
 //! `temperature_C`, `sigma_BR_*` and `r_BN_N_m_*`.
@@ -315,7 +319,8 @@ mod tests {
     //! the plate, facing the Sun once the pointing has settled, warms from
     //! 0 °C to near the radiative equilibrium of the absorbed sunlight and
     //! the 30 W it dissipates (`εσT⁴ = αS + P` for the 1 m^2 plate). The
-    //! second orbit diverges (see the module docs), so it is not checked.
+    //! second orbit diverges, as upstream's (see the module docs): a test
+    //! checks the divergence against upstream's published figure.
 
     use super::*;
 
@@ -347,5 +352,23 @@ mod tests {
             .windows(2)
             .all(|pair| pair[1].temperature_c >= pair[0].temperature_c - 1.0e-9);
         assert!(warming);
+    }
+
+    /// Upstream's run diverges after the flip the same way: its published
+    /// figure `scenario_ThermalSensor.svg` ends at 5809 s, and its samples
+    /// at 5803 s and 5804 s (digitized from the SVG path, to about 1e-5 °C)
+    /// are matched here; the run then stops at 5805 s, past 1 rad/s.
+    #[test]
+    fn the_flip_diverges_as_upstreams_published_figure() {
+        let results = quiet();
+        assert_eq!(results.flip_time_s, 5801);
+        assert_eq!(results.diverged_at_s, Some(5805));
+        for (time_s, upstream_c) in [(5803_u64, 97.95678), (5804, 97.92794)] {
+            let temperature_c = results.temperature.at(time_s * 1_000_000_000).temperature_c;
+            assert!(
+                (temperature_c - upstream_c).abs() < 1.0e-4,
+                "{time_s} s: {temperature_c} °C vs upstream {upstream_c} °C"
+            );
+        }
     }
 }

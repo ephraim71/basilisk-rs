@@ -25,14 +25,19 @@
 //! settle: as the body rate grows past about 0.1 rad/s (0.5 rad per step),
 //! `locationPointing`'s finite-difference rate error and `mrpFeedback`'s
 //! gyroscopic feed-forward terms drive it up instead of down, past 1 rad/s
-//! about 70 s in, and the state later stops being finite. An independent
-//! re-implementation of upstream's `locationPointing`, `mrpFeedback` and
-//! rigid-body equations at the same step reproduces the attitude error of
-//! this port to ten digits through the divergence, so this is upstream's
-//! behaviour rather than an artifact of the port; the same loop with a
-//! 0.5 s step converges to nadir within about 15 minutes. Upstream's test
-//! only checks that the script raises no `OSError`, which non-finite states
-//! do not. Here the run stops at the first step whose body rate exceeds
+//! about 70 s in. The spacecraft then tumbles, faster and faster, until the
+//! state stops being finite at 2615 s.
+//!
+//! Upstream's scenario does the same: its published attitude-error figure
+//! (`scenarioGroundMapping1.svg` in the Basilisk docs) is this port's
+//! `|sigma_BR|` to seven digits at every sample it keeps, from the slew
+//! (0.6753943 at 0 s, 0.2699394 at 40 s, 0.7508175 at 65 s) through the
+//! tumble to 0.162229 at 2600 s, after which upstream's curve drops off
+//! the plot. Its stored-points figure, too, matches the tumbling run: one
+//! point from 2250 s and two from 2395 s. The same loop with a 0.5 s step
+//! converges to nadir within about 15 minutes. Upstream's test only checks
+//! that the script raises no `OSError`, which non-finite states do not.
+//! Here the run stops at the first step whose body rate exceeds
 //! [`DIVERGED_RATE_RADPS`] and reports it; the CSV ends there.
 //! `--step 0.5` runs the converging loop, to see the mapping.
 //!
@@ -554,6 +559,37 @@ mod tests {
             .fold(f64::INFINITY, f64::min);
         assert!(closest < 0.3);
         assert!(results.guidance.last().sigma_br.norm() > 0.5);
+    }
+
+    /// Upstream's 5 s loop diverges the same way: the samples its published
+    /// figure `scenarioGroundMapping1.svg` keeps of the first 70 s
+    /// (digitized from the SVG path, to about 1e-7) are this run's.
+    #[test]
+    fn the_five_second_loop_matches_upstreams_published_figure() {
+        let results = quiet(true, TASK_PERIOD_NANOS);
+        let stopped = results.diverged_at_s.expect("the 5 s loop diverges");
+        assert!((stopped - 70.0).abs() < 1.0e-6, "stopped at {stopped} s");
+        let upstream = [
+            (0, 0.6753943),
+            (5, 0.6753943),
+            (10, 0.66598),
+            (15, 0.6215336),
+            (20, 0.5504843),
+            (30, 0.3808724),
+            (35, 0.3084991),
+            (40, 0.2699394),
+            (45, 0.2910672),
+            (60, 0.6474918),
+            (65, 0.7508175),
+            (70, 0.703399),
+        ];
+        for (time_s, upstream_norm) in upstream {
+            let norm = results.guidance.at(time_s * 1_000_000_000).sigma_br.norm();
+            assert!(
+                (norm - upstream_norm).abs() < 1.0e-6,
+                "{time_s} s: |sigma_BR| {norm} vs upstream {upstream_norm}"
+            );
+        }
     }
 
     #[test]

@@ -596,9 +596,13 @@ mod tests {
     //! their median error is then below 2 deg.
     //!
     //! `SuKF` stays at a median of about 9 deg however many sensors it uses,
-    //! where upstream describes good estimation: the test bounds it at
-    //! 15 deg. (The module's own unit tests are upstream's; this scenario
-    //! has no upstream truth to compare with.)
+    //! swinging between about 0 and 25 deg with a period near 40 s. Upstream's
+    //! text describes good estimation, but its own published figure
+    //! (`scenario_Filters_StatesExpectedSuKF.svg` in the Basilisk docs) shows
+    //! the same error: digitized from the SVG paths, the angle between its
+    //! "Filter" and "Expected" headings has a median of 8.88 deg (this
+    //! port: 8.87 deg) and the same history, sample for sample, within the
+    //! sensor noise (whose random draws differ from upstream's).
 
     use super::*;
 
@@ -644,11 +648,46 @@ mod tests {
         }
     }
 
+    /// The `SuKF` heading error matches upstream's published figure
+    /// `scenario_Filters_StatesExpectedSuKF.svg`: digitized every 20 s, and
+    /// its median over the run.
     #[test]
-    fn the_sukf_tracks_the_sun_coarsely() {
+    fn the_sukf_heading_error_matches_upstreams_published_figure() {
         let results = quiet(TEST_PARAMETRIZATIONS[4]);
-        let error = median(heading_errors_deg(&results, 0));
-        assert!(error < 15.0, "{error} deg");
+        let errors = heading_errors_deg(&results, 0);
+        assert_eq!(errors.len(), 801);
+        let error = median(errors.clone());
+        assert!((error - 8.88).abs() < 0.5, "median {error} deg");
+        let upstream = [
+            (20, 0.36),
+            (40, 11.51),
+            (60, 0.70),
+            (80, 13.99),
+            (100, 2.71),
+            (120, 16.04),
+            (140, 2.98),
+            (160, 18.55),
+            (180, 2.83),
+            (200, 11.22),
+            (220, 26.32),
+            (240, 1.48),
+            (260, 1.64),
+            (280, 15.26),
+            (300, 17.33),
+            (320, 2.64),
+            (340, 11.75),
+            (360, 23.45),
+            (380, 10.52),
+            (400, 12.42),
+        ];
+        for (time_s, upstream_deg) in upstream {
+            // One sample every 0.5 s from 0.
+            let error = errors[time_s * 2];
+            assert!(
+                (error - upstream_deg).abs() < 1.5,
+                "{time_s} s: {error} deg vs upstream {upstream_deg} deg"
+            );
+        }
     }
 
     #[test]

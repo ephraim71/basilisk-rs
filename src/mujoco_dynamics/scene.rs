@@ -193,6 +193,10 @@ struct TaskEntry {
     slots: Vec<StateSlot>,
     range: Range<usize>,
     diffusion_range: Range<usize>,
+    /// For a dynamics-task model that also runs in the diffusion task
+    /// ([`MjScene::add_model_to_dynamics_and_diffusion_tasks`]), its
+    /// priority there.
+    diffusion_priority: Option<i32>,
 }
 
 /// The state dimensions and joint kinds a recompiled model must keep once
@@ -1187,6 +1191,7 @@ impl MjScene {
                 slots: Vec::new(),
                 range: 0..0,
                 diffusion_range: 0..0,
+                diffusion_priority: None,
             },
         );
         key
@@ -1219,6 +1224,24 @@ impl MjScene {
             key,
             marker: PhantomData,
         }
+    }
+
+    /// Upstream `AddModelToDynamicsTask(model, priority)` followed by
+    /// `AddModelToDiffusionDynamicsTask(model, diffusion_priority)` on the
+    /// same model, as upstream's stochastic scenarios add a
+    /// `StatefulSysModel` whose diffusion depends on its state: the model
+    /// runs at every dynamics evaluation and at every diffusion evaluation
+    /// (with the diffusion task's models, by priority), and its states are
+    /// registered once.
+    pub fn add_model_to_dynamics_and_diffusion_tasks<M: SceneModel>(
+        &mut self,
+        model: M,
+        priority: i32,
+        diffusion_priority: i32,
+    ) -> TaskModelId<M> {
+        let id = self.add_model_to_dynamics_task(model, priority);
+        self.entry_mut(id.key).diffusion_priority = Some(diffusion_priority);
+        id
     }
 
     /// Runs a [`Module`] in the dynamics task (upstream adds any `SysModel`,
@@ -1557,7 +1580,10 @@ impl MjScene {
         }
     }
 
-    /// Runs the dynamics or diffusion task at `nanos` for `state`.
+    /// Runs the dynamics or diffusion task at `nanos` for `state`. The
+    /// diffusion task also runs the dynamics-task models added to both
+    /// tasks, merged by priority (equal priorities in the order the models
+    /// were added).
     fn execute_task(
         &mut self,
         task: Task,
@@ -1566,40 +1592,71 @@ impl MjScene {
         nanos: u64,
         epoch: Epoch,
     ) {
-        let count = match task {
-            Task::Dynamics => self.dynamics_task.len(),
-            Task::Diffusion => self.diffusion_task.len(),
-        };
-        for index in 0..count {
-            let is_fwd = matches!(self.task(task)[index].kind, TaskKind::FwdKinematics);
-            if is_fwd {
-                self.forward_kinematics(data);
-                continue;
+        match task {
+            Task::Dynamics => {
+                for index in 0..self.dynamics_task.len() {
+                    self.execute_entry(Task::Dynamics, index, data, state, nanos, epoch);
+                }
             }
-            let entries = match task {
-                Task::Dynamics => &mut self.dynamics_task,
-                Task::Diffusion => &mut self.diffusion_task,
-            };
-            let entry = &mut entries[index];
-            let TaskKind::Model(model) = &mut entry.kind else {
-                unreachable!("checked above");
-            };
-            let mut context = TaskContext {
-                current_sim_nanos: nanos,
-                current_epoch: epoch,
-                scene: SceneView {
-                    data,
-                    bodies: &self.bodies,
-                },
-                states: &state.models.as_slice()[entry.range.clone()],
-                derivatives: &mut self.model_derivatives.as_mut_slice()[entry.range.clone()],
-                diffusions: &mut self.model_diffusions[entry.diffusion_range.clone()],
-                slots: &entry.slots,
-                base_offset: entry.range.start,
-                base_diffusion_offset: entry.diffusion_range.start,
-            };
-            model.scene_update(&mut context);
+            Task::Diffusion => {
+                let mut order: Vec<(i32, usize, Task, usize)> =
+                    self.diffusion_task
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| (entry.priority, entry.key, Task::Diffusion, index))
+                        .chain(self.dynamics_task.iter().enumerate().filter_map(
+                            |(index, entry)| {
+                                entry
+                                    .diffusion_priority
+                                    .map(|priority| (priority, entry.key, Task::Dynamics, index))
+                            },
+                        ))
+                        .collect();
+                order.sort_by_key(|(priority, key, ..)| (std::cmp::Reverse(*priority), *key));
+                for (_, _, task, index) in order {
+                    self.execute_entry(task, index, data, state, nanos, epoch);
+                }
+            }
         }
+    }
+
+    /// Runs entry `index` of `task` (a forward-kinematics pass or a model).
+    fn execute_entry(
+        &mut self,
+        task: Task,
+        index: usize,
+        data: &mut MjSceneData,
+        state: &MjSceneState,
+        nanos: u64,
+        epoch: Epoch,
+    ) {
+        if matches!(self.task(task)[index].kind, TaskKind::FwdKinematics) {
+            self.forward_kinematics(data);
+            return;
+        }
+        let entries = match task {
+            Task::Dynamics => &mut self.dynamics_task,
+            Task::Diffusion => &mut self.diffusion_task,
+        };
+        let entry = &mut entries[index];
+        let TaskKind::Model(model) = &mut entry.kind else {
+            unreachable!("checked above");
+        };
+        let mut context = TaskContext {
+            current_sim_nanos: nanos,
+            current_epoch: epoch,
+            scene: SceneView {
+                data,
+                bodies: &self.bodies,
+            },
+            states: &state.models.as_slice()[entry.range.clone()],
+            derivatives: &mut self.model_derivatives.as_mut_slice()[entry.range.clone()],
+            diffusions: &mut self.model_diffusions[entry.diffusion_range.clone()],
+            slots: &entry.slots,
+            base_offset: entry.range.start,
+            base_diffusion_offset: entry.diffusion_range.start,
+        };
+        model.scene_update(&mut context);
     }
 
     /// Upstream `MJScene::equationsOfMotion`.

@@ -107,6 +107,12 @@ fetch-opencv-assets:
     curl --fail --location --progress-bar --output assets/opencv/camera/mars.jpg {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/mars.jpg
     curl --fail --location --progress-bar --output assets/opencv/camera/tv_test.png {{upstream_src_url}}/simulation/sensors/camera/_UnitTest/tv_test.png
 
+# Upstream's Itokawa shape model (`dataForExamples/Itokawa`), the asteroid
+# mesh of the MuJoCo `scenario_asteroid_landing`.
+fetch-mujoco-scenario-data:
+    mkdir -p assets/data_for_examples/Itokawa
+    curl --fail --location --progress-bar --output assets/data_for_examples/Itokawa/ItokawaHayabusa.obj {{upstream_examples_url}}/dataForExamples/Itokawa/ItokawaHayabusa.obj
+
 fetch-albedo:
     mkdir -p assets/albedo
     for f in Earth_ALB_2018_CERES_All Earth_ALB_2018_CERES_Clear Mars_ALB_TES; do for r in 1x1 5x5 10x10; do curl --fail --location --progress-bar --output assets/albedo/${f}_${r}.csv {{albedo_url}}/${f}_${r}.csv; done; done
@@ -127,7 +133,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios run-dyncomp-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios run-dyncomp-scenarios run-mujoco-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -574,3 +580,46 @@ dyncomp-paper-figures generated_dir="examples/output/scenarios":
     cargo run --release --features mujoco --example sweep_orbit_dt
     cargo run --release --features mujoco --example sweep_torque_artifact
     python3 examples/plot_dyncomp_paper_figures.py --generated-dir "{{generated_dir}}"
+# Run the MuJoCo scenarios (upstream `examples/mujoco`; the `mujoco` feature,
+# and `vizard` for `scenario_mj_scene_vizard`) in every parametrization of
+# upstream's tests and write their CSV files. `scenario_asteroid_landing` reads
+# the mesh of `fetch-mujoco-scenario-data`; `scenario_mj_earth_moon_gravity`
+# and `scenario_mj_scene_vizard` the assets of `fetch-anise-assets`.
+run-mujoco-scenarios:
+    cargo run --release --features mujoco --example scenario_reaction_wheel
+    cargo run --release --features mujoco --example scenario_simple_docking
+    cargo run --release --features mujoco --example scenario_unbalanced_thrusters
+    cargo run --release --features mujoco --example scenario_arm_with_thrusters
+    cargo run --release --features mujoco --example scenario_asteroid_landing
+    cargo run --release --features mujoco --example scenario_deploy_panels -- --all
+    cargo run --release --features mujoco --example scenario_branching_panels
+    cargo run --release --features mujoco --example scenario_srp_in_panels -- --all
+    cargo run --release --features mujoco --example scenario_hinged_rigid_body_mujoco
+    cargo run --release --features mujoco --example scenario_attitude_feedback_rw_mujoco
+    cargo run --release --features mujoco --example scenario_flexible_panel_mujoco
+    cargo run --release --features mujoco --example scenario_momentum_dumping_mujoco
+    cargo run --release --features mujoco --example scenario_stochastic_drag -- --all
+    cargo run --release --features mujoco --example scenario_formation_flying_with_drag -- --all
+    cargo run --release --features mujoco --example scenario_mj_earth_moon_gravity -- --all
+    cargo run --release --features mujoco,vizard --example scenario_mj_scene_vizard
+    cargo run --release --features mujoco --example scenario_thr_arm_control
+    cargo run --release --features mujoco --example scenario_thr_arm_tracking
+# Render the MuJoCo scenarios' figures from their CSV files.
+plot-mujoco-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_reaction_wheel.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_simple_docking.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_unbalanced_thrusters.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_arm_with_thrusters.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_asteroid_landing.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_deploy_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_branching_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_srp_in_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_hinged_rigid_body_mujoco.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_attitude_feedback_rw_mujoco.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_flexible_panel_mujoco.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_momentum_dumping_mujoco.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_stochastic_drag.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_formation_flying_with_drag.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_mj_earth_moon_gravity.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_thr_arm_control.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_thr_arm_tracking.py --generated-dir "{{generated_dir}}"

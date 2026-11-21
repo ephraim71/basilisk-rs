@@ -11,6 +11,8 @@
 //! a callback (a task model here only gets read access to the scene).
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hifitime::Epoch;
 use nalgebra::{DVector, Vector3, Vector4};
@@ -1226,6 +1228,90 @@ fn late_stateful_model_is_rejected() {
         },
         -1,
     );
+}
+
+/// A state with multiplicative noise, `dx = σ x dW`, that counts the
+/// evaluations it runs in.
+struct MultiplicativeNoise {
+    sigma: f64,
+    calls: Arc<AtomicUsize>,
+}
+
+impl SceneModel for MultiplicativeNoise {
+    fn model_tag(&self) -> &str {
+        "multiplicativeNoise"
+    }
+
+    fn state_specs(&self) -> Vec<ModelStateSpec> {
+        vec![ModelStateSpec::new("x", vec![2.0]).with_noise_sources(1)]
+    }
+
+    fn scene_update(&mut self, context: &mut TaskContext<'_>) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let x = context.state(0)[0];
+        context.set_derivative(0, &[0.0]);
+        context.set_diffusion(0, 0, &[self.sigma * x]);
+    }
+}
+
+/// A model added to both tasks has one state and runs at every drift and
+/// every diffusion evaluation, so its state-dependent diffusion is that of
+/// the evaluated state (upstream adds such a model with
+/// `AddModelToDynamicsTask` and `AddModelToDiffusionDynamicsTask`).
+#[test]
+fn model_in_both_tasks_evaluates_its_diffusion_at_the_diffusion_state() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut scene = MjScene::new("<mujoco/>").expect("scene");
+    let id = scene.add_model_to_dynamics_and_diffusion_tasks(
+        MultiplicativeNoise {
+            sigma: 0.5,
+            calls: Arc::clone(&calls),
+        },
+        -1,
+        -1,
+    );
+    scene.reset(&context(0));
+    assert_eq!(scene.state().models.len(), 1);
+    assert_eq!(scene.noise_source_count(), 1);
+    assert_eq!(scene.task_model_state(id, 0), &[2.0]);
+
+    let mut state = scene.state().clone();
+    let drift = scene.equations_of_motion(&state, 0, epoch());
+    assert_eq!(drift.models[0], 0.0);
+    let after_drift = calls.load(Ordering::Relaxed);
+    assert_eq!(after_drift, 1);
+    // A different state at the diffusion evaluation: the column follows it.
+    state.models[0] = 3.0;
+    let columns = scene.equations_of_motion_diffusion(&state, 0, epoch());
+    assert_eq!(calls.load(Ordering::Relaxed), after_drift + 1);
+    assert_eq!(columns.len(), 1);
+    assert!(
+        (columns[0].models[0] - 1.5).abs() < 1e-15,
+        "{}",
+        columns[0].models[0]
+    );
+}
+
+/// Without the diffusion task, the column is the one the model set at the
+/// last drift evaluation.
+#[test]
+fn dynamics_only_model_keeps_its_last_diffusion() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut scene = MjScene::new("<mujoco/>").expect("scene");
+    scene.add_model_to_dynamics_task(
+        MultiplicativeNoise {
+            sigma: 0.5,
+            calls: Arc::clone(&calls),
+        },
+        -1,
+    );
+    scene.reset(&context(0));
+    let mut state = scene.state().clone();
+    scene.equations_of_motion(&state, 0, epoch());
+    state.models[0] = 3.0;
+    let columns = scene.equations_of_motion_diffusion(&state, 0, epoch());
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!((columns[0].models[0] - 1.0).abs() < 1e-15);
 }
 
 const SLIDER_XML: &str = r#"

@@ -170,3 +170,75 @@ required-features = ["mujoco"]
 [[example]]
 name = "sweep_variable_mass_pendulum_inertia"
 required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_arm_with_thrusters"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_asteroid_landing"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_attitude_feedback_rw_mujoco"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_branching_panels"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_deploy_panels"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_flexible_panel_mujoco"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_formation_flying_with_drag"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_hinged_rigid_body_mujoco"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_mj_earth_moon_gravity"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_mj_scene_vizard"
+required-features = ["mujoco", "vizard"]
+
+[[example]]
+name = "scenario_momentum_dumping_mujoco"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_reaction_wheel"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_simple_docking"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_srp_in_panels"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_stochastic_drag"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_thr_arm_control"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_thr_arm_tracking"
+required-features = ["mujoco"]
+
+[[example]]
+name = "scenario_unbalanced_thrusters"
+required-features = ["mujoco"]

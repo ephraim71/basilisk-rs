@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig};
 use nalgebra::Vector3;
 
 // Earth gravitational parameter (m^3/s^2) shared across the scenarios.
@@ -19,6 +20,20 @@ pub fn rpm_to_radps(rpm: f64) -> f64 {
 
 pub fn scenario_output_path(file_name: &str) -> PathBuf {
     output_path("scenarios", file_name)
+}
+
+/// A scenario-format CSV recorder for
+/// `examples/output/scenarios/<stem>.csv`, with that path when `write_csv`.
+/// The file is only replaced (and created) when `write_csv`; the caller
+/// schedules the recorder only then.
+pub fn scenario_recorder(stem: &str, write_csv: bool) -> (CsvRecorder, Option<PathBuf>) {
+    let output_path = write_csv.then(|| scenario_output_path(&format!("{stem}.csv")));
+    let recorder = CsvRecorder::new(CsvRecorderConfig {
+        topic: stem.to_string(),
+        output_path: output_path.clone().unwrap_or_default(),
+    })
+    .with_format(CsvFormat::Scenario);
+    (recorder, output_path)
 }
 
 /// A fresh path under `examples/output/<subdirectory>`, with any previous file

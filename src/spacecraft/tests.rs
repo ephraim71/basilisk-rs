@@ -16,11 +16,17 @@ use crate::dynamics::hinged_rigid_body_state_effector::{
 use crate::dynamics::reaction_wheel_state_effector::{
     ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
 };
+use crate::integrators::stochastic::{
+    Dri1, Dri1Nm, EulerHeun, EulerMaruyama, Rdi1Wm, Ri1, Ri3, Ri5, Ri6, RkMil, Rs1, Rs2, Siea,
+    Sieb, Smea, Smeb, Sosra, Sosri, Sra1, Sriw1, W2Ito1, W2Ito2,
+};
 use crate::integrators::{
-    Dopri45, Euler, Heun, Integrator, Midpoint, Ralston, Rk4, Rk4ThreeEighths, Rkf45,
+    AdaptiveController, ButcherTableau, Dopri45, DynamicObject, Euler, Heun, Integrator, Midpoint,
+    RK4, Ralston, Rk4, Rk4ThreeEighths, Rkf45, Rkf78, propagate_adaptive_rk, propagate_explicit_rk,
 };
 use crate::messages::{
-    AtmosphereMsg, HingedRigidBodyMsg, Input, MotorTorqueMsg, Output, SpacecraftStateMsg,
+    ArrayMotorTorqueMsg, AtmosphereMsg, HingedRigidBodyMsg, Input, MotorTorqueMsg, Output,
+    SpacecraftStateMsg,
 };
 use crate::simulation::Simulation;
 use crate::spacecraft::structs::BackSubMatrices;
@@ -1034,7 +1040,7 @@ impl StateEffector for PublishingThetaEffector {
     fn update_contributions(
         &self,
         _effector_state: &[f64],
-        _body_omega_radps: Vector3<f64>,
+        _hub_state: &SpacecraftStateMsg,
         _gravity_body_mps2: Vector3<f64>,
         _back_sub: &mut BackSubMatrices,
     ) {
@@ -1148,7 +1154,7 @@ fn keplerian_orbit_position_regression() {
 /// the adaptive ones that carry an extra `where` bound.
 #[test]
 fn all_integrators_are_pluggable() {
-    let _integrators: [Box<dyn Integrator<Spacecraft>>; 8] = [
+    let _integrators: [Box<dyn Integrator<Spacecraft>>; 31] = [
         Box::new(Euler),
         Box::new(Midpoint),
         Box::new(Heun),
@@ -1157,6 +1163,29 @@ fn all_integrators_are_pluggable() {
         Box::new(Rk4ThreeEighths),
         Box::new(Rkf45::default()),
         Box::new(Dopri45::default()),
+        Box::new(Rkf78::default()),
+        Box::new(EulerMaruyama::new()),
+        Box::new(EulerHeun::new()),
+        Box::new(RkMil::new()),
+        Box::new(Sra1::new()),
+        Box::new(Sosra::new()),
+        Box::new(Sriw1::new()),
+        Box::new(Sosri::new()),
+        Box::new(W2Ito1::new()),
+        Box::new(W2Ito2::new()),
+        Box::new(Dri1::new()),
+        Box::new(Dri1Nm::new()),
+        Box::new(Ri1::new()),
+        Box::new(Ri3::new()),
+        Box::new(Ri5::new()),
+        Box::new(Ri6::new()),
+        Box::new(Rs1::new()),
+        Box::new(Rs2::new()),
+        Box::new(Siea::new()),
+        Box::new(Smea::new()),
+        Box::new(Sieb::new()),
+        Box::new(Smeb::new()),
+        Box::new(Rdi1Wm::new()),
     ];
 }
 
@@ -1200,4 +1229,1252 @@ fn integrator_accuracy_improves_with_order() {
     assert!(heun < euler, "heun {heun:.3e} !< euler {euler:.3e}");
     assert!(rk4 < heun, "rk4 {rk4:.3e} !< heun {heun:.3e}");
     assert!(dopri < 1e-6, "adaptive dopri45 radius error {dopri:.3e}");
+}
+
+// ---------------------------------------------------------------------------
+// Port of upstream `test_Integrators.py` and `test_integratorConvergence.py`
+// (`simulation/dynamics/Integrators/_UnitTest`). The adaptive cases use
+// basilisk-rs's step-size controller (an RMS norm over every scaled state
+// component) rather than upstream's per-state norm; the truth is upstream's.
+// The state-specific tolerance setters those files also test have no
+// counterpart: one controller tolerance covers every state.
+// ---------------------------------------------------------------------------
+
+/// Upstream `simIncludeGravBody.createEarth().mu` \[m^3/s^2\].
+const BASILISK_MU_EARTH_M3PS2: f64 = 0.398_600_441_5e15;
+
+/// A fixed-step custom tableau as an integrator (upstream `svIntegratorRungeKutta`).
+#[derive(Debug)]
+struct TableauIntegrator(&'static ButcherTableau);
+
+impl<D: DynamicObject + 'static> Integrator<D> for TableauIntegrator {
+    fn propagate(
+        &self,
+        object: &mut D,
+        state: &D::State,
+        current_sim_nanos: u64,
+        current_epoch: Epoch,
+        dt_seconds: f64,
+    ) -> (D::State, D::StepOutput) {
+        propagate_explicit_rk(
+            self.0,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        )
+    }
+}
+
+/// An embedded custom tableau as an integrator (upstream
+/// `svIntegratorAdaptiveRungeKutta`).
+#[derive(Debug)]
+struct AdaptiveTableauIntegrator(&'static ButcherTableau, AdaptiveController);
+
+impl<D: DynamicObject + 'static> Integrator<D> for AdaptiveTableauIntegrator {
+    fn propagate(
+        &self,
+        object: &mut D,
+        state: &D::State,
+        current_sim_nanos: u64,
+        current_epoch: Epoch,
+        dt_seconds: f64,
+    ) -> (D::State, D::StepOutput) {
+        propagate_adaptive_rk(
+            self.0,
+            &self.1,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        )
+    }
+}
+
+/// Upstream's `rk3` case: Kutta's third-order method.
+const KUTTA_RK3: ButcherTableau = ButcherTableau {
+    a: &[&[], &[0.5], &[-1.0, 2.0]],
+    c: &[0.0, 0.5, 1.0],
+    b: &[1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
+    b_embedded: None,
+    error_estimate_order: 3,
+};
+
+/// Upstream's `bogackiShampine` case: the third-order solution (upstream
+/// `b_star_coefficients`) is propagated with the second-order one embedded.
+const BOGACKI_SHAMPINE: ButcherTableau = ButcherTableau {
+    a: &[
+        &[],
+        &[0.5],
+        &[0.0, 0.75],
+        &[2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0],
+    ],
+    c: &[0.0, 0.5, 0.75, 1.0],
+    b: &[2.0 / 9.0, 1.0 / 3.0, 4.0 / 9.0, 0.0],
+    b_embedded: Some(&[7.0 / 24.0, 1.0 / 4.0, 1.0 / 3.0, 1.0 / 8.0]),
+    error_estimate_order: 2,
+};
+
+/// Upstream `test_scenarioIntegrators`: the LEO of `test_Integrators.py`
+/// integrated with 120 s steps for three quarters of an orbit; returns the
+/// position at every step, initial state included.
+fn scenario_integrator_positions(integrator: Box<dyn Integrator<Spacecraft>>) -> Vec<Vector3<f64>> {
+    use crate::utilities::orbital_motion::{ClassicElements, elements_to_state, state_to_elements};
+
+    let mu = BASILISK_MU_EARTH_M3PS2;
+    let elements = ClassicElements {
+        semi_major_axis: 7000.0 * 1000.0,
+        eccentricity: 0.0001,
+        inclination_rad: 33.3_f64.to_radians(),
+        raan_rad: 48.2_f64.to_radians(),
+        arg_periapsis_rad: 347.8_f64.to_radians(),
+        true_anomaly_rad: 85.3_f64.to_radians(),
+        ..ClassicElements::default()
+    };
+    let (position_m, velocity_mps) = elements_to_state(mu, &elements);
+    let elements = state_to_elements(mu, position_m, velocity_mps);
+    let mean_motion = (mu / elements.semi_major_axis.powi(3)).sqrt();
+    let period_s = 2.0 * std::f64::consts::PI / mean_motion;
+    // Upstream `macros.sec2nano(0.75 * P)`; the task then ticks every 120 s
+    // up to that stop time.
+    let stop_nanos = (0.75 * period_s * 1.0e9).round() as u64;
+    let step_nanos = 120_000_000_000;
+
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 100.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::identity(),
+        integration_step_nanos: step_nanos,
+        initial_position_m: position_m,
+        initial_velocity_mps: velocity_mps,
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+        integrator: Some(integrator),
+    });
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass("earth", mu, true, Vector3::zeros(), Vector3::zeros())
+                .expect("valid Earth gravity body"),
+        )
+        .expect("unique central gravity body");
+    spacecraft.init();
+    let mut positions = Vec::new();
+    for tick in 0..=stop_nanos / step_nanos {
+        spacecraft.update(&crate::SimulationContext {
+            current_sim_nanos: tick * step_nanos,
+            current_epoch: start_epoch(),
+        });
+        positions.push(spacecraft.state_out.read().position_m);
+    }
+    positions
+}
+
+/// Compares upstream's sampled truth points (every `len / 4`-th record, or
+/// the last one) to 1 m per component.
+fn assert_matches_truth(positions: &[Vector3<f64>], truth: &[[f64; 3]], name: &str) {
+    let sampled: Vec<Vector3<f64>> = if truth.len() == 1 {
+        vec![*positions.last().unwrap()]
+    } else {
+        let skip = positions.len() / (truth.len() - 1);
+        positions.iter().step_by(skip).copied().collect()
+    };
+    assert!(
+        sampled.len() >= truth.len(),
+        "{name}: {} samples",
+        sampled.len()
+    );
+    for (index, (actual, expected)) in sampled.iter().zip(truth).enumerate() {
+        for axis in 0..3 {
+            assert!(
+                (actual[axis] - expected[axis]).abs() <= 1.0,
+                "{name}: point {index} axis {axis} is {}, truth {}",
+                actual[axis],
+                expected[axis]
+            );
+        }
+    }
+}
+
+/// The analytic two-body truth upstream shares between its three adaptive
+/// cases, at the last 120 s tick.
+const ADAPTIVE_TRUTH: [[f64; 3]; 1] = [[5879286.370258273, 3561242.50810664, -1319786.625981673]];
+
+#[test]
+fn scenario_integrators_rk4_matches_upstream_truth() {
+    assert_matches_truth(
+        &scenario_integrator_positions(Box::new(Rk4)),
+        &[
+            [
+                -2.8168016010234915e6,
+                5.248174846916147e6,
+                3.677157264677297e6,
+            ],
+            [
+                -6.379381726549218e6,
+                -1.4688565370540658e6,
+                2.4807857675497606e6,
+            ],
+            [
+                -2.230094305694789e6,
+                -6.410420020364709e6,
+                -1.7146277675541767e6,
+            ],
+            [
+                4.614900659014343e6,
+                -3.60224207689023e6,
+                -3.837022825958977e6,
+            ],
+            [
+                5.879095186201691e6,
+                3.561495655367985e6,
+                -1.3195821703218794e6,
+            ],
+        ],
+        "rk4",
+    );
+}
+
+#[test]
+fn scenario_integrators_euler_matches_upstream_truth() {
+    assert_matches_truth(
+        &scenario_integrator_positions(Box::new(Euler)),
+        &[
+            [
+                -2.8168016010234915e6,
+                5.248174846916147e6,
+                3.677157264677297e6,
+            ],
+            [
+                -7.061548530211288e6,
+                -1.4488790844105487e6,
+                2.823580168201031e6,
+            ],
+            [
+                -4.831279689590867e6,
+                -8.015202650472983e6,
+                -1.1434851461593418e6,
+            ],
+            [
+                719606.5825106134,
+                -1.0537603309084207e7,
+                -4.966060248346598e6,
+            ],
+            [
+                6.431097055190775e6,
+                -9.795566286964862e6,
+                -7.438012269629238e6,
+            ],
+        ],
+        "euler",
+    );
+}
+
+/// Upstream `svIntegratorRK2` is Heun's method.
+#[test]
+fn scenario_integrators_rk2_matches_upstream_truth() {
+    assert_matches_truth(
+        &scenario_integrator_positions(Box::new(Heun)),
+        &[
+            [
+                -2.8168016010234915e6,
+                5.248174846916147e6,
+                3.677157264677297e6,
+            ],
+            [
+                -6.425636528569288e6,
+                -1.466693214251768e6,
+                2.50438327358707e6,
+            ],
+            [
+                -2.466642497083674e6,
+                -6.509473992136429e6,
+                -1.6421621818735446e6,
+            ],
+            [
+                4.342561337924192e6,
+                -4.1593822658140697e6,
+                -3.947594705237753e6,
+            ],
+            [
+                6.279757158711852e6,
+                2.8527385905952943e6,
+                -1.8260959147806289e6,
+            ],
+        ],
+        "rk2",
+    );
+}
+
+#[test]
+fn scenario_integrators_rk3_matches_upstream_truth() {
+    assert_matches_truth(
+        &scenario_integrator_positions(Box::new(TableauIntegrator(&KUTTA_RK3))),
+        &[
+            [-2816801.601023492, 5248174.846916147, 3677157.2646772973],
+            [-6380014.419169294, -1467304.5024778044, 2481775.1156921615],
+            [-2231193.424069216, -6407257.277104054, -1712704.800575082],
+            [4613563.820461048, -3590442.718508557, -3831202.081509318],
+            [5853794.060191272, 3579538.889746918, -1299292.6887013493],
+        ],
+        "rk3",
+    );
+}
+
+/// Upstream's adaptive cases: relative tolerance 0 and absolute tolerance
+/// 0.01 (RKF45, RKF78) or 1e-4 (Bogacki-Shampine) all land on the two-body
+/// truth within 1 m.
+#[test]
+fn scenario_integrators_adaptive_methods_match_upstream_truth() {
+    let controller = |atol| AdaptiveController {
+        atol,
+        rtol: 0.0,
+        ..Default::default()
+    };
+    for (name, integrator) in [
+        (
+            "rkf45",
+            Box::new(Rkf45::new(controller(0.01))) as Box<dyn Integrator<Spacecraft>>,
+        ),
+        ("rkf78", Box::new(Rkf78::new(controller(0.01)))),
+        (
+            "bogackiShampine",
+            Box::new(AdaptiveTableauIntegrator(
+                &BOGACKI_SHAMPINE,
+                controller(1.0e-4),
+            )),
+        ),
+    ] {
+        assert_matches_truth(
+            &scenario_integrator_positions(integrator),
+            &ADAPTIVE_TRUTH,
+            name,
+        );
+    }
+}
+
+/// Upstream `test_integrator_convergence`: on the unit circular orbit
+/// (`μ = 1`), the position error at 1 s for 8, 16, 32 and 64 steps falls
+/// monotonically with the method's order, within 0.25.
+#[test]
+fn integrator_convergence_orders() {
+    let final_position = |integrator: Box<dyn Integrator<Spacecraft>>, step_count: u64| {
+        let step_nanos = 1_000_000_000 / step_count;
+        let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+            mass_kg: 1.0,
+            hub_center_of_mass_body_m: Vector3::zeros(),
+            inertia_kg_m2: Matrix3::identity(),
+            integration_step_nanos: step_nanos,
+            initial_position_m: Vector3::new(1.0, 0.0, 0.0),
+            initial_velocity_mps: Vector3::new(0.0, 1.0, 0.0),
+            initial_sigma_bn: Vector3::zeros(),
+            initial_omega_radps: Vector3::zeros(),
+            integrator: Some(integrator),
+        });
+        spacecraft
+            .add_grav_body(
+                GravBodyData::point_mass(
+                    "central_body",
+                    1.0,
+                    true,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )
+                .expect("valid central body"),
+            )
+            .expect("unique central gravity body");
+        {
+            let mut simulation = Simulation::new(start_epoch(), false);
+            simulation.add_module("orbit", &mut spacecraft, step_nanos, 0);
+            simulation.run_for(1_000_000_000);
+            assert_eq!(simulation.current_sim_nanos(), 1_000_000_000);
+        }
+        spacecraft.state_out.read().position_m
+    };
+    let reference = Vector3::new(1.0_f64.cos(), 1.0_f64.sin(), 0.0);
+    type Factory = fn() -> Box<dyn Integrator<Spacecraft>>;
+    let cases: [(&str, Factory, f64); 4] = [
+        ("euler", || Box::new(Euler), 1.0),
+        ("rk2", || Box::new(Heun), 2.0),
+        ("rk3", || Box::new(TableauIntegrator(&KUTTA_RK3)), 3.0),
+        ("rk4", || Box::new(TableauIntegrator(&RK4)), 4.0),
+    ];
+    for (name, factory, expected_order) in cases {
+        let errors: Vec<f64> = [8, 16, 32, 64]
+            .into_iter()
+            .map(|count| (final_position(factory(), count) - reference).norm())
+            .collect();
+        assert!(
+            errors.iter().all(|error| error.is_finite() && *error > 0.0),
+            "{name}: {errors:?}"
+        );
+        assert!(
+            errors.windows(2).all(|pair| pair[1] < pair[0]),
+            "{name}: {errors:?}"
+        );
+        for pair in errors.windows(2) {
+            let order = (pair[0] / pair[1]).log2();
+            assert!((order - expected_order).abs() <= 0.25, "{name}: {errors:?}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accumulated ΔV: port of upstream `scAccumDV` and `scAccumDVExtForce`
+// (`simulation/dynamics/spacecraft/_UnitTest/test_spacecraft.py`).
+// ---------------------------------------------------------------------------
+
+/// Upstream `extForceTorque` with a constant body-frame force and no torque.
+struct ConstantBodyForce {
+    force_body_n: Vector3<f64>,
+}
+
+impl DynamicEffector for ConstantBodyForce {
+    fn name(&self) -> &str {
+        "externalDisturbance"
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput {
+            force_inertial_n: state
+                .body_to_inertial()
+                .transform_vector(&self.force_body_n),
+            torque_body_nm: Vector3::zeros(),
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Runs `spacecraft` with 0.1 s steps to 0.5 s and returns the state message
+/// of every step, initial one included.
+fn accumulated_dv_log(spacecraft: &mut Spacecraft) -> Vec<SpacecraftStateMsg> {
+    spacecraft.init();
+    (0..=5u64)
+        .map(|tick| {
+            spacecraft.update(&crate::SimulationContext {
+                current_sim_nanos: tick * 100_000_000,
+                current_epoch: start_epoch(),
+            });
+            spacecraft.state_out.read()
+        })
+        .collect()
+}
+
+fn assert_vector_near(actual: Vector3<f64>, expected: Vector3<f64>, accuracy: f64, context: &str) {
+    for axis in 0..3 {
+        assert!(
+            (actual[axis] - expected[axis]).abs() <= accuracy,
+            "{context}: {actual:?} vs {expected:?}"
+        );
+    }
+}
+
+/// Upstream `scAccumDV`: under gravity alone the center of mass accumulates
+/// no ΔV, while the body origin, 100 m from the spinning center of mass,
+/// accumulates the change of its rotational velocity `ω × (-r_BcB)` seen in
+/// the body frame. Accuracy 1e-10 m/s.
+#[test]
+fn accumulated_dv_with_offset_center_of_mass_under_gravity() {
+    use crate::utilities::rigid_body_kinematics::mrp_to_dcm;
+
+    let center_of_mass_body_m = Vector3::new(0.0, 100.0, 0.0);
+    let omega_radps = Vector3::new(0.0, 0.0, std::f64::consts::PI / 180.0);
+    // Upstream gives the initial center-of-mass state (`r_CN_NInit`,
+    // `v_CN_NInit`); the body origin is offset from it by `-r_BcB`.
+    let com_position_m = Vector3::new(-7_000_000.0, 0.0, 0.0);
+    let com_velocity_mps = Vector3::new(0.0, 7000.0, 0.0);
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 100.0,
+        hub_center_of_mass_body_m: center_of_mass_body_m,
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(500.0, 200.0, 300.0)),
+        integration_step_nanos: 100_000_000,
+        initial_position_m: com_position_m - center_of_mass_body_m,
+        initial_velocity_mps: com_velocity_mps - omega_radps.cross(&center_of_mass_body_m),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: omega_radps,
+        integrator: None,
+    });
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "earth",
+                BASILISK_MU_EARTH_M3PS2,
+                true,
+                Vector3::zeros(),
+                Vector3::zeros(),
+            )
+            .expect("valid Earth gravity body"),
+        )
+        .expect("unique central gravity body");
+    let log = accumulated_dv_log(&mut spacecraft);
+
+    let accuracy = 1.0e-10;
+    let rotation_velocity_body = omega_radps.cross(&-center_of_mass_body_m);
+    let mut truth_bn_b = Vector3::zeros();
+    assert_eq!(log[0].accumulated_dv_bn_b_mps, Vector3::zeros());
+    for pair in log.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        assert_vector_near(
+            after.accumulated_dv_cn_b_mps,
+            Vector3::zeros(),
+            accuracy,
+            "dv_CN_B",
+        );
+        let dcm_bn_after = mrp_to_dcm(after.sigma_bn);
+        let dcm_bn_before = mrp_to_dcm(before.sigma_bn);
+        truth_bn_b += dcm_bn_after
+            * (dcm_bn_after.transpose() * rotation_velocity_body
+                - dcm_bn_before.transpose() * rotation_velocity_body);
+        assert_vector_near(
+            after.accumulated_dv_bn_b_mps,
+            truth_bn_b,
+            accuracy,
+            "dv_BN_B",
+        );
+        assert_vector_near(
+            after.accumulated_dv_cn_n_mps,
+            Vector3::zeros(),
+            accuracy,
+            "dv_CN_N",
+        );
+    }
+    assert!(
+        truth_bn_b.norm() > 1.0e-3,
+        "the body origin's rotational ΔV is resolved"
+    );
+}
+
+/// Upstream `scAccumDVExtForce`: a constant external force on a 100 kg hub
+/// without gravity accumulates `F t / m` in the inertial frame. The step's
+/// non-conservative acceleration is `F / m`.
+#[test]
+fn accumulated_dv_under_a_constant_external_force() {
+    let force_body_n = Vector3::new(0.31, 0.72, 0.18);
+    let mass_kg = 100.0;
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::identity(),
+        integration_step_nanos: 100_000_000,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+        integrator: None,
+    });
+    spacecraft.add_dynamic_effector(ConstantBodyForce { force_body_n });
+    let log = accumulated_dv_log(&mut spacecraft);
+
+    for (tick, state) in log.iter().enumerate() {
+        let time_s = tick as f64 * 0.1;
+        let truth = force_body_n * time_s / mass_kg;
+        assert_vector_near(state.accumulated_dv_cn_n_mps, truth, 1.0e-10, "dv_CN_N");
+        // The attitude stays inertial, so the body-frame sums agree.
+        assert_vector_near(state.accumulated_dv_cn_b_mps, truth, 1.0e-10, "dv_CN_B");
+        assert_vector_near(state.accumulated_dv_bn_b_mps, truth, 1.0e-10, "dv_BN_B");
+    }
+    assert_vector_near(
+        spacecraft
+            .diagnostics_out
+            .read()
+            .non_conservative_accel_body_mps2,
+        force_body_n / mass_kg,
+        1.0e-12,
+        "non-conservative acceleration",
+    );
+
+    // Initialization restarts the sums.
+    spacecraft.init();
+    assert_eq!(
+        spacecraft.state_out.read().accumulated_dv_cn_n_mps,
+        Vector3::zeros()
+    );
+}
+
+/// The accumulated ΔV is measured from velocities relative to the central
+/// body: a central body moving at constant velocity adds nothing.
+#[test]
+fn accumulated_dv_ignores_the_central_body_motion() {
+    let mut spacecraft = circular_orbit_spacecraft(7_000_000.0);
+    spacecraft.config.integration_step_nanos = 1_000_000_000;
+    spacecraft.integration_step_seconds = 1.0;
+    spacecraft.integration_step_duration = hifitime::Duration::from_seconds(1.0);
+    spacecraft.gravity = crate::dynamics::gravity::GravityEffector::new();
+    spacecraft
+        .add_grav_body(
+            GravBodyData::point_mass(
+                "earth",
+                MU_EARTH_M3PS2,
+                true,
+                Vector3::new(1.0e11, 0.0, 0.0),
+                Vector3::new(0.0, 30_000.0, 0.0),
+            )
+            .expect("valid Earth gravity body"),
+        )
+        .expect("unique central gravity body");
+    spacecraft.init();
+    for tick in 0..=10u64 {
+        spacecraft.update(&crate::SimulationContext {
+            current_sim_nanos: tick * 1_000_000_000,
+            current_epoch: start_epoch(),
+        });
+    }
+    let state = spacecraft.state_out.read();
+    assert!(
+        state.accumulated_dv_cn_n_mps.norm() < 1.0e-9,
+        "{:?}",
+        state.accumulated_dv_cn_n_mps
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Diffusion of the spacecraft states.
+// ---------------------------------------------------------------------------
+
+/// A one-state effector with two noise sources: `x' = -x`, diffusion
+/// columns `[0.5]` and `[0.25 x]`.
+struct TwoSourceNoise {
+    value: f64,
+}
+
+impl StateEffector for TwoSourceNoise {
+    fn name(&self) -> &str {
+        "two_source_noise"
+    }
+    fn state_len(&self) -> usize {
+        1
+    }
+    fn initial_state(&self) -> Vec<f64> {
+        vec![1.0]
+    }
+    fn load_state(&mut self, state: &[f64]) {
+        self.value = state[0];
+    }
+    fn pre_integration(&mut self, _: u64, _: f64) {}
+    fn update_contributions(
+        &self,
+        _: &[f64],
+        _: &SpacecraftStateMsg,
+        _: Vector3<f64>,
+        _: &mut BackSubMatrices,
+    ) {
+    }
+    fn compute_derivatives(&self, state: &[f64], _: Vector3<f64>, _: Vector3<f64>) -> Vec<f64> {
+        vec![-state[0]]
+    }
+    fn noise_source_count(&self) -> usize {
+        2
+    }
+    fn compute_diffusion(&self, state: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![0.5], vec![0.25 * state[0]]]
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// The spacecraft numbers its noise sources effector by effector and places
+/// each column in its own effector's slot, with zero hub diffusion; an
+/// effector without noise contributes none.
+#[test]
+fn spacecraft_diffusion_columns_follow_the_effectors() {
+    let mut spacecraft = circular_orbit_spacecraft(7_000_000.0);
+    spacecraft.add_state_effector(fully_coupled_reaction_wheel());
+    spacecraft.add_state_effector(TwoSourceNoise { value: 0.0 });
+    spacecraft.init();
+    assert_eq!(spacecraft.noise_source_count(), 2);
+    let mut state = spacecraft.integrated_state.clone().unwrap();
+    state.effector_states[1][0] = 2.0;
+    let columns = spacecraft.equations_of_motion_diffusion(&state, 0, start_epoch());
+    assert_eq!(columns.len(), 2);
+    for (column, expected) in columns.iter().zip([0.5, 0.5]) {
+        assert_eq!(column.position_wrt_central_body_dot_mps, Vector3::zeros());
+        assert_eq!(column.velocity_wrt_central_body_dot_mps2, Vector3::zeros());
+        assert_eq!(column.gravity_accel_inertial_mps2, Vector3::zeros());
+        assert_eq!(column.sigma_dot, Vector3::zeros());
+        assert_eq!(column.omega_dot_radps2, Vector3::zeros());
+        assert!(
+            column.effector_state_dots[0]
+                .iter()
+                .all(|&value| value == 0.0)
+        );
+        assert_eq!(column.effector_state_dots[1], [expected]);
+    }
+}
+
+/// A stochastic integrator on a spacecraft without noise is its drift
+/// tableau: Euler-Maruyama steps exactly like Euler, and the noise sources of
+/// an effector move only that effector's state.
+#[test]
+fn stochastic_integrators_reduce_to_their_drift_without_noise() {
+    let run = |integrator: Box<dyn Integrator<Spacecraft>>, with_noise: bool| {
+        let mut spacecraft = circular_orbit_spacecraft(7_000_000.0);
+        spacecraft.config.integrator = Some(integrator);
+        if with_noise {
+            spacecraft.add_state_effector(TwoSourceNoise { value: 0.0 });
+        }
+        {
+            let mut simulation = Simulation::new(start_epoch(), false);
+            simulation.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+            simulation.run_for(200 * STEP_NANOS);
+        }
+        (
+            spacecraft.state_out.read(),
+            spacecraft.integrated_state.clone().unwrap(),
+        )
+    };
+    let (euler, _) = run(Box::new(Euler), false);
+    let (euler_maruyama, _) = run(Box::new(EulerMaruyama::new()), false);
+    assert_eq!(euler.position_m, euler_maruyama.position_m);
+    assert_eq!(euler.velocity_mps, euler_maruyama.velocity_mps);
+
+    let (noisy, noisy_state) = run(Box::new(EulerMaruyama::new().with_seed(9)), true);
+    assert_eq!(
+        noisy.position_m, euler.position_m,
+        "noise must not reach the hub"
+    );
+    let deterministic_decay = (1.0 - STEP_NANOS as f64 * 1.0e-9).powi(200);
+    assert!(
+        (noisy_state.effector_states[0][0] - deterministic_decay).abs() > 1.0e-6,
+        "the noise source moves its effector state"
+    );
+}
+
+/// A velocity set through the hub-state handle between runs is where the next
+/// step integrates from: the run continues exactly as a spacecraft started at
+/// that state would (upstream `velRef.setState` between `ExecuteSimulation`s).
+#[test]
+fn hub_state_handle_sets_the_state_the_next_step_starts_from() {
+    let radius_m = 7_000_000.0;
+    let half_nanos = 500 * STEP_NANOS;
+    let mut sc = circular_orbit_spacecraft(radius_m);
+    let hub_state = sc.hub_state_handle();
+    let state_out = sc.state_out.clone();
+    let (start_position_m, start_velocity_mps) = {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut sc, STEP_NANOS, 0);
+        sim.run_for(half_nanos);
+        let position_m = hub_state.position_m();
+        let velocity_mps = hub_state.velocity_mps() * 1.01;
+        assert_eq!(position_m, state_out.read().position_m);
+        hub_state.set_velocity_mps(velocity_mps);
+        assert_eq!(hub_state.velocity_mps(), velocity_mps);
+        sim.run_for(half_nanos);
+        (position_m, velocity_mps)
+    };
+
+    let mut reference = circular_orbit_spacecraft(radius_m);
+    reference.config.initial_position_m = start_position_m;
+    reference.config.initial_velocity_mps = start_velocity_mps;
+    {
+        let mut sim = Simulation::new(start_epoch(), false);
+        sim.add_module("spacecraft", &mut reference, STEP_NANOS, 0);
+        sim.run_for(half_nanos);
+    }
+    let maneuvered = sc.state_out.read();
+    let expected = reference.state_out.read();
+    assert!((maneuvered.position_m - expected.position_m).norm() < 1e-6);
+    assert!((maneuvered.velocity_mps - expected.velocity_mps).norm() < 1e-9);
+    assert_eq!(hub_state.position_m(), maneuvered.position_m);
+}
+
+/// Upstream `attRefInMsg` (`readOptionalRefMsg`): a connected reference sets
+/// the hub attitude and rate at initialization and after every step, as
+/// `sigma_BN = sigma_RN`, `omega_BN_B = [BN] omega_RN_N`; the translation is
+/// that of the same spacecraft without a reference.
+#[test]
+fn attitude_reference_prescribes_the_hub_attitude() {
+    use crate::messages::AttitudeReferenceMsg;
+
+    let sigma_rn = Vector3::new(0.1, -0.2, 0.3);
+    let omega_rn_n = Vector3::new(0.01, 0.02, -0.03);
+    let reference = Output::new(AttitudeReferenceMsg {
+        sigma_rn,
+        omega_rn_n_radps: omega_rn_n,
+        ..Default::default()
+    });
+    let mut prescribed = circular_orbit_spacecraft(7.0e6);
+    let mut free = circular_orbit_spacecraft(7.0e6);
+    prescribed.att_ref_in.connect(reference.slot());
+    let prescribed_state = prescribed.state_out.clone();
+    let free_state = free.state_out.clone();
+    let expected_omega_b = body_to_inertial_dcm_from_sigma_bn(sigma_rn).transpose() * omega_rn_n;
+    {
+        let mut simulation = Simulation::new(start_epoch(), false);
+        simulation.add_module("prescribed", &mut prescribed, STEP_NANOS, 0);
+        simulation.add_module("free", &mut free, STEP_NANOS, 0);
+        simulation.run_for(0);
+        assert_eq!(prescribed_state.read().sigma_bn, sigma_rn);
+        simulation.run_for(10 * STEP_NANOS);
+    }
+    let state = prescribed_state.read();
+    assert_eq!(state.sigma_bn, sigma_rn);
+    assert!((state.omega_radps - expected_omega_b).norm() < 1e-15);
+    assert_eq!(free_state.read().sigma_bn, Vector3::zeros());
+    assert!((state.position_m - free_state.read().position_m).norm() < 1e-9);
+    assert!((state.velocity_mps - free_state.read().velocity_mps).norm() < 1e-12);
+}
+
+fn valid_spacecraft_config() -> SpacecraftConfig {
+    SpacecraftConfig {
+        mass_kg: 10.0,
+        hub_center_of_mass_body_m: Vector3::zeros(),
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(1.0, 2.0, 2.5)),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::zeros(),
+        initial_omega_radps: Vector3::zeros(),
+        integrator: None,
+    }
+}
+
+#[test]
+#[should_panic(expected = "mass_kg")]
+fn rejects_zero_hub_mass() {
+    Spacecraft::new(SpacecraftConfig {
+        mass_kg: 0.0,
+        ..valid_spacecraft_config()
+    });
+}
+
+/// Principal moments 1, 1, 3 break the triangle inequality: no rigid body has them.
+#[test]
+#[should_panic(expected = "inertia_kg_m2")]
+fn rejects_physically_impossible_hub_inertia() {
+    Spacecraft::new(SpacecraftConfig {
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, 3.0)),
+        ..valid_spacecraft_config()
+    });
+}
+
+#[test]
+#[should_panic(expected = "initial_omega_radps")]
+fn rejects_non_finite_initial_state() {
+    Spacecraft::new(SpacecraftConfig {
+        initial_omega_radps: Vector3::new(0.0, f64::NAN, 0.0),
+        ..valid_spacecraft_config()
+    });
+}
+
+/// Constant load. The force is inertial; the torque is in the frame of whatever it
+/// is attached to, about that frame's origin.
+struct ConstantLoad {
+    force_inertial_n: Vector3<f64>,
+    torque_nm: Vector3<f64>,
+}
+
+impl DynamicEffector for ConstantLoad {
+    fn name(&self) -> &str {
+        "constant_load"
+    }
+
+    fn compute_output(&self, _state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput {
+            force_inertial_n: self.force_inertial_n,
+            torque_body_nm: self.torque_nm,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn tumbling_spacecraft() -> Spacecraft {
+    Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, -0.05, 0.02),
+        inertia_kg_m2: Matrix3::new(900.0, 10.0, 0.0, 10.0, 800.0, 5.0, 0.0, 5.0, 600.0),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::zeros(),
+        initial_velocity_mps: Vector3::zeros(),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.1, -0.05, 0.08),
+        integrator: None,
+    })
+}
+
+fn skewed_panel_config() -> HingedRigidBodyConfig {
+    let (s, c) = 0.6_f64.sin_cos();
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 100.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::new(100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 50.0);
+    config.center_of_mass_offset_m = 1.5;
+    config.spring_constant_nm_per_rad = 100.0;
+    config.damping_nm_s_per_rad = 2.0;
+    config.hinge_position_body_m = Vector3::new(0.5, 0.3, 1.0);
+    config.body_to_hinge_dcm = Matrix3::new(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0);
+    config.theta_init_rad = 0.2;
+    config
+}
+
+/// Runs 20 s and returns the hub state and the hinge angle and rate.
+fn run_with_panel(
+    mut spacecraft: Spacecraft,
+    panel: HingedRigidBodyStateEffector,
+) -> (SpacecraftStateMsg, HingedRigidBodyMsg) {
+    let state = spacecraft.state_out.clone();
+    let hinge = panel.hinged_rigid_body_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    spacecraft.add_state_effector(panel);
+    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+    sim.run_for(20_000_000_000);
+    (state.read(), hinge.read())
+}
+
+fn assert_same_motion(
+    a: (SpacecraftStateMsg, HingedRigidBodyMsg),
+    b: (SpacecraftStateMsg, HingedRigidBodyMsg),
+) {
+    let pairs = [
+        (a.0.position_m, b.0.position_m),
+        (a.0.velocity_mps, b.0.velocity_mps),
+        (a.0.sigma_bn, b.0.sigma_bn),
+        (a.0.omega_radps, b.0.omega_radps),
+        (
+            Vector3::new(a.1.theta_rad, a.1.theta_dot_radps, 0.0),
+            Vector3::new(b.1.theta_rad, b.1.theta_dot_radps, 0.0),
+        ),
+    ];
+    for (x, y) in pairs {
+        assert!(
+            (x - y).norm() <= 1.0e-12 * x.norm().max(1.0),
+            "panel load {x} differs from equivalent {y}"
+        );
+    }
+}
+
+/// A force through the hinge does no work on the hinge, so it must move the
+/// spacecraft exactly as the same force applied to the hub at the hinge point.
+#[test]
+fn panel_force_at_hinge_matches_hub_force_at_hinge_point() {
+    let force_inertial_n = Vector3::new(0.3, -0.2, 0.5);
+    let mut panel = HingedRigidBodyStateEffector::new(skewed_panel_config());
+    panel.add_dynamic_effector(ConstantLoad {
+        force_inertial_n,
+        torque_nm: Vector3::zeros(),
+    });
+    let on_panel = run_with_panel(tumbling_spacecraft(), panel);
+
+    // Hub torque about B from a force at the hinge needs the hub attitude, so the
+    // equivalent load rotates the inertial force into the body frame itself.
+    struct ForceAtPoint {
+        force_inertial_n: Vector3<f64>,
+        point_body_m: Vector3<f64>,
+    }
+    impl DynamicEffector for ForceAtPoint {
+        fn name(&self) -> &str {
+            "force_at_point"
+        }
+        fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+            let force_body = state
+                .inertial_to_body()
+                .transform_vector(&self.force_inertial_n);
+            EffectorOutput {
+                force_inertial_n: self.force_inertial_n,
+                torque_body_nm: self.point_body_m.cross(&force_body),
+            }
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    let mut spacecraft = tumbling_spacecraft();
+    spacecraft.add_dynamic_effector(ForceAtPoint {
+        force_inertial_n,
+        point_body_m: skewed_panel_config().hinge_position_body_m,
+    });
+    let on_hub = run_with_panel(
+        spacecraft,
+        HingedRigidBodyStateEffector::new(skewed_panel_config()),
+    );
+
+    assert_same_motion(on_panel, on_hub);
+}
+
+/// A torque on the panel about the hinge axis equals a motor torque (panel gets +T,
+/// hub gets -T) plus the same torque on the hub.
+#[test]
+fn panel_torque_about_hinge_axis_matches_motor_plus_hub_torque() {
+    let torque_nm = 0.4;
+    let mut panel = HingedRigidBodyStateEffector::new(skewed_panel_config());
+    panel.add_dynamic_effector(ConstantLoad {
+        force_inertial_n: Vector3::zeros(),
+        torque_nm: Vector3::new(0.0, torque_nm, 0.0),
+    });
+    let on_panel = run_with_panel(tumbling_spacecraft(), panel);
+
+    let config = skewed_panel_config();
+    let hinge_axis_body = config.body_to_hinge_dcm.row(1).transpose();
+    let mut spacecraft = tumbling_spacecraft();
+    spacecraft.add_dynamic_effector(ConstantLoad {
+        force_inertial_n: Vector3::zeros(),
+        torque_nm: torque_nm * hinge_axis_body,
+    });
+    let motor = Output::new(ArrayMotorTorqueMsg::from_active(&[torque_nm]));
+    let mut panel = HingedRigidBodyStateEffector::new(config);
+    panel.motor_torque_in.connect(motor.slot());
+    let on_hub_with_motor = run_with_panel(spacecraft, panel);
+
+    assert_same_motion(on_panel, on_hub_with_motor);
+}
+
+/// Constant force and torque in the frame of whatever it is attached to, like
+/// Basilisk's `extForceTorque` with `extForce_B` and `extTorquePntB_B`.
+struct AttachedFrameLoad {
+    force_n: Vector3<f64>,
+    torque_nm: Vector3<f64>,
+}
+
+impl DynamicEffector for AttachedFrameLoad {
+    fn name(&self) -> &str {
+        "attached_frame_load"
+    }
+
+    fn compute_output(&self, state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput {
+            force_inertial_n: state.body_to_inertial().transform_vector(&self.force_n),
+            torque_body_nm: self.torque_nm,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Basilisk 1c89eed20: spacecraft, hinged panel and `extForceTorque` attached to the
+/// panel (segment 1), RK4 at 0.01 s for 10 s. The initial B position and velocity are
+/// Basilisk's, which it derives from a zero initial center of mass state.
+#[test]
+fn panel_external_load_matches_basilisk() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 750.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, -0.05, 0.02),
+        inertia_kg_m2: Matrix3::new(900.0, 10.0, 0.0, 10.0, 800.0, 5.0, 0.0, 5.0, 600.0),
+        integration_step_nanos: 10_000_000,
+        initial_position_m: Vector3::new(
+            -0.010670562682714532,
+            0.09387901417630339,
+            -0.09654597379569231,
+        ),
+        initial_velocity_mps: Vector3::new(
+            -0.0002959525465259052,
+            0.00020381370471187879,
+            0.0002308932107304473,
+        ),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.01, -0.005, 0.008),
+        integrator: None,
+    });
+    let mut config = skewed_panel_config();
+    config.mass_kg = 50.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::from_diagonal(&Vector3::new(50.0, 30.0, 40.0));
+    config.center_of_mass_offset_m = 1.0;
+    let mut panel = HingedRigidBodyStateEffector::new(config);
+    panel.add_dynamic_effector(AttachedFrameLoad {
+        force_n: Vector3::new(0.3, -0.2, 0.5),
+        torque_nm: Vector3::new(0.1, 0.4, -0.2),
+    });
+
+    let state = spacecraft.state_out.clone();
+    let hinge = panel.hinged_rigid_body_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    spacecraft.add_state_effector(panel);
+    sim.add_module("spacecraft", &mut spacecraft, 10_000_000, 0);
+    sim.run_for(10_000_000_000);
+    let (state, hinge) = (state.read(), hinge.read());
+
+    let expected = [
+        (
+            state.position_m,
+            Vector3::new(
+                -0.024805271284116165,
+                0.08142523147854516,
+                -0.05313444453434257,
+            ),
+        ),
+        (
+            state.velocity_mps,
+            Vector3::new(
+                0.004611752630162651,
+                0.0026913562505741086,
+                0.0013102015333102146,
+            ),
+        ),
+        (
+            state.sigma_bn,
+            Vector3::new(
+                0.11962060893301583,
+                -0.20592654400510157,
+                0.07268509154996725,
+            ),
+        ),
+        (
+            state.omega_radps,
+            Vector3::new(
+                0.015346272302581508,
+                -0.008412017755388355,
+                0.002931728363179389,
+            ),
+        ),
+        (
+            Vector3::new(hinge.theta_rad, hinge.theta_dot_radps, 0.0),
+            Vector3::new(0.10492570106582176, 0.16035275664228743, 0.0),
+        ),
+    ];
+    for (actual, basilisk) in expected {
+        assert!(
+            (actual - basilisk).norm() < 1.0e-12 * basilisk.norm(),
+            "got {actual}, Basilisk {basilisk}"
+        );
+    }
+}
+
+/// Records the stage times it is evaluated at.
+struct StageTimeProbe(Arc<Mutex<Vec<u64>>>);
+
+impl DynamicEffector for StageTimeProbe {
+    fn name(&self) -> &str {
+        "stage_time_probe"
+    }
+
+    fn compute_output(&self, _state: &SpacecraftStateMsg) -> EffectorOutput {
+        EffectorOutput::default()
+    }
+
+    fn compute_output_at(&self, _state: &SpacecraftStateMsg, stage_nanos: u64) -> EffectorOutput {
+        self.0.lock().unwrap().push(stage_nanos);
+        EffectorOutput::default()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// An effector on the panel is evaluated at the integrator's stage times, as
+/// one on the hub is.
+#[test]
+fn panel_effector_sees_the_stage_times() {
+    let on_panel = Arc::new(Mutex::new(Vec::new()));
+    let on_hub = Arc::new(Mutex::new(Vec::new()));
+    let mut panel = HingedRigidBodyStateEffector::new(skewed_panel_config());
+    panel.add_dynamic_effector(StageTimeProbe(on_panel.clone()));
+    let mut spacecraft = tumbling_spacecraft();
+    spacecraft.add_dynamic_effector(StageTimeProbe(on_hub.clone()));
+    spacecraft.add_state_effector(panel);
+    let mut sim = Simulation::new(start_epoch(), false);
+    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+    sim.run_for(2 * STEP_NANOS);
+
+    let on_panel = on_panel.lock().unwrap().clone();
+    let on_hub = on_hub.lock().unwrap().clone();
+    assert!(on_panel.contains(&(STEP_NANOS / 2)), "{on_panel:?}");
+    assert!(
+        on_panel.iter().all(|t| on_hub.contains(t)),
+        "{on_panel:?} {on_hub:?}"
+    );
+}
+
+/// Upstream `transRefInMsg` (`readOptionalRefMsg`): a connected reference
+/// sets the hub position and velocity at initialization and after every
+/// step, relative to the central body; the attitude keeps its own dynamics.
+#[test]
+fn translation_reference_prescribes_the_hub_position_and_velocity() {
+    use crate::messages::TranslationReferenceMsg;
+
+    let reference = Output::new(TranslationReferenceMsg {
+        position_m: Vector3::new(1.0e7, -2.0e6, 3.0e5),
+        velocity_mps: Vector3::new(-10.0, 7_000.0, 20.0),
+        ..Default::default()
+    });
+    let mut prescribed = circular_orbit_spacecraft(7.0e6);
+    prescribed.config.initial_omega_radps = Vector3::new(0.01, -0.02, 0.03);
+    let mut free = circular_orbit_spacecraft(7.0e6);
+    free.config.initial_omega_radps = prescribed.config.initial_omega_radps;
+    prescribed.trans_ref_in.connect(reference.slot());
+    let prescribed_state = prescribed.state_out.clone();
+    let free_state = free.state_out.clone();
+    {
+        let mut simulation = Simulation::new(start_epoch(), false);
+        simulation.add_module("prescribed", &mut prescribed, STEP_NANOS, 0);
+        simulation.add_module("free", &mut free, STEP_NANOS, 0);
+        simulation.run_for(0);
+        assert_eq!(
+            prescribed_state.read().position_m,
+            reference.read().position_m
+        );
+        simulation.run_for(10 * STEP_NANOS);
+        // A changed reference is taken at the next step.
+        reference.write(TranslationReferenceMsg {
+            position_m: Vector3::new(-4.0e6, 5.0e6, 1.0e6),
+            velocity_mps: Vector3::new(3.0, 2.0, 1.0),
+            ..Default::default()
+        });
+        simulation.run_for(STEP_NANOS);
+    }
+    let state = prescribed_state.read();
+    assert_eq!(state.position_m, reference.read().position_m);
+    assert_eq!(state.velocity_mps, reference.read().velocity_mps);
+    assert_ne!(free_state.read().position_m, state.position_m);
+    assert!((state.sigma_bn - free_state.read().sigma_bn).norm() < 1e-12);
+    assert!((state.omega_radps - free_state.read().omega_radps).norm() < 1e-12);
+}
+
+/// `com_state_out` is the center of mass of a free-floating spacecraft: with
+/// no external force it moves in a straight line at constant velocity, while
+/// the hub origin swings about it, and at the start it sits at
+/// `r_BN_N + [NB] c_B`.
+#[test]
+fn center_of_mass_output_of_a_free_spacecraft_moves_uniformly() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 600.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, 0.0, 0.0),
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(400.0, 380.0, 360.0)),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::new(10.0, -5.0, 2.0),
+        initial_velocity_mps: Vector3::new(0.3, 0.1, -0.2),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.01, -0.02, 0.015),
+        integrator: None,
+    });
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 50.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::from_diagonal(&Vector3::new(30.0, 20.0, 12.0));
+    config.center_of_mass_offset_m = 1.2;
+    config.spring_constant_nm_per_rad = 150.0;
+    config.damping_nm_s_per_rad = 8.0;
+    config.hinge_position_body_m = Vector3::new(0.8, 0.0, 0.0);
+    config.theta_init_rad = 0.2;
+    spacecraft.add_state_effector(HingedRigidBodyStateEffector::new(config));
+
+    let hub = spacecraft.state_out.clone();
+    let com = spacecraft.com_state_out.clone();
+    let mass_props = spacecraft.mass_props_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+    sim.run_for(0);
+    let (hub0, com0) = (hub.read(), com.read());
+    let dcm_nb = body_to_inertial_dcm_from_sigma_bn(hub0.sigma_bn);
+    let expected = hub0.position_m + dcm_nb * mass_props.read().center_of_mass_body_m;
+    assert!((com0.position_m - expected).norm() < 1e-12);
+    assert_eq!(com0.sigma_bn, hub0.sigma_bn);
+
+    let duration_s = 10.0;
+    sim.run_for(10_000_000_000);
+    let (hub1, com1) = (hub.read(), com.read());
+    assert!((com1.velocity_mps - com0.velocity_mps).norm() < 1e-9);
+    let drift = com0.position_m + com0.velocity_mps * duration_s;
+    assert!((com1.position_m - drift).norm() < 1e-8);
+    // The hub origin itself does not move uniformly.
+    assert!((hub1.velocity_mps - hub0.velocity_mps).norm() > 1e-4);
 }

@@ -82,6 +82,7 @@ fn built_in_methods_advance_the_state() {
         Box::new(Rk4ThreeEighths),
         Box::new(Rkf45::default()),
         Box::new(Dopri45::default()),
+        Box::new(Rkf78::default()),
     ] {
         let result = step_with(integrator.as_ref(), 3.0);
         assert!(
@@ -132,4 +133,44 @@ fn user_defined_integrator_plugs_in_and_matches_builtin_euler() {
         step_with(&Euler, 3.0),
         "hand-written Euler should match the built-in"
     );
+}
+
+/// Without noise sources every stochastic integrator is a consistent drift
+/// tableau, exact on constant velocity like the deterministic ones.
+#[test]
+fn stochastic_methods_advance_a_noiseless_object() {
+    use crate::integrators::stochastic::{
+        Dri1, Dri1Nm, EulerHeun, EulerMaruyama, Rdi1Wm, Ri1, Ri3, Ri5, Ri6, RkMil, Rs1, Rs2, Siea,
+        Sieb, Smea, Smeb, Sosra, Sosri, Sra1, Sriw1, W2Ito1, W2Ito2,
+    };
+    for integrator in [
+        Box::new(EulerMaruyama::new()) as Box<dyn Integrator<Drifter>>,
+        Box::new(EulerHeun::new()),
+        Box::new(RkMil::new()),
+        Box::new(Sra1::new()),
+        Box::new(Sosra::new()),
+        Box::new(Sriw1::new()),
+        Box::new(Sosri::new()),
+        Box::new(W2Ito1::new()),
+        Box::new(W2Ito2::new()),
+        Box::new(Dri1::new()),
+        Box::new(Dri1Nm::new()),
+        Box::new(Ri1::new()),
+        Box::new(Ri3::new()),
+        Box::new(Ri5::new()),
+        Box::new(Ri6::new()),
+        Box::new(Rs1::new()),
+        Box::new(Rs2::new()),
+        Box::new(Siea::new()),
+        Box::new(Smea::new()),
+        Box::new(Sieb::new()),
+        Box::new(Smeb::new()),
+        Box::new(Rdi1Wm::new()),
+    ] {
+        let result = step_with(integrator.as_ref(), 3.0);
+        assert!(
+            (result[0] - 6.0).abs() < 1e-9 && (result[1] - 2.0).abs() < 1e-9,
+            "{integrator:?} gave {result:?}"
+        );
+    }
 }

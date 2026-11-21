@@ -1,25 +1,40 @@
+//! Spacecraft truth state: the parts of upstream `SCStatesMsgPayload` that
+//! basilisk-rs publishes from [`Spacecraft`](crate::spacecraft::Spacecraft).
+
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
 
-use crate::telemetry::{TelemetryField, TelemetryMessage};
+use super::flatten::impl_telemetry;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Spacecraft hub state (upstream `SCStatesMsgPayload`).
+///
+/// The angular acceleration and non-conservative acceleration upstream also
+/// carries are in [`SpacecraftDiagnosticsMsg`](super::SpacecraftDiagnosticsMsg).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SpacecraftStateMsg {
+    /// Upstream `r_BN_N` \[m\]: inertial position of the body frame origin.
     pub position_m: Vector3<f64>,
+    /// Upstream `v_BN_N` \[m/s\]: inertial velocity of the body frame origin.
     pub velocity_mps: Vector3<f64>,
+    /// Upstream `sigma_BN`: body attitude relative to the inertial frame (MRP).
     pub sigma_bn: Vector3<f64>,
+    /// Upstream `omega_BN_B` \[rad/s\]: body rate, body-frame components.
     pub omega_radps: Vector3<f64>,
-}
-
-impl Default for SpacecraftStateMsg {
-    fn default() -> Self {
-        Self {
-            position_m: Vector3::zeros(),
-            velocity_mps: Vector3::zeros(),
-            sigma_bn: Vector3::zeros(),
-            omega_radps: Vector3::zeros(),
-        }
-    }
+    /// Upstream `TotalAccumDVBdy` (`dvAccum_CN_B`) \[m/s\]: accumulated
+    /// non-gravitational velocity change of the center of mass, each step's
+    /// increment in body-frame components at the end of that step.
+    #[serde(default)]
+    pub accumulated_dv_cn_b_mps: Vector3<f64>,
+    /// Upstream `TotalAccumDV_BN_B` (`dvAccum_BN_B`) \[m/s\]: the same for
+    /// the body frame origin, which also picks up the velocity of rotation
+    /// about an offset center of mass.
+    #[serde(default)]
+    pub accumulated_dv_bn_b_mps: Vector3<f64>,
+    /// Upstream `TotalAccumDV_CN_N` (`dvAccum_CN_N`) \[m/s\]: accumulated
+    /// non-gravitational velocity change of the center of mass, inertial
+    /// components.
+    #[serde(default)]
+    pub accumulated_dv_cn_n_mps: Vector3<f64>,
 }
 
 impl SpacecraftStateMsg {
@@ -38,57 +53,12 @@ impl SpacecraftStateMsg {
     }
 }
 
-impl TelemetryMessage for SpacecraftStateMsg {
-    fn flatten(&self) -> Vec<TelemetryField> {
-        vec![
-            TelemetryField {
-                path: "position_m.x".to_string(),
-                value: self.position_m.x,
-            },
-            TelemetryField {
-                path: "position_m.y".to_string(),
-                value: self.position_m.y,
-            },
-            TelemetryField {
-                path: "position_m.z".to_string(),
-                value: self.position_m.z,
-            },
-            TelemetryField {
-                path: "velocity_mps.x".to_string(),
-                value: self.velocity_mps.x,
-            },
-            TelemetryField {
-                path: "velocity_mps.y".to_string(),
-                value: self.velocity_mps.y,
-            },
-            TelemetryField {
-                path: "velocity_mps.z".to_string(),
-                value: self.velocity_mps.z,
-            },
-            TelemetryField {
-                path: "sigma_bn.x".to_string(),
-                value: self.sigma_bn.x,
-            },
-            TelemetryField {
-                path: "sigma_bn.y".to_string(),
-                value: self.sigma_bn.y,
-            },
-            TelemetryField {
-                path: "sigma_bn.z".to_string(),
-                value: self.sigma_bn.z,
-            },
-            TelemetryField {
-                path: "omega_radps.x".to_string(),
-                value: self.omega_radps.x,
-            },
-            TelemetryField {
-                path: "omega_radps.y".to_string(),
-                value: self.omega_radps.y,
-            },
-            TelemetryField {
-                path: "omega_radps.z".to_string(),
-                value: self.omega_radps.z,
-            },
-        ]
-    }
-}
+impl_telemetry!(SpacecraftStateMsg {
+    position_m,
+    velocity_mps,
+    sigma_bn,
+    omega_radps,
+    accumulated_dv_cn_b_mps,
+    accumulated_dv_bn_b_mps,
+    accumulated_dv_cn_n_mps,
+});

@@ -1,195 +1,114 @@
-//! Magnetic torque-bar momentum-management configuration from
-//! `scenarioMtbMomentumManagement.py`.
+//! Reaction-wheel momentum management with magnetic torque bars: port of
+//! upstream `examples/scenarioMtbMomentumManagement.py`.
 //!
-//! Four reaction wheels, four magnetic torque bars, WMM2025, and the complete
-//! attitude/momentum-management control chain. Writes the telemetry to CSV.
+//! A 10 kg spacecraft on a 400 km, 45 deg Earth orbit holds the inertial
+//! attitude (`inertial3D`, `attTrackingError`, `mrpFeedback` with `K =
+//! 0.0001`, `P = 0.002`, `rwMotorTorque`) with four BCT RWP015 wheels at
+//! 52 deg. `mtbMomentumManagement` drives the wheel speeds towards the biases
+//! `[800, 600, 400, 200] RPM` with four torque bars (0.1 A m^2), reading the
+//! WMM field (`2019 June 27, 10:23:0.0 (UTC)`) through a noiseless
+//! magnetometer and `tamComm`, and feeds the wheel torques forward. One 2 s
+//! task for 120 minutes, histories sampled every 36 s.
+//!
+//! Upstream `run(show_plots)` has no parameters; `--all` is accepted for
+//! symmetry with the other scenarios and runs the same single case.
+//!
+//! The wheels and torque bars take one command each: `mtbMomentumManagement`
+//! publishes one wheel torque and one dipole per device.
+//!
+//! Writes `examples/output/scenarios/scenarioMtbMomentumManagement.csv`.
 
+#[path = "support/attitude.rs"]
+mod attitude;
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/mtb.rs"]
+mod mtb;
+#[path = "support/rw_factory.rs"]
+mod rw_factory;
 
-use basilisk_rs::dynamics::gravity::GravBodyData;
+use std::path::PathBuf;
+
+use attitude::{att_tracking_error, inertial_3d, sampling_period_nanos, scenario_recorder};
 use basilisk_rs::dynamics::mtb_dynamic_effector::{MtbConfig, MtbEffector};
-use basilisk_rs::dynamics::reaction_wheel_state_effector::{
-    ReactionWheelStateEffector, ReactionWheelStateEffectorConfig,
-};
-use basilisk_rs::environment::wmm_field::{WmmField, WmmFieldConfig};
-use basilisk_rs::fsw_algorithms::att_tracking_error::{AttTrackingError, AttTrackingErrorConfig};
-use basilisk_rs::fsw_algorithms::inertial_3d::{Inertial3D, Inertial3DConfig};
-use basilisk_rs::fsw_algorithms::mrp_feedback::{MrpFeedback, MrpFeedbackConfig};
+use basilisk_rs::dynamics::reaction_wheel_state_effector::ReactionWheelStateEffector;
 use basilisk_rs::fsw_algorithms::mtb_momentum_management::{
     MtbMomentumManagement, MtbMomentumManagementConfig,
 };
 use basilisk_rs::fsw_algorithms::rw_motor_torque::{RwMotorTorque, RwMotorTorqueConfig};
-use basilisk_rs::fsw_algorithms::tam_comm::{TamComm, TamCommConfig};
 use basilisk_rs::messages::{
     ArrayMotorTorqueMsg, AttitudeGuidanceMsg, MAX_EFF_COUNT, MagneticFieldMsg, MtbArrayCommandMsg,
-    MtbArrayConfigMsg, Output, ReactionWheelStateMsg, RwArrayConfigMsg, RwSpeedMsg,
-    TamSensorBodyMsg, TamSensorMsg, VehicleConfigMsg,
+    Output, ReactionWheelStateMsg, RwSpeedMsg, TamSensorBodyMsg, TamSensorMsg,
 };
-use basilisk_rs::sensors::magnetometer::{Magnetometer, MagnetometerConfig};
 use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
-use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
+use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{connect, schedule};
-use common::{
-    MU_EARTH_M3PS2, array_columns, elem2rv, rpm_to_radps, scenario_output_path, seconds,
-    vector_columns,
-};
-use hifitime::Epoch;
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use cli::Cli;
+use common::{array_columns, rpm_to_radps, seconds, vector_columns};
+use message_log::MessageLog;
+use mtb::{DURATION_NANOS, MAX_DIPOLE_AM2};
+use nalgebra::Vector3;
 
 const TASK_PERIOD_NANOS: u64 = seconds(2);
-const SAMPLE_PERIOD_NANOS: u64 = seconds(36);
-const DURATION_NANOS: u64 = seconds(7_200);
+/// Upstream `wheelSpeedBiases` \[RPM\].
+const WHEEL_SPEED_BIASES_RPM: [f64; 4] = [800.0, 600.0, 400.0, 200.0];
 
-fn bct_wheel(name: &str, spin_axis_body: Vector3<f64>) -> ReactionWheelStateEffectorConfig {
-    let maximum_speed_radps = rpm_to_radps(5_000.0);
-    let mut config = ReactionWheelStateEffectorConfig::balanced(
-        name,
-        Vector3::zeros(),
-        spin_axis_body,
-        0.004,
-        0.015,
-    );
-    config.js_kg_m2 = 0.015 / maximum_speed_radps;
-    config.jt_kg_m2 = 0.5 * config.js_kg_m2;
-    config.jg_kg_m2 = config.jt_kg_m2;
-    config.max_speed_radps = maximum_speed_radps;
-    config
+/// Upstream `run(show_plots)`: no parameters.
+#[derive(Clone, Copy, Debug)]
+struct Config {
+    /// Write the CSV file (off in the tests).
+    write_csv: bool,
 }
 
-fn rw_configuration(wheels: &[ReactionWheelStateEffectorConfig; 4]) -> RwArrayConfigMsg {
-    let mut config = RwArrayConfigMsg {
-        num_rw: wheels.len(),
-        ..Default::default()
-    };
-    for (index, wheel) in wheels.iter().enumerate() {
-        config.spin_axes_body[index] = wheel.spin_axis_body;
-        config.spin_axis_inertias_kg_m2[index] = wheel.js_kg_m2;
-        config.max_motor_torques_nm[index] = wheel.max_torque_nm;
-    }
-    config
+/// The single run of upstream's `test_scenarioTest.py` entry.
+const TEST_PARAMETRIZATIONS: [Config; 1] = [Config { write_csv: true }];
+
+/// The recorded histories, every 36 s.
+// Some histories are only read by the tests.
+#[cfg_attr(not(test), allow(dead_code))]
+struct Results {
+    guidance: MessageLog<AttitudeGuidanceMsg>,
+    wheel_speeds: MessageLog<RwSpeedMsg>,
+    dipoles: MessageLog<MtbArrayCommandMsg>,
+    csv_path: Option<PathBuf>,
 }
 
-fn main() {
-    let degrees = std::f64::consts::PI / 180.0;
-    let beta = 52.0 * degrees;
-    let wheel_axes = [
-        Vector3::new(0.0, beta.cos(), beta.sin()),
-        Vector3::new(0.0, beta.sin(), -beta.cos()),
-        Vector3::new(beta.cos(), -beta.sin(), 0.0),
-        Vector3::new(-beta.cos(), -beta.sin(), 0.0),
-    ];
-    let wheel_configs =
-        std::array::from_fn(|index| bct_wheel(&format!("RW{}", index + 1), wheel_axes[index]));
-    let rw_config_output = Output::new(rw_configuration(&wheel_configs));
-
-    // Preserve the source scenario's deliberately truncated diagonal-axis
-    // literal.
-    #[allow(clippy::approx_constant)]
-    let mtb_axes = [
-        Vector3::x(),
-        Vector3::y(),
-        Vector3::z(),
-        Vector3::new(0.707_106_78, 0.707_106_78, 0.0),
-    ];
-    let mtb_config_output = Output::new(MtbArrayConfigMsg::from_active(&mtb_axes, &[0.1; 4]));
-
-    let inertia = Matrix3::from_diagonal(&Vector3::new(0.02 / 3.0, 0.1256 / 3.0, 0.1256 / 3.0));
-    let vehicle_config_output = Output::new(VehicleConfigMsg {
-        inertia_about_point_b_kg_m2: inertia,
-        center_of_mass_body_m: Vector3::zeros(),
-        mass_kg: 10.0,
-        current_adcs_state: 0,
-    });
-    let (initial_position_m, initial_velocity_mps) = elem2rv(
-        MU_EARTH_M3PS2,
-        6_778_140.0,
-        0.0,
-        45.0 * degrees,
-        60.0 * degrees,
-        0.0,
-        0.0,
-    );
+fn run(config: Config) -> Results {
+    let rw_factory = mtb::rw_factory();
+    let rw_config_output = Output::new(rw_factory.config_message());
+    let mtb_axes = mtb::mtb_axes();
+    let mtb_config_output = Output::new(mtb::mtb_config());
+    let vehicle_config_output = Output::new(mtb::vehicle_config());
 
     let mut reaction_wheels = ReactionWheelStateEffector::new("RW_cluster");
-    for config in wheel_configs {
-        reaction_wheels.add_reaction_wheel(config);
+    for wheel in rw_factory.wheels {
+        reaction_wheels.add_reaction_wheel(wheel);
     }
     let wheel_speed_output = reaction_wheels.rw_speed_out_msg.clone();
     let wheel_state_outputs: [Output<ReactionWheelStateMsg>; 4] =
         std::array::from_fn(|index| reaction_wheels.wheels()[index].state_out.clone());
 
-    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
-        mass_kg: 10.0,
-        hub_center_of_mass_body_m: Vector3::zeros(),
-        inertia_kg_m2: inertia,
-        integration_step_nanos: TASK_PERIOD_NANOS,
-        initial_position_m,
-        initial_velocity_mps,
-        initial_sigma_bn: Vector3::new(0.1, 0.2, -0.3),
-        initial_omega_radps: Vector3::new(0.001, -0.01, 0.03),
-        integrator: None,
-    });
-    spacecraft
-        .add_grav_body(
-            GravBodyData::point_mass(
-                "earth",
-                MU_EARTH_M3PS2,
-                true,
-                Vector3::zeros(),
-                Vector3::zeros(),
-            )
-            .expect("valid point-mass Earth"),
-        )
-        .expect("unique central gravity body");
-
+    let mut spacecraft = mtb::spacecraft(TASK_PERIOD_NANOS);
     let mut navigation = SimpleNavigation::new("SimpleNavigation");
-    let mut magnetic_field = WmmField::new(WmmFieldConfig {
-        name: "WMM".to_string(),
-    });
-    let mut inertial_reference = Inertial3D::new(Inertial3DConfig {
-        name: "inertial3D".to_string(),
-        sigma_r0n: Vector3::zeros(),
-    });
-    let mut tracking_error = AttTrackingError::new(AttTrackingErrorConfig {
-        name: "attErrorInertial3D".to_string(),
-        sigma_r0r: Vector3::zeros(),
-    });
-    let mut mrp_feedback = MrpFeedback::new(MrpFeedbackConfig {
-        name: "mrpFeedback".to_string(),
-        k: 0.0001,
-        ki: -1.0,
-        p: 0.002,
-        integral_limit: -0.2,
-        known_torque_body_nm: Vector3::zeros(),
-        control_law_type: 0,
-    });
+    let mut magnetic_field = mtb::wmm();
+    let mut inertial_reference = inertial_3d();
+    let mut tracking_error = att_tracking_error(Vector3::zeros());
+    let mut mrp_feedback = mtb::controller();
     let mut rw_motor_torque = RwMotorTorque::new(RwMotorTorqueConfig {
         name: "rwMotorTorque".to_string(),
         control_axes_body: vec![Vector3::x(), Vector3::y(), Vector3::z()],
     });
-    let mut tam = Magnetometer::new(MagnetometerConfig {
-        name: "TAM_sensor".to_string(),
-        body_to_sensor_quaternion: UnitQuaternion::identity(),
-        bias_t: Vector3::zeros(),
-        p_matrix_sqrt_t: Matrix3::zeros(),
-        a_matrix: Matrix3::identity(),
-        walk_bounds_t: Vector3::zeros(),
-        scale_factor: 1.0,
-        min_output_t: -f64::MAX,
-        max_output_t: f64::MAX,
-        mtb_residual_field: None,
-    });
-    let mut tam_comm = TamComm::new(TamCommConfig {
-        name: "tamComm".to_string(),
-        dcm_bs: Matrix3::identity(),
-    });
+    let mut tam = mtb::tam();
+    let mut tam_comm = mtb::tam_comm();
     let mut wheel_speed_biases_radps = [0.0; MAX_EFF_COUNT];
     for (slot, rpm) in wheel_speed_biases_radps[..4]
         .iter_mut()
-        .zip([800.0, 600.0, 400.0, 200.0])
+        .zip(WHEEL_SPEED_BIASES_RPM)
     {
         *slot = rpm_to_radps(rpm);
     }
@@ -200,15 +119,14 @@ fn main() {
     });
     let mut mtb_effector = MtbEffector::new("MtbEff");
 
-    let output_path = scenario_output_path("scenarioMtbMomentumManagement.csv");
-    let mut recorder = CsvRecorder::new(CsvRecorderConfig {
-        topic: "scenarioMtbMomentumManagement".to_string(),
-        output_path: output_path.clone(),
-    })
-    .with_format(CsvFormat::Scenario);
+    let sample_period = sampling_period_nanos(DURATION_NANOS, TASK_PERIOD_NANOS, 200);
+    let mut guidance_log = MessageLog::<AttitudeGuidanceMsg>::default();
+    let mut wheel_speed_log = MessageLog::<RwSpeedMsg>::default();
+    let mut dipole_log = MessageLog::<MtbArrayCommandMsg>::default();
+    let (mut recorder, csv_path) =
+        scenario_recorder("scenarioMtbMomentumManagement", config.write_csv);
 
-    let start_epoch = Epoch::from_gregorian_utc(2019, 6, 27, 10, 23, 0, 0);
-    let mut simulation = Simulation::new(start_epoch, false);
+    let mut simulation = Simulation::new(mtb::epoch(), false);
     for wheel in reaction_wheels.wheels_mut() {
         simulation.connect(
             momentum_management.add_rw_motor_torque_output(),
@@ -219,7 +137,7 @@ fn main() {
         let mtb = mtb_effector.add_mtb(MtbConfig {
             name: format!("Mtb{index}"),
             dipole_axis_body: *axis,
-            max_dipole_am2: 0.1,
+            max_dipole_am2: MAX_DIPOLE_AM2,
         });
         simulation.connect(
             momentum_management.add_mtb_command_output(),
@@ -251,6 +169,9 @@ fn main() {
         &tam_comm.tam_out_msg => &mut momentum_management.tam_sensor_body_in_msg,
         &wheel_speed_output => &mut momentum_management.rw_speeds_in_msg,
         &rw_motor_torque.rw_motor_torque_out_msg => &mut momentum_management.rw_motor_torque_in_msg,
+        &tracking_error.att_guid_out_msg => &mut guidance_log.input,
+        &wheel_speed_output => &mut wheel_speed_log.input,
+        &momentum_management.mtb_cmd_out_msg => &mut dipole_log.input,
         &rw_motor_torque.rw_motor_torque_out_msg => recorder.add_source::<ArrayMotorTorqueMsg>(
             CsvSourceConfig::columns(array_columns(
                 "motor_torque_nm",
@@ -275,18 +196,16 @@ fn main() {
                 MAX_EFF_COUNT,
             )),
         ),
-        &wheel_state_outputs[0] => recorder.add_source::<ReactionWheelStateMsg>(
-            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_0")]),
-        ),
-        &wheel_state_outputs[1] => recorder.add_source::<ReactionWheelStateMsg>(
-            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_1")]),
-        ),
-        &wheel_state_outputs[2] => recorder.add_source::<ReactionWheelStateMsg>(
-            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_2")]),
-        ),
-        &wheel_state_outputs[3] => recorder.add_source::<ReactionWheelStateMsg>(
-            CsvSourceConfig::columns([("applied_motor_torque_nm", "rwTorque_Nm_3")]),
-        ),
+    );
+    for (index, state) in wheel_state_outputs.iter().enumerate() {
+        connect!(&simulation,
+            state => recorder.add_source::<ReactionWheelStateMsg>(CsvSourceConfig::columns([(
+                "applied_motor_torque_nm".to_string(),
+                format!("rwTorque_Nm_{index}"),
+            )])),
+        );
+    }
+    connect!(&simulation,
         &magnetic_field.output_magnetic_field_msg => recorder.add_source::<MagneticFieldMsg>(
             CsvSourceConfig::columns(vector_columns(
                 "magnetic_field_inertial_t",
@@ -318,9 +237,68 @@ fn main() {
         "tam" => &mut tam, period=TASK_PERIOD_NANOS, priority=30;
         "tam_comm" => &mut tam_comm, period=TASK_PERIOD_NANOS, priority=20;
         "momentum_management" => &mut momentum_management, period=TASK_PERIOD_NANOS, priority=10;
-        "recorder" => &mut recorder, period=SAMPLE_PERIOD_NANOS, priority=0;
+        "guidance_log" => &mut guidance_log, period=sample_period, priority=0;
+        "wheel_speed_log" => &mut wheel_speed_log, period=sample_period, priority=0;
+        "dipole_log" => &mut dipole_log, period=sample_period, priority=0;
+    }
+    if config.write_csv {
+        simulation.add_module("recorder", &mut recorder, sample_period, 0);
     }
     simulation.run_for(DURATION_NANOS);
+    drop(simulation);
+    drop(recorder);
 
-    println!("wrote {}", output_path.display());
+    Results {
+        guidance: guidance_log,
+        wheel_speeds: wheel_speed_log,
+        dipoles: dipole_log,
+        csv_path,
+    }
+}
+
+fn main() {
+    let mut cli = Cli::from_env("scenario_mtb_momentum_management [--all]");
+    cli.switch("all");
+    cli.finish();
+
+    for config in TEST_PARAMETRIZATIONS {
+        let results = run(config);
+        println!("wrote {}", results.csv_path.expect("CSV written").display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Upstream only runs this scenario (an entry of `test_scenarioTest.py`).
+    //! These tests check what it demonstrates: the attitude settles on the
+    //! inertial reference while the torque bars, within their 0.1 A m^2
+    //! limit, bring every wheel to its speed bias.
+
+    use super::*;
+
+    fn quiet() -> Results {
+        run(Config { write_csv: false })
+    }
+
+    #[test]
+    fn the_wheels_reach_their_biases_while_the_attitude_holds() {
+        let results = quiet();
+        // samplingTime(120 min, 2 s, 200) = 36 s: samples 0, 36, ..., 7200 s.
+        assert_eq!(results.guidance.values.len(), 201);
+
+        let last = results.guidance.last();
+        assert!(last.sigma_br.norm() < 1.0e-3, "{}", last.sigma_br);
+        assert!(last.omega_br_b_radps.norm() < 1.0e-4);
+
+        let speeds = results.wheel_speeds.last().wheel_speeds_radps;
+        for (speed, bias) in speeds.iter().zip(WHEEL_SPEED_BIASES_RPM) {
+            let bias = rpm_to_radps(bias);
+            assert!((speed - bias).abs() < 0.05 * bias, "{speed} vs {bias}");
+        }
+        for sample in &results.dipoles.values {
+            for dipole in &sample.dipole_cmds_am2[..4] {
+                assert!(dipole.abs() <= MAX_DIPOLE_AM2 + 1.0e-15, "{dipole}");
+            }
+        }
+    }
 }

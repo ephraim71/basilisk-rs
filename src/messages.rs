@@ -4,6 +4,7 @@
 //! | region | holds |
 //! |---|---|
 //! | Re-exports | every concrete message type, one per file in `messages/` |
+//! | Payload sizes | the upstream array-size constants the payloads are built from |
 //! | Message contract | [`SimulationMessage`] — what a type must satisfy to travel |
 //! | Override rules | the layer stack behind a port; what each mode *does* is `overrides/rule.rs` |
 //! | Ports | [`Output`] and [`Input`] — the handles modules actually hold, and [`Port`], the override surface they share |
@@ -12,6 +13,23 @@
 //! change it, and when a fold becomes the value readers see. It neither computes
 //! nor validates — [`crate::overrides`] does both, and knows what a *target* is,
 //! which this module does not.
+//!
+//! # Mapping upstream payloads
+//!
+//! Every field of a ported upstream payload names its upstream field and units
+//! in its doc. Across the payloads:
+//!
+//! * `double[3]` is a `Vector3<f64>`; a 3×3 DCM or covariance is a `Matrix3<f64>`
+//!   and a filter covariance an `SMatrix<f64, N, N>`. Upstream flattens matrices
+//!   **row-major**, so convert a flat upstream array with
+//!   `from_row_slice`, never `from_column_slice`. (In JSON — overrides — nalgebra
+//!   writes matrices column-major.)
+//! * Integer flags used as booleans are `bool`; discrete states are small enums
+//!   whose discriminants are the upstream codes; counts are `usize`.
+//! * `uint64_t` \[ns\] time tags are `time_tag_nanos: u64`; `double` \[s\] ones are
+//!   `time_tag_s: f64`.
+//! * Defaults equal upstream's zeroed payloads, except where a type documents
+//!   otherwise ([`StarTrackerMsg`]'s identity attitude).
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -20,88 +38,397 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::overrides::rule::{Request, Rule, RuleId, fold_candidate, fold_installed, next_rule_id};
 
+mod accelerometer_data;
+mod accelerometer_packet;
+mod access;
+mod albedo;
+mod antenna_log;
+mod antenna_state;
+mod array_effector_lock;
+mod array_motor_force;
 mod array_motor_torque;
 mod array_motor_voltage;
 mod atmosphere;
 mod attitude_guidance;
 mod attitude_reference;
+mod attitude_state;
+mod body_force_command;
+mod body_heading;
 mod body_torque_command;
+mod bore_angle;
+mod camera_config;
+mod camera_image;
+mod charge_msm;
+mod classic_elements;
+mod cm_estimation_data;
+mod color;
+mod const_dyn_effector;
+mod current;
+mod data_node_usage;
+mod data_storage_status;
+mod desired_velocity;
+mod device_command;
+mod device_status;
+mod dipole_request_body;
+mod downlink_handling;
+#[cfg(feature = "mujoco")]
+mod drag_geometry;
+mod dv_burn_command;
+mod dv_execution_data;
+mod earth_radiation;
 mod eclipse;
+mod electron_beam;
+mod ephemeris;
+mod facet_element;
+mod facet_element_body;
+mod flatten;
+mod fuel_tank;
 mod gps;
+mod gravity_gradient;
+mod ground_state;
+mod heading_filter;
+mod hill_relative_state;
 mod hinged_rigid_body;
 mod imu;
+mod imu_sensor_body;
+mod inertial_filter;
+mod inertial_force_command;
+mod inertial_heading;
+mod joint_array_state;
+mod lambert_performance;
+mod lambert_problem;
+mod lambert_solution;
+mod lambert_validator;
+mod landmark;
+mod linear_translation_rigid_body;
+mod link_budget;
 mod magnetic_dipole_command;
 mod magnetic_field;
+mod mass_flow_rate;
+mod mj_joint_reactions;
+#[cfg(feature = "mujoco")]
+mod mj_scene_state;
+mod mj_system_mass_matrix;
+mod motor_step_command;
 mod motor_torque;
 mod mtb_array_command;
 mod mtb_array_config;
 mod navigation_attitude;
+mod navigation_translation;
+mod op_nav;
+mod op_nav_circles;
+mod op_nav_filter;
+mod op_nav_limb;
+mod pixel_line_filter;
 mod planet_state;
+mod plasma_flux;
 mod power_node_usage;
 mod power_storage_fault;
 mod power_storage_status;
+mod prescribed_rotation;
+mod prescribed_translation;
+mod projected_area;
+mod rate_command;
 mod reaction_wheel_state;
+mod reconfig_burn_array_info;
+mod reconfig_burn_info;
 mod rw_array_config;
 mod rw_availability;
 mod rw_speed;
+mod sc_charging_currents;
+mod scalar_joint_state;
+mod single_actuator;
+mod small_body_nav;
+mod small_body_nav_ukf;
 mod solar_flux;
 mod spacecraft_diagnostics;
 mod spacecraft_mass_props;
 mod spacecraft_state;
+#[cfg(feature = "spice")]
+mod spice_time;
 mod star_tracker;
+mod star_tracker_attitude;
+mod stepper_motor;
+mod strip_state;
 mod sun_ephemeris;
 mod sun_line;
 mod sun_sensor;
+mod sunline_filter;
+mod sw_data;
 mod tam_sensor;
 mod tam_sensor_body;
+mod tdb_vehicle_clock_correlation;
+mod temperature;
+mod thruster_arm_config;
+mod thruster_array_config;
+mod thruster_array_force_command;
 mod thruster_command;
+mod thruster_config;
+mod thruster_output;
 mod translation_reference;
 mod vehicle_config;
+mod viz_user_input;
+mod volt;
+mod vscmg_array_config;
+mod vscmg_command;
+mod vscmg_config;
+mod vscmg_config_element;
+mod vscmg_reference_states;
+mod vscmg_speed;
+mod wind;
 
+pub use accelerometer_data::AccelerometerDataMsg;
+pub use accelerometer_packet::AccelerometerPacket;
+pub use access::AccessMsg;
+pub use albedo::AlbedoMsg;
+pub use antenna_log::{AntennaEnvironment, AntennaLogMsg, AntennaState};
+pub use antenna_state::AntennaStateMsg;
+pub use array_effector_lock::{ArrayEffectorLockMsg, EffectorLock};
+pub use array_motor_force::ArrayMotorForceMsg;
 pub use array_motor_torque::ArrayMotorTorqueMsg;
 pub use array_motor_voltage::ArrayMotorVoltageMsg;
 pub use atmosphere::AtmosphereMsg;
 pub use attitude_guidance::AttitudeGuidanceMsg;
 pub use attitude_reference::AttitudeReferenceMsg;
+pub use attitude_state::AttitudeStateMsg;
+pub use body_force_command::BodyForceCommandMsg;
+pub use body_heading::BodyHeadingMsg;
 pub use body_torque_command::BodyTorqueCommandMsg;
+pub use bore_angle::BoreAngleMsg;
+pub use camera_config::{CameraConfigMsg, CameraRenderMode, VizSetting};
+pub use camera_image::CameraImageMsg;
+pub use charge_msm::ChargeMsmMsg;
+pub use classic_elements::ClassicElementsMsg;
+pub use cm_estimation_data::CmEstimationDataMsg;
+pub use color::ColorMsg;
+pub use const_dyn_effector::ConstDynEffectorMsg;
+pub use current::CurrentMsg;
+pub use data_node_usage::DataNodeUsageMsg;
+pub use data_storage_status::DataStorageStatusMsg;
+pub use desired_velocity::DesiredVelocityMsg;
+pub use device_command::DeviceCommandMsg;
+pub use device_status::{DeviceState, DeviceStatusMsg};
+pub use dipole_request_body::DipoleRequestBodyMsg;
+pub use downlink_handling::{DownlinkHandlingMsg, RemovalPolicy};
+#[cfg(feature = "mujoco")]
+pub use drag_geometry::DragGeometryMsg;
+pub use dv_burn_command::DvBurnCommandMsg;
+pub use dv_execution_data::DvExecutionDataMsg;
+pub use earth_radiation::EarthRadiationMsg;
 pub use eclipse::EclipseMsg;
+pub use electron_beam::ElectronBeamMsg;
+pub use ephemeris::EphemerisMsg;
+pub use facet_element::FacetElementMsg;
+pub use facet_element_body::FacetElementBodyMsg;
+pub use fuel_tank::FuelTankMsg;
 pub use gps::GpsMsg;
+pub use gravity_gradient::GravityGradientMsg;
+pub use ground_state::GroundStateMsg;
+pub use heading_filter::HeadingFilterMsg;
+pub use hill_relative_state::HillRelativeStateMsg;
 pub use hinged_rigid_body::HingedRigidBodyMsg;
 pub use imu::ImuMsg;
+pub use imu_sensor_body::ImuSensorBodyMsg;
+pub use inertial_filter::InertialFilterMsg;
+pub use inertial_force_command::InertialForceCommandMsg;
+pub use inertial_heading::InertialHeadingMsg;
+pub use joint_array_state::JointArrayStateMsg;
+pub use lambert_performance::{LambertPerformanceMsg, LambertRootPerformance};
+pub use lambert_problem::{LambertProblemMsg, LambertSolverMethod, LambertTransferDirection};
+pub use lambert_solution::{
+    LambertSolutionMsg, LambertSolutionSpecifier, LambertTransferVelocities,
+};
+pub use lambert_validator::LambertValidatorMsg;
+pub use landmark::LandmarkMsg;
+pub use linear_translation_rigid_body::LinearTranslationRigidBodyMsg;
+pub use link_budget::LinkBudgetMsg;
 pub use magnetic_dipole_command::MagneticDipoleCommandMsg;
 pub use magnetic_field::MagneticFieldMsg;
+pub use mass_flow_rate::MassFlowRateMsg;
+pub use mj_joint_reactions::{MjJointReactionsMsg, MjJointType};
+#[cfg(feature = "mujoco")]
+pub use mj_scene_state::MjSceneStateMsg;
+pub use mj_system_mass_matrix::MjSystemMassMatrixMsg;
+pub use motor_step_command::MotorStepCommandMsg;
 pub use motor_torque::MotorTorqueMsg;
 pub use mtb_array_command::MtbArrayCommandMsg;
 pub use mtb_array_config::MtbArrayConfigMsg;
 pub use navigation_attitude::NavigationAttitudeMsg;
+pub use navigation_translation::NavigationTranslationMsg;
+pub use op_nav::OpNavMsg;
+pub use op_nav_circles::OpNavCirclesMsg;
+pub use op_nav_filter::OpNavFilterMsg;
+pub use op_nav_limb::OpNavLimbMsg;
+pub use pixel_line_filter::PixelLineFilterMsg;
 pub use planet_state::{PlanetOrientation, PlanetStateMsg};
+pub use plasma_flux::PlasmaFluxMsg;
 pub use power_node_usage::PowerNodeUsageMsg;
 pub use power_storage_fault::PowerStorageFaultMsg;
 pub use power_storage_status::PowerStorageStatusMsg;
+pub use prescribed_rotation::PrescribedRotationMsg;
+pub use prescribed_translation::PrescribedTranslationMsg;
+pub use projected_area::ProjectedAreaMsg;
+pub use rate_command::RateCommandMsg;
 pub use reaction_wheel_state::ReactionWheelStateMsg;
+pub use reconfig_burn_array_info::ReconfigBurnArrayInfoMsg;
+pub use reconfig_burn_info::{ReconfigBurnInfoMsg, ReconfigBurnStatus};
 pub use rw_array_config::RwArrayConfigMsg;
 pub use rw_availability::{RwAvailability, RwAvailabilityMsg};
 pub use rw_speed::RwSpeedMsg;
+pub use sc_charging_currents::ScChargingCurrentsMsg;
+pub use scalar_joint_state::ScalarJointStateMsg;
+pub use single_actuator::SingleActuatorMsg;
+pub use small_body_nav::SmallBodyNavMsg;
+pub use small_body_nav_ukf::SmallBodyNavUkfMsg;
 pub use solar_flux::SolarFluxMsg;
 pub use spacecraft_diagnostics::SpacecraftDiagnosticsMsg;
 pub use spacecraft_mass_props::SpacecraftMassPropsMsg;
 pub use spacecraft_state::SpacecraftStateMsg;
+#[cfg(feature = "spice")]
+pub use spice_time::SpiceTimeMsg;
 pub use star_tracker::StarTrackerMsg;
+pub use star_tracker_attitude::StarTrackerAttitudeMsg;
+pub use stepper_motor::StepperMotorMsg;
+pub use strip_state::StripStateMsg;
 pub use sun_ephemeris::SunEphemerisMsg;
 pub use sun_line::SunLineMsg;
 pub use sun_sensor::SunSensorMsg;
+pub use sunline_filter::SunlineFilterMsg;
+pub use sw_data::SwDataMsg;
 pub use tam_sensor::TamSensorMsg;
 pub use tam_sensor_body::TamSensorBodyMsg;
+pub use tdb_vehicle_clock_correlation::TdbVehicleClockCorrelationMsg;
+pub use temperature::TemperatureMsg;
+pub use thruster_arm_config::ThrusterArmConfigMsg;
+pub use thruster_array_config::ThrusterArrayConfigMsg;
+pub use thruster_array_force_command::ThrusterArrayForceCommandMsg;
 pub use thruster_command::ThrusterCommandMsg;
+pub use thruster_config::ThrusterConfigMsg;
+pub use thruster_output::ThrusterOutputMsg;
 pub use translation_reference::TranslationReferenceMsg;
 pub use vehicle_config::VehicleConfigMsg;
+pub use viz_user_input::{VizEventReply, VizUserInputMsg};
+pub use volt::VoltMsg;
+pub use vscmg_array_config::VscmgArrayConfigMsg;
+pub use vscmg_command::VscmgCommandMsg;
+pub use vscmg_config::{VscmgConfigMsg, VscmgModel};
+pub use vscmg_config_element::VscmgConfigElementMsg;
+pub use vscmg_reference_states::VscmgReferenceStatesMsg;
+pub use vscmg_speed::VscmgSpeedMsg;
+pub use wind::WindMsg;
 
+// ---------------------------------------------------------------------------
+// Payload sizes
+// ---------------------------------------------------------------------------
+//
+// Values copied from upstream `architecture/utilities/macroDefinitions.h` and
+// the payload headers in `architecture/msgPayloadDefC/` that define them.
+
+/// Upstream `MAX_EFF_CNT`: capacity of every per-effector array (thrusters,
+/// reaction wheels, torque bars, motors).
 pub const MAX_EFF_COUNT: usize = 36;
+/// Upstream `MAX_NUM_CSS_SENSORS`: most coarse sun sensors `cssComm` processes
+/// and `sunlineSuKF` holds Kelly fits for.
+pub const MAX_NUM_CSS_SENSORS: usize = 32;
+/// Upstream `MAX_CIRCLE_NUM`: capacity of [`OpNavCirclesMsg`].
+pub const MAX_CIRCLE_NUM: usize = 10;
+/// Upstream `MAX_LIMB_PNTS`: capacity of [`OpNavLimbMsg`].
+pub const MAX_LIMB_PNTS: usize = 2000;
+/// Upstream `MAX_ST_VEH_COUNT`: number of star trackers `inertialUKF` fuses.
+pub const MAX_ST_VEH_COUNT: usize = 4;
+/// Upstream `MAX_ACC_BUF_PKT` (`AccDataMsgPayload.h`): capacity of
+/// [`AccelerometerDataMsg`].
+pub const MAX_ACC_BUF_PKT: usize = 120;
+/// Upstream `MAX_BURN_CNT` (`ReconfigBurnArrayInfoMsgPayload.h`): capacity of
+/// [`ReconfigBurnArrayInfoMsg`].
+pub const MAX_BURN_CNT: usize = 3;
+/// Upstream `SKF_N_STATES` (`SunlineFilterMsgPayload.h`): states of
+/// `sunlineUKF`/`sunlineEKF`, and the size of [`SunlineFilterMsg`].
+pub const SKF_N_STATES: usize = 6;
+/// Upstream `SKF_N_STATES_SWITCH` (`SunlineFilterMsgPayload.h`): states of
+/// `sunlineSuKF`.
+pub const SKF_N_STATES_SWITCH: usize = 6;
+/// Upstream `EKF_N_STATES_SWITCH` (`SunlineFilterMsgPayload.h`): states of
+/// `sunlineSEKF`.
+pub const EKF_N_STATES_SWITCH: usize = 5;
+/// Upstream `SKF_N_STATES_HALF` (`SunlineFilterMsgPayload.h`): states of
+/// `okeefeEKF`.
+pub const SKF_N_STATES_HALF: usize = 3;
+/// Upstream `MAX_N_CSS_MEAS` (`SunlineFilterMsgPayload.h`): maximum number of
+/// CSS measurements a sunline filter processes.
+pub const MAX_N_CSS_MEAS: usize = 32;
+/// Upstream `HEAD_N_STATES` (`HeadingFilterMsgPayload.h`): heading states of
+/// `headingSuKF`.
+pub const HEAD_N_STATES: usize = 3;
+/// Upstream `HEAD_N_STATES_SWITCH` (`HeadingFilterMsgPayload.h`): full state
+/// count of `headingSuKF`, and the size of [`HeadingFilterMsg`].
+pub const HEAD_N_STATES_SWITCH: usize = 5;
+/// Upstream `OPNAV_MEAS` (`HeadingFilterMsgPayload.h`): measurements per
+/// `headingSuKF` update.
+pub const OPNAV_MEAS: usize = 3;
+/// Upstream `AKF_N_STATES` (`InertialFilterMsgPayload.h`): states of
+/// `inertialUKF`.
+pub const AKF_N_STATES: usize = 6;
+/// Upstream `MAX_N_ATT_STATES` (`InertialFilterMsgPayload.h`): attitude
+/// measurement states of `inertialUKF`.
+pub const MAX_N_ATT_STATES: usize = 4;
+/// Upstream `ODUKF_N_STATES` (`OpNavFilterMsgPayload.h`): states of
+/// `relativeODuKF`.
+pub const ODUKF_N_STATES: usize = 6;
+/// Upstream `ODUKF_N_MEAS` (`OpNavFilterMsgPayload.h`): measurements per
+/// `relativeODuKF` update.
+pub const ODUKF_N_MEAS: usize = 3;
+/// Upstream `PIXLINE_N_STATES` (`PixelLineFilterMsgPayload.h`): states of
+/// `pixelLineBiasUKF`.
+pub const PIXLINE_N_STATES: usize = 9;
+/// Upstream `PIXLINE_DYN_STATES` (`PixelLineFilterMsgPayload.h`): dynamic
+/// (position and velocity) states of `pixelLineBiasUKF`.
+pub const PIXLINE_DYN_STATES: usize = 6;
+/// Upstream `PIXLINE_N_MEAS` (`PixelLineFilterMsgPayload.h`): measurements per
+/// `pixelLineBiasUKF` update.
+pub const PIXLINE_N_MEAS: usize = 6;
+/// Upstream `SMALL_BODY_NAV_N_STATES` (`SmallBodyNavMsgPayload.h`): states of
+/// `smallBodyNavEKF`, and the size of [`SmallBodyNavMsg`].
+pub const SMALL_BODY_NAV_N_STATES: usize = 12;
+/// States of `smallBodyNavUKF`, and the size of [`SmallBodyNavUkfMsg`]
+/// (upstream hard-codes 9 in `SmallBodyNavUKFMsgPayload.h`).
+pub const SMALL_BODY_NAV_UKF_N_STATES: usize = 9;
+/// Upstream `MAX_STRING_LENGTH` (`CameraConfigMsgPayload.h`): size of the
+/// payload's `char` buffers, terminator included. [`CameraConfigMsg`] holds
+/// `String`s and does not truncate.
+pub const MAX_STRING_LENGTH: usize = 256;
+/// Upstream `MAX_PLASMA_FLUX_SIZE` (`PlasmaFluxMsgPayload.h`): capacity of
+/// [`PlasmaFluxMsg`].
+pub const MAX_PLASMA_FLUX_SIZE: usize = 50;
+/// Upstream `char dataName[128]` (`DataNodeUsageMsgPayload.h`): size of a
+/// data or partition name buffer, terminator included. The data-handling
+/// modules reject names of this many characters or more, as upstream does.
+pub const DATA_NAME_SIZE: usize = 128;
+/// Upstream `char antennaName[20]` (`AntennaLogMsgPayload.h`): size of an
+/// antenna name buffer, terminator included. `SimpleAntenna` rejects names
+/// of this many characters or more, as upstream does.
+pub const ANTENNA_NAME_SIZE: usize = 20;
 
-/// Serde support for the `[T; MAX_EFF_COUNT]` effector arrays.
+/// Copies the entries in use into the front of a fixed upstream array, leaving
+/// the tail at its default as upstream's zeroed payload does.
 ///
-/// `serde` only provides array impls up to length 32, and `MAX_EFF_COUNT` is
-/// larger, so the arrays are carried over the wire as sequences instead.
+/// # Panics
+///
+/// If `active` is longer than the array; `what` names the entries for the
+/// message.
+fn filled_prefix<T: Copy + Default, const N: usize>(active: &[T], what: &str) -> [T; N] {
+    assert!(active.len() <= N, "at most {N} {what} are supported");
+    let mut values = [T::default(); N];
+    values[..active.len()].copy_from_slice(active);
+    values
+}
+
+/// Serde support for the fixed arrays longer than 32 (`[T; MAX_EFF_COUNT]`,
+/// `[T; MAX_ACC_BUF_PKT]`, `[T; MAX_LIMB_PNTS]`).
+///
+/// `serde` only provides array impls up to length 32, so these arrays are
+/// carried over the wire as sequences instead, and their length is checked on
+/// the way back.
 pub(crate) mod big_array {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
@@ -120,7 +447,8 @@ pub(crate) mod big_array {
     {
         let values = Vec::<T>::deserialize(deserializer)?;
         let len = values.len();
-        <[T; N]>::try_from(values).map_err(|_| D::Error::invalid_length(len, &"MAX_EFF_COUNT"))
+        <[T; N]>::try_from(values)
+            .map_err(|_| D::Error::invalid_length(len, &format!("an array of length {N}").as_str()))
     }
 }
 

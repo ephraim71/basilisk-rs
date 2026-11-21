@@ -1,9 +1,12 @@
+pub mod stochastic;
+pub mod synchronized;
 pub mod traits;
 
 mod butcher;
 mod methods;
 
-pub use traits::DynamicObject;
+pub use synchronized::{Coupling, Synchronized, Uncoupled};
+pub use traits::{DiffusionIncrement, DynamicObject};
 
 pub use butcher::{
     // Adaptive step-size control.
@@ -19,12 +22,17 @@ pub use butcher::{
     RK4,
     RK4_THREE_EIGHTHS,
     RKF45,
+    RKF78,
+    StepControl,
     // Low-level drivers.
     propagate_adaptive_rk,
     propagate_explicit_rk,
+    relative_error_ratio,
 };
 
 pub use methods::{
+    // Integrators of a user tableau.
+    AdaptiveRungeKutta,
     // Built-in integrator structs.
     Dopri45,
     Euler,
@@ -36,4 +44,6 @@ pub use methods::{
     Rk4,
     Rk4ThreeEighths,
     Rkf45,
+    Rkf78,
+    RungeKutta,
 };

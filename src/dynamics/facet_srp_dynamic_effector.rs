@@ -33,6 +33,13 @@ impl SolarRadiationPressureFacet {
         diffuse_coeff: f64,
         specular_coeff: f64,
     ) -> Self {
+        assert_valid_facet(
+            area_m2,
+            normal_body,
+            location_body_m,
+            diffuse_coeff,
+            specular_coeff,
+        );
         Self {
             area_m2,
             dcm_facet0_body: Matrix3::identity(),
@@ -54,6 +61,21 @@ impl SolarRadiationPressureFacet {
         diffuse_coeff: f64,
         specular_coeff: f64,
     ) -> Self {
+        assert_valid_facet(
+            area_m2,
+            normal_facet,
+            location_body_m,
+            diffuse_coeff,
+            specular_coeff,
+        );
+        assert!(
+            crate::kinematics::is_rotation_matrix(&dcm_facet0_body),
+            "facet dcm_facet0_body must be a finite, orthogonal, right-handed rotation, got {dcm_facet0_body:?}"
+        );
+        assert!(
+            articulation_axis_facet.iter().all(|v| v.is_finite()),
+            "facet articulation_axis_facet must be finite, got {articulation_axis_facet:?}"
+        );
         Self {
             area_m2,
             dcm_facet0_body,
@@ -149,8 +171,7 @@ impl FacetSRPDynamicEffector {
             .inverse()
             .transform_vector(&sun_vector_inertial);
         let sun_hat_body = sun_vector_body / sun_distance_m;
-        let srp_pressure = SOLAR_FLUX_AT_EARTH_WPM2 / SPEED_OF_LIGHT_MPS
-            * (ASTRONOMICAL_UNIT_M / sun_distance_m).powi(2);
+        let srp_pressure = srp_pressure_pa(SOLAR_FLUX_AT_EARTH_WPM2, sun_distance_m);
         let illumination_factor = if self.input_eclipse_msg.is_connected() {
             self.input_eclipse_msg.read().illumination_factor
         } else {
@@ -167,12 +188,15 @@ impl FacetSRPDynamicEffector {
                     return (force_sum, torque_sum);
                 }
 
-                let facet_force_body = -srp_pressure
-                    * projected_area_m2
-                    * ((1.0 - facet.specular_coeff) * sun_hat_body
-                        + 2.0
-                            * (facet.diffuse_coeff / 3.0 + facet.specular_coeff * cos_theta)
-                            * normal_body);
+                let facet_force_body = facet_srp_force_body(
+                    srp_pressure,
+                    projected_area_m2,
+                    cos_theta,
+                    sun_hat_body,
+                    normal_body,
+                    facet.diffuse_coeff,
+                    facet.specular_coeff,
+                );
                 (
                     force_sum + facet_force_body,
                     torque_sum + facet.location_body_m.cross(&facet_force_body),
@@ -200,6 +224,68 @@ impl DynamicEffector for FacetSRPDynamicEffector {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// Solar radiation pressure \[Pa\] at `sun_distance_m` from the Sun, for a
+/// solar flux of `flux_at_1_au_wpm2` at one astronomical unit (upstream
+/// `SRPPressure`). Shared with
+/// [`FacetedSrpEffector`](super::faceted_srp_effector::FacetedSrpEffector).
+pub(crate) fn srp_pressure_pa(flux_at_1_au_wpm2: f64, sun_distance_m: f64) -> f64 {
+    flux_at_1_au_wpm2 / SPEED_OF_LIGHT_MPS * (ASTRONOMICAL_UNIT_M / sun_distance_m).powi(2)
+}
+
+/// SRP force \[N\] on one sunlit facet, body components (upstream
+/// `facetSRPForcePntB_B`): the photons not reflected specularly push along
+/// `−ŝ`, away from the Sun, and the reflected ones along the facet normal
+/// `−n̂`,
+///
+/// `F = −P A_proj [(1 − c_s) ŝ + 2 (c_d / 3 + c_s cos θ) n̂]`,
+///
+/// with `A_proj = A cos θ` the facet area projected onto the Sun direction.
+/// Shared with
+/// [`FacetedSrpEffector`](super::faceted_srp_effector::FacetedSrpEffector).
+pub(crate) fn facet_srp_force_body(
+    srp_pressure_pa: f64,
+    projected_area_m2: f64,
+    cos_theta: f64,
+    sun_hat_body: Vector3<f64>,
+    normal_body: Vector3<f64>,
+    diffuse_coeff: f64,
+    specular_coeff: f64,
+) -> Vector3<f64> {
+    -srp_pressure_pa
+        * projected_area_m2
+        * ((1.0 - specular_coeff) * sun_hat_body
+            + 2.0 * (diffuse_coeff / 3.0 + specular_coeff * cos_theta) * normal_body)
+}
+
+fn assert_valid_facet(
+    area_m2: f64,
+    normal: Vector3<f64>,
+    location_body_m: Vector3<f64>,
+    diffuse_coeff: f64,
+    specular_coeff: f64,
+) {
+    assert!(
+        area_m2.is_finite() && area_m2 >= 0.0,
+        "facet area_m2 must be finite and >= 0, got {area_m2}"
+    );
+    assert!(
+        normal.iter().all(|v| v.is_finite()) && normal.norm() > 0.0,
+        "facet normal must be finite and non-zero, got {normal:?}"
+    );
+    assert!(
+        location_body_m.iter().all(|v| v.is_finite()),
+        "facet location_body_m must be finite, got {location_body_m:?}"
+    );
+    assert!(
+        diffuse_coeff.is_finite() && diffuse_coeff >= 0.0,
+        "facet diffuse_coeff must be finite and >= 0, got {diffuse_coeff}"
+    );
+    assert!(
+        specular_coeff.is_finite() && specular_coeff >= 0.0,
+        "facet specular_coeff must be finite and >= 0, got {specular_coeff}"
+    );
 }
 
 pub fn prv_to_dcm(prv: Vector3<f64>) -> Matrix3<f64> {
@@ -845,5 +931,28 @@ mod tests {
                 expected_torque_body
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "area_m2")]
+    fn rejects_negative_facet_area() {
+        let (mut srp, _sun_out) = make_faceted_srp();
+        srp.add_panel(-1.0, Vector3::x(), Vector3::zeros(), 0.1, 0.2);
+    }
+
+    #[test]
+    #[should_panic(expected = "dcm_facet0_body")]
+    fn rejects_facet_frame_that_is_not_a_rotation() {
+        let (mut srp, _sun_out) = make_faceted_srp();
+        let reflection = Matrix3::from_diagonal(&Vector3::new(1.0, 1.0, -1.0));
+        srp.add_facet(
+            1.0,
+            reflection,
+            Vector3::z(),
+            Vector3::x(),
+            Vector3::zeros(),
+            0.1,
+            0.2,
+        );
     }
 }

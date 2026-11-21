@@ -10,8 +10,8 @@
 //! against the [`DynamicObject`] trait.
 
 use super::butcher::{
-    AdaptiveController, DOPRI45, EULER, HEUN, MIDPOINT, RALSTON, RK4, RK4_THREE_EIGHTHS, RKF45,
-    propagate_adaptive_rk, propagate_explicit_rk,
+    AdaptiveController, ButcherTableau, DOPRI45, EULER, HEUN, MIDPOINT, RALSTON, RK4,
+    RK4_THREE_EIGHTHS, RKF45, RKF78, propagate_adaptive_rk, propagate_explicit_rk,
 };
 use super::traits::DynamicObject;
 use hifitime::Epoch;
@@ -80,6 +80,13 @@ macro_rules! adaptive_method {
             pub fn new(controller: AdaptiveController) -> Self {
                 Self { controller }
             }
+
+            /// The method with upstream `svIntegratorAdaptiveRungeKutta`'s
+            /// step control and default tolerances
+            /// ([`AdaptiveController::upstream`]).
+            pub fn upstream() -> Self {
+                Self::new(AdaptiveController::upstream())
+            }
         }
 
         impl<D: DynamicObject + 'static> Integrator<D> for $name {
@@ -137,6 +144,116 @@ adaptive_method! {
 adaptive_method! {
     /// Adaptive Dormand-Prince 5(4), the workhorse of many ODE suites.
     Dopri45 => DOPRI45
+}
+adaptive_method! {
+    /// Adaptive Runge-Kutta-Fehlberg 7(8): port of upstream `svIntegratorRKF78`.
+    /// Thirteen evaluations per accepted step; see [`RKF78`](super::RKF78).
+    Rkf78 => RKF78
+}
+
+/// A fixed-step explicit Runge-Kutta method of a user tableau: upstream
+/// `svIntegratorRungeKutta(dynObject, coefficients)`.
+#[derive(Clone, Copy, Debug)]
+pub struct RungeKutta {
+    tableau: ButcherTableau,
+}
+
+impl RungeKutta {
+    /// The method of `tableau`, checked with [`ButcherTableau::validate`] as
+    /// upstream's constructor checks its coefficients.
+    pub fn new(tableau: ButcherTableau) -> Result<Self, String> {
+        tableau.validate()?;
+        Ok(Self { tableau })
+    }
+
+    pub fn tableau(&self) -> &ButcherTableau {
+        &self.tableau
+    }
+}
+
+impl<D: DynamicObject + 'static> Integrator<D> for RungeKutta {
+    fn propagate(
+        &self,
+        object: &mut D,
+        state: &D::State,
+        current_sim_nanos: u64,
+        current_epoch: Epoch,
+        dt_seconds: f64,
+    ) -> (D::State, D::StepOutput) {
+        propagate_explicit_rk(
+            &self.tableau,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        )
+    }
+}
+
+/// An adaptive (embedded) Runge-Kutta method of a user tableau: upstream
+/// `svIntegratorAdaptiveRungeKutta(dynObject, coefficients,
+/// methodLargestOrder)`.
+///
+/// `b` holds upstream's `bArray` and `b_embedded` its `bStarArray`, the
+/// propagated weights under [`StepControl::Upstream`]; upstream's
+/// `methodLargestOrder` is `error_estimate_order + 1`.
+///
+/// [`StepControl::Upstream`]: super::StepControl::Upstream
+#[derive(Clone, Copy, Debug)]
+pub struct AdaptiveRungeKutta {
+    tableau: ButcherTableau,
+    /// Step-size controller: tolerances, safety factor and step bounds.
+    pub controller: AdaptiveController,
+}
+
+impl AdaptiveRungeKutta {
+    /// The method of `tableau` with upstream's step control and default
+    /// tolerances ([`AdaptiveController::upstream`]). The tableau must pass
+    /// [`ButcherTableau::validate`] and have embedded weights.
+    pub fn new(tableau: ButcherTableau) -> Result<Self, String> {
+        Self::with_controller(tableau, AdaptiveController::upstream())
+    }
+
+    /// The method of `tableau` with `controller`.
+    pub fn with_controller(
+        tableau: ButcherTableau,
+        controller: AdaptiveController,
+    ) -> Result<Self, String> {
+        tableau.validate()?;
+        if tableau.b_embedded.is_none() {
+            return Err("an adaptive Runge-Kutta tableau needs embedded weights".to_string());
+        }
+        Ok(Self {
+            tableau,
+            controller,
+        })
+    }
+
+    pub fn tableau(&self) -> &ButcherTableau {
+        &self.tableau
+    }
+}
+
+impl<D: DynamicObject + 'static> Integrator<D> for AdaptiveRungeKutta {
+    fn propagate(
+        &self,
+        object: &mut D,
+        state: &D::State,
+        current_sim_nanos: u64,
+        current_epoch: Epoch,
+        dt_seconds: f64,
+    ) -> (D::State, D::StepOutput) {
+        propagate_adaptive_rk(
+            &self.tableau,
+            &self.controller,
+            object,
+            state,
+            current_sim_nanos,
+            current_epoch,
+            dt_seconds,
+        )
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,6 @@
 use crate::messages::{HingedRigidBodyMsg, Output};
+use crate::time::NANO2SEC;
 use crate::{Module, SimulationContext};
-
-const NANO2SEC: f64 = 1.0e-9;
 
 #[derive(Clone, Debug)]
 pub struct HingedBodyLinearProfiler {

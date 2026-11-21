@@ -9,6 +9,7 @@
 use hifitime::Epoch;
 
 pub mod clock_sync;
+pub mod communication;
 pub mod device_interface;
 pub mod dynamics;
 pub mod environment;
@@ -17,13 +18,21 @@ pub mod gauss_markov;
 pub mod integrators;
 mod kinematics;
 pub mod messages;
+pub mod monte_carlo;
+#[cfg(feature = "mujoco")]
+pub mod mujoco_dynamics;
+pub mod onboard_data_handling;
 pub mod overrides;
 pub mod power;
 pub mod sensors;
 pub mod simulation;
 pub mod spacecraft;
 pub mod telemetry;
+pub mod thermal;
 mod time;
+pub mod utilities;
+#[cfg(feature = "vizard")]
+pub mod vizard;
 
 #[cfg(test)]
 mod test_utils;

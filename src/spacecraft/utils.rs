@@ -4,7 +4,7 @@ use crate::{messages::SpacecraftStateMsg, spacecraft::IntegratedState};
 
 pub fn combine_effector_state_derivatives(
     weighted_derivatives: Vec<(Vec<Vec<f64>>, f64)>,
-    effector_states: &Vec<Vec<f64>>,
+    effector_states: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
     weighted_derivatives.iter().for_each(|(derivatives, _)| {
         assert_eq!(
@@ -32,27 +32,15 @@ pub fn combine_effector_state_derivatives(
         .collect()
 }
 
-pub fn gravity_gradient_torque_body(
-    body_origin_position_m: Vector3<f64>,
-    body_to_inertial_dcm: Matrix3<f64>,
-    mass_kg: f64,
-    center_of_mass_body_m: Vector3<f64>,
-    inertia_about_point_b_body_kg_m2: Matrix3<f64>,
-    earth_mu_m3ps2: f64,
-) -> Vector3<f64> {
-    let com_position_inertial_m =
-        body_origin_position_m + body_to_inertial_dcm * center_of_mass_body_m;
-    let radius_m = com_position_inertial_m.norm();
-    if radius_m < 1.0 {
-        return Vector3::zeros();
-    }
-    let inertia_about_com_body_kg_m2 = inertia_about_point_b_body_kg_m2
-        - mass_kg * tilde(center_of_mass_body_m) * tilde(center_of_mass_body_m).transpose();
-    let r_hat_body = body_to_inertial_dcm.transpose() * (com_position_inertial_m / radius_m);
-    3.0 * earth_mu_m3ps2 / radius_m.powi(3)
-        * r_hat_body.cross(&(inertia_about_com_body_kg_m2 * r_hat_body))
-}
+/// The first-order gravity-gradient torque of one planet, shared with
+/// [`GravityGradientEffector`](crate::dynamics::gravity_gradient_effector::GravityGradientEffector)
+/// so that the spacecraft's single-body switch and the effector apply one
+/// implementation.
+pub use crate::dynamics::gravity_gradient_effector::gravity_gradient_torque_body;
 
+/// The kinematic part of the state message for `state`; the accumulated ΔV
+/// is left zero, as the spacecraft fills it only in the messages it
+/// publishes (dynamic effectors see stage states without it).
 pub fn spacecraft_state_msg_from_integrated_state(
     state: &IntegratedState,
     inertial_position_m: Vector3<f64>,
@@ -63,6 +51,7 @@ pub fn spacecraft_state_msg_from_integrated_state(
         velocity_mps: inertial_velocity_mps,
         sigma_bn: state.sigma_bn,
         omega_radps: state.omega_radps,
+        ..SpacecraftStateMsg::default()
     }
 }
 

@@ -260,6 +260,27 @@ fn spherical_harmonics_matches_reference_degree_20_result() {
 }
 
 #[test]
+fn spherical_harmonics_mu_override_scales_the_field_and_keeps_the_radius() {
+    let position_m = Vector3::new(15_000.0, 10_000.0, 6_378_136.3);
+    let mut from_file = SphericalHarmonicsGravityModel::from_file("assets/gravity/GGM03S.txt", 4)
+        .expect("valid GGM03S coefficients");
+    let file_mu = from_file.mu_m3ps2();
+    let mut overridden = from_file
+        .clone()
+        .with_mu_m3ps2(2.0 * file_mu)
+        .expect("positive mu");
+    assert_eq!(overridden.gravitational_parameter_m3ps2(), 2.0 * file_mu);
+    assert_eq!(
+        overridden.reference_radius_m(),
+        from_file.reference_radius_m()
+    );
+    let scaled = overridden.acceleration_mps2(position_m).expect("valid");
+    let original = from_file.acceleration_mps2(position_m).expect("valid");
+    assert!((scaled - 2.0 * original).norm() < 1.0e-12);
+    assert!(from_file.with_mu_m3ps2(-1.0).is_err());
+}
+
+#[test]
 fn polyhedral_model_matches_reference_tetrahedron_result() {
     let vertices = vec![
         Vector3::new(1.0, 1.0, 1.0),
@@ -386,5 +407,33 @@ fn planet_orientation_advances_by_rotation() {
             "dt {dt}: {}",
             (advanced - exact).norm()
         );
+    }
+}
+
+/// Duplicate (degree, order) rows and degrees that go down are rejected, as
+/// Basilisk's coefficient loader does since AVSLab/basilisk#1298.
+#[test]
+fn spherical_harmonics_loader_rejects_duplicate_and_unordered_rows() {
+    let header = "6378136.3, 3.986004415e14, 7.292115e-5, 2, 2, 1, 0.0, 0.0\n";
+    let rows = [
+        (
+            "duplicate",
+            "0, 0, 1.0, 0.0\n2, 0, -4.8e-4, 0.0\n2, 0, -4.8e-4, 0.0\n",
+        ),
+        (
+            "follows",
+            "0, 0, 1.0, 0.0\n2, 0, -4.8e-4, 0.0\n1, 0, 0.0, 0.0\n",
+        ),
+    ];
+    for (expected, body) in rows {
+        let path = std::env::temp_dir().join(format!(
+            "basilisk-rs-sh-{expected}-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, format!("{header}{body}")).expect("write fixture");
+        let result = SphericalHarmonicsGravityModel::from_file(&path, 2);
+        std::fs::remove_file(&path).expect("remove fixture");
+        let error = format!("{:?}", result.err().expect("loader must reject the file"));
+        assert!(error.contains(expected), "{error}");
     }
 }

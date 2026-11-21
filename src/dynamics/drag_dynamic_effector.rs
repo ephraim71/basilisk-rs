@@ -1,7 +1,7 @@
 use nalgebra::Vector3;
 use std::any::Any;
 
-use crate::messages::{AtmosphereMsg, Input, SpacecraftStateMsg};
+use crate::messages::{AtmosphereMsg, Input, SpacecraftStateMsg, WindMsg};
 use crate::spacecraft::{DynamicEffector, EffectorOutput};
 
 #[derive(Clone, Debug)]
@@ -13,9 +13,10 @@ pub struct DragDynamicEffectorConfig {
     /// Planet spin rate used to model a rigidly co-rotating atmosphere via
     /// `v_air = omega x r`. NOTE: assumes `state.position_m` is planet-centered
     /// (origin at the planet's rotation center). In a non-planet-centered frame
-    /// this term is taken about the wrong point. A future wind-input message
-    /// would replace this inline term for non-rigid winds. Set to zero for a
-    /// non-rotating (inertial-velocity) atmosphere.
+    /// this term is taken about the wrong point. Ignored while
+    /// `input_wind_msg` is connected, which supplies the air velocity instead
+    /// (for example from a wind model in `environment::wind`). Set to zero for
+    /// a non-rotating (inertial-velocity) atmosphere.
     pub planet_rotation_rate_radps: Vector3<f64>,
 }
 
@@ -55,10 +56,31 @@ impl DragDynamicEffectorConfig {
     }
 }
 
+/// The air velocity drag acts against, inertial components \[m/s\]: the
+/// wind model's `air_velocity_inertial_mps` when `wind` is connected
+/// (upstream `windVelInMsg`), else a rigidly co-rotating atmosphere
+/// `planet_rotation_rate_radps x position`.
+pub(crate) fn air_velocity_inertial(
+    wind: &Input<WindMsg>,
+    planet_rotation_rate_radps: Vector3<f64>,
+    position_inertial_m: Vector3<f64>,
+) -> Vector3<f64> {
+    if wind.is_connected() {
+        wind.read().air_velocity_inertial_mps
+    } else {
+        planet_rotation_rate_radps.cross(&position_inertial_m)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DragDynamicEffector {
     pub config: DragDynamicEffectorConfig,
     pub input_atmosphere_msg: Input<AtmosphereMsg>,
+    /// Upstream `windVelInMsg` (optional): the local air velocity. When
+    /// connected, drag acts against the velocity relative to
+    /// `air_velocity_inertial_mps` instead of the co-rotation term of
+    /// `planet_rotation_rate_radps`.
+    pub input_wind_msg: Input<WindMsg>,
 }
 
 impl DragDynamicEffector {
@@ -69,6 +91,7 @@ impl DragDynamicEffector {
         Self {
             config,
             input_atmosphere_msg: Input::default(),
+            input_wind_msg: Input::default(),
         }
     }
 
@@ -81,10 +104,11 @@ impl DragDynamicEffector {
         let position_inertial = state.position_m;
         let velocity_inertial = state.velocity_mps;
         let relative_velocity_inertial = velocity_inertial
-            - self
-                .config
-                .planet_rotation_rate_radps
-                .cross(&position_inertial);
+            - air_velocity_inertial(
+                &self.input_wind_msg,
+                self.config.planet_rotation_rate_radps,
+                position_inertial,
+            );
         let relative_speed = relative_velocity_inertial.norm();
         if relative_speed == 0.0 {
             return EffectorOutput::default();
@@ -157,6 +181,7 @@ mod tests {
             velocity_mps,
             sigma_bn,
             omega_radps: Vector3::zeros(),
+            ..Default::default()
         }
     }
 
@@ -290,6 +315,74 @@ mod tests {
             "force: expected {expected:?}, got {:?}",
             out.force_inertial_n
         );
+    }
+
+    /// Upstream `test_drag_wind_velocity_with_wind_message`: with a wind
+    /// model connected, drag opposes the velocity relative to its air
+    /// velocity, and the co-rotation rate of the config is ignored.
+    #[test]
+    fn connected_wind_sets_the_air_velocity() {
+        let density = 1.217 * (-(7000e3 - 6371e3) / 8500.0_f64).exp();
+        let (cd, area) = (2.2, 1.0);
+        let position = Vector3::new(7000e3, 0.0, 0.0);
+        let velocity = Vector3::new(0.0, 7600.0, 0.0);
+        let wind = zero_wind_at(position);
+
+        let atmo_out = Output::new(AtmosphereMsg {
+            neutral_density_kgpm3: density,
+            local_temp_k: 0.0,
+        });
+        let mut drag = DragDynamicEffector::new(DragDynamicEffectorConfig {
+            name: "drag".to_string(),
+            projected_area_m2: area,
+            drag_coeff: cd,
+            com_offset_m: Vector3::zeros(),
+            planet_rotation_rate_radps: Vector3::new(0.0, 0.0, 1.0),
+        });
+        drag.input_atmosphere_msg.connect(atmo_out.slot());
+        drag.input_wind_msg.connect(wind.output_wind_msg.slot());
+
+        let state = SpacecraftStateMsg {
+            position_m: position,
+            ..make_state(Vector3::zeros(), velocity)
+        };
+        let out = drag.compute_output(&state);
+
+        let v_rel = velocity - wind.output_wind_msg.read().air_velocity_inertial_mps;
+        assert!((v_rel - velocity).norm() > 1.0, "the wind should matter");
+        let expected = -0.5 * cd * v_rel.norm().powi(2) * area * density * v_rel.normalize();
+        assert!(
+            (out.force_inertial_n - expected).norm() < 1e-10,
+            "force: expected {expected:?}, got {:?}",
+            out.force_inertial_n
+        );
+    }
+
+    /// The zero-wind model's air velocity at `position` with Earth's rotation
+    /// rate (upstream's wind tests link a `ZeroWindModel`).
+    fn zero_wind_at(
+        position: Vector3<f64>,
+    ) -> crate::environment::wind::zero_wind_model::ZeroWindModel {
+        use crate::environment::wind::zero_wind_model::ZeroWindModel;
+        use crate::messages::PlanetStateMsg;
+        use crate::utilities::astro_constants::OMEGA_EARTH;
+        use crate::{Module, SimulationContext};
+
+        let spacecraft = Output::new(SpacecraftStateMsg {
+            position_m: position,
+            ..Default::default()
+        });
+        let planet = Output::new(PlanetStateMsg::default());
+        let mut wind = ZeroWindModel::named("wind");
+        wind.set_planet_omega_n(Vector3::new(0.0, 0.0, OMEGA_EARTH));
+        wind.input_state_msg.connect(spacecraft.slot());
+        wind.input_planet_msg.connect(planet.slot());
+        wind.init();
+        wind.update(&SimulationContext {
+            current_sim_nanos: 0,
+            current_epoch: hifitime::Epoch::from_gregorian_utc_at_midnight(2025, 1, 1),
+        });
+        wind
     }
 
     #[test]

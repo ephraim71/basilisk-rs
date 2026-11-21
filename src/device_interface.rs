@@ -1,2 +1,14 @@
+pub mod array_motor_torque_to_single_actuators;
+pub mod bang_coast_bang_profile;
+pub mod encoder;
+pub mod faceted_spacecraft_model;
+pub mod faceted_spacecraft_projected_area;
 pub mod hinged_body_linear_profiler;
+pub mod joint_array_ref_profiler;
 pub mod motor_voltage_interface;
+pub mod prescribed_linear_translation;
+pub mod prescribed_rotation_1dof;
+pub mod saturation_single_actuator;
+pub mod scalar_joint_states_to_rw_speed;
+pub mod stepper_motor;
+pub mod temp_measurement;

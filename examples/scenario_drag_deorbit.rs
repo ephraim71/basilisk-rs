@@ -25,10 +25,10 @@
 //! `test_scenarioDragDeorbit.py` only runs the scenario; `tests` checks
 //! that both runs deorbit, with the density growing as the orbit decays.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::path::PathBuf;
 
@@ -49,13 +49,13 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
 use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use cli::Cli;
 use common::{
     EARTH_EQUATORIAL_RADIUS_M, MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds,
     vector_columns,
 };
 use hifitime::Epoch;
 use nalgebra::{Matrix3, Vector3};
-use scenario_args::ScenarioArgs;
 
 const USAGE: &str = "\
 scenario_drag_deorbit [--model msis|exponential] [--initial-alt-km 250] [--deorbit-alt-km 100]
@@ -316,18 +316,18 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
-        let model = match args.value("--model", "msis".to_string()).as_str() {
+        let model = match args.value("model", "msis".to_string()).as_str() {
             "msis" => AtmosphereModel::Msis,
             "exponential" => AtmosphereModel::Exponential,
             other => args.fail(&format!("unknown atmosphere model {other:?}")),
         };
         vec![Config {
-            initial_altitude_km: args.value("--initial-alt-km", 250.0),
-            deorbit_altitude_km: args.value("--deorbit-alt-km", 100.0),
+            initial_altitude_km: args.value("initial-alt-km", 250.0),
+            deorbit_altitude_km: args.value("deorbit-alt-km", 100.0),
             model,
         }]
     };

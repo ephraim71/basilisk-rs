@@ -24,16 +24,18 @@
 //! Writes `scenarioOrbitFromOmm<index>.csv` per satellite. `tests` ports both
 //! tests of `test_scenarioOrbitFromOmm.py`.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,12 +46,13 @@ use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, eccentric_to_true_anomaly, elements_to_state, mean_to_eccentric_anomaly,
 };
+use cli::Cli;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{nano2sec, orbit_period_s, sec2nano};
-use recording::{History, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{scenario_csv, state_columns};
 
 const USAGE: &str = "scenario_orbit_from_omm [--omm examples/data/ommExample.kvn]";
 
@@ -264,8 +267,8 @@ pub fn run(omm_path: &Path) -> Result<Results, String> {
     let mut csvs: Vec<_> = (0..records.len())
         .map(|index| scenario_csv(&format!("scenarioOrbitFromOmm{index}")))
         .collect();
-    let mut histories: Vec<History<SpacecraftStateMsg>> =
-        records.iter().map(|_| History::new()).collect();
+    let mut histories: Vec<MessageLog<SpacecraftStateMsg>> =
+        records.iter().map(|_| MessageLog::default()).collect();
     {
         let mut simulation = Simulation::new(epoch, false);
         for ((index, vehicle), (csv, history)) in vehicles
@@ -294,9 +297,22 @@ pub fn run(omm_path: &Path) -> Result<Results, String> {
         .zip(periods)
         .map(|((record, history), period_s)| Satellite {
             record,
-            time_s: history.times_nanos().into_iter().map(nano2sec).collect(),
-            position_m: history.messages().map(|state| state.position_m).collect(),
-            velocity_mps: history.messages().map(|state| state.velocity_mps).collect(),
+            time_s: history
+                .times_nanos
+                .clone()
+                .into_iter()
+                .map(nano2sec)
+                .collect(),
+            position_m: history
+                .values
+                .iter()
+                .map(|state| state.position_m)
+                .collect(),
+            velocity_mps: history
+                .values
+                .iter()
+                .map(|state| state.velocity_mps)
+                .collect(),
             period_s,
         })
         .collect();
@@ -309,8 +325,8 @@ pub fn run(omm_path: &Path) -> Result<Results, String> {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let path = args.value("--omm", default_omm_path());
+    let mut args = Cli::from_env(USAGE);
+    let path = args.value("omm", default_omm_path());
     match run(&path) {
         Ok(results) => {
             for (index, satellite) in results.satellites.iter().enumerate() {

@@ -31,8 +31,10 @@
 
 #[path = "support/common.rs"]
 mod common;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/prescribed.rs"]
 mod prescribed;
 #[path = "support/recording.rs"]
@@ -53,10 +55,11 @@ use basilisk_rs::utilities::rigid_body_kinematics::prv_to_mrp;
 use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::{Matrix3, Vector3};
 use prescribed::{box_inertia_kg_m2, hub_at_rest, rotation_profiler, translation_profiler};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 
 const STEM: &str = "scenarioRotTransArrayDeployment";
 /// Upstream `dyn_time_step = fsw_time_step = 0.05` s.
@@ -195,10 +198,10 @@ pub fn run() -> Results {
 
     let mut csv = scenario_csv(STEM);
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut diagnostics_log = History::<SpacecraftDiagnosticsMsg>::new();
-    let mut angle_logs: Vec<History<HingedRigidBodyMsg>> = Vec::new();
-    let mut rho_logs: Vec<History<LinearTranslationRigidBodyMsg>> = Vec::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut diagnostics_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
+    let mut angle_logs: Vec<MessageLog<HingedRigidBodyMsg>> = Vec::new();
+    let mut rho_logs: Vec<MessageLog<LinearTranslationRigidBodyMsg>> = Vec::new();
     let stop_nanos;
     {
         let mut simulation =
@@ -216,8 +219,8 @@ pub fn run() -> Results {
         for (index, array) in arrays.iter().enumerate() {
             for element in 0..ELEMENTS {
                 let label = format!("array{}Element{}", index + 1, element + 1);
-                let mut angle_log = History::new();
-                let mut rho_log = History::new();
+                let mut angle_log = MessageLog::default();
+                let mut rho_log = MessageLog::default();
                 connect!(&simulation,
                     &array.rotation_profilers[element].spinning_body_out_msg => csv
                         .add_source::<HingedRigidBodyMsg>(CsvSourceConfig::columns([(
@@ -306,13 +309,13 @@ pub fn run() -> Results {
     let mut angles: [Vec<Vec<HingedRigidBodyMsg>>; 2] = [Vec::new(), Vec::new()];
     let mut displacements: [Vec<Vec<LinearTranslationRigidBodyMsg>>; 2] = [Vec::new(), Vec::new()];
     for (index, (angle_log, rho_log)) in angle_logs.iter().zip(&rho_logs).enumerate() {
-        angles[index / ELEMENTS].push(angle_log.messages().cloned().collect());
-        displacements[index / ELEMENTS].push(rho_log.messages().cloned().collect());
+        angles[index / ELEMENTS].push(angle_log.values.iter().cloned().collect());
+        displacements[index / ELEMENTS].push(rho_log.values.iter().cloned().collect());
     }
     Results {
         csv_path,
         states: state_log.into_samples(),
-        diagnostics: diagnostics_log.messages().cloned().collect(),
+        diagnostics: diagnostics_log.values.iter().cloned().collect(),
         angles,
         displacements,
         stop_nanos,

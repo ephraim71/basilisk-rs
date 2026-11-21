@@ -35,6 +35,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -70,12 +72,13 @@ use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state}
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
 use common::{rpm_to_radps, seconds, vector_columns};
+use message_log::MessageLog;
 use mj_scenarios::{
     GravitySourceSpec, MotorTorqueToSingleActuators, add_gravity_to_all_bodies, epoch,
     scalar_column, written_csv,
 };
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, sampling_time, scenario_csv};
+use recording::{sampling_time, scenario_csv};
 use shared::Shared;
 
 /// Upstream `timeStep`.
@@ -286,11 +289,11 @@ fn run(write_csv: bool) -> Results {
         .iter()
         .map(|limiter| limiter.actuator_out_msg.clone())
         .collect();
-    let mut guidance_log = History::<AttitudeGuidanceMsg>::new();
-    let mut command_logs: Vec<History<SingleActuatorMsg>> =
-        (0..WHEEL_COUNT).map(|_| History::new()).collect();
-    let mut rate_logs: Vec<History<ScalarJointStateMsg>> =
-        (0..WHEEL_COUNT).map(|_| History::new()).collect();
+    let mut guidance_log = MessageLog::<AttitudeGuidanceMsg>::default();
+    let mut command_logs: Vec<MessageLog<SingleActuatorMsg>> =
+        (0..WHEEL_COUNT).map(|_| MessageLog::default()).collect();
+    let mut rate_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        (0..WHEEL_COUNT).map(|_| MessageLog::default()).collect();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let guidance_out = tracking_error.att_guid_out_msg.clone();
 
@@ -403,9 +406,12 @@ fn run(write_csv: bool) -> Results {
         guidance: guidance_log.into_samples(),
         commands: command_logs
             .into_iter()
-            .map(History::into_samples)
+            .map(MessageLog::into_samples)
             .collect(),
-        wheel_rates: rate_logs.into_iter().map(History::into_samples).collect(),
+        wheel_rates: rate_logs
+            .into_iter()
+            .map(MessageLog::into_samples)
+            .collect(),
         u_max_nm: wheel.u_max_nm,
     }
 }

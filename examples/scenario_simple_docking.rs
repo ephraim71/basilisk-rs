@@ -31,6 +31,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -42,12 +44,13 @@ use basilisk_rs::messages::{Output, SingleActuatorMsg, SpacecraftStateMsg};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
+use message_log::MessageLog;
 use mj_scenarios::{
     RKF45_DEFAULT_ATOL, RKF45_DEFAULT_RTOL, epoch, load_scene, rkf45, site_state_columns,
     written_csv,
 };
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream task step \[ns\].
@@ -81,8 +84,8 @@ fn run(write_csv: bool) -> Results {
 
     let contact_1 = scene.site("hub_1_contact_point").state_out_msg.clone();
     let contact_2 = scene.site("hub_2_contact_point").state_out_msg.clone();
-    let mut contact_1_log = History::<SpacecraftStateMsg>::new();
-    let mut contact_2_log = History::<SpacecraftStateMsg>::new();
+    let mut contact_1_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut contact_2_log = MessageLog::<SpacecraftStateMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
 
     let scene = Shared::new(scene);

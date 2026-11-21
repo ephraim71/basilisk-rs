@@ -21,11 +21,14 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-Install `matplotlib` to render scenario plots:
+Install `matplotlib` and `numpy` to render scenario plots:
 
 ```bash
-python3 -m pip install matplotlib
+python3 -m pip install matplotlib numpy
 ```
+
+The recipes below are in the `justfile`; install [`just`](https://github.com/casey/just)
+with `cargo install just`, or copy the commands out of it.
 
 ## Fetching assets
 
@@ -37,7 +40,7 @@ scenario:
 just fetch-assets
 ```
 
-This is a convenience wrapper around three recipes:
+This is a convenience wrapper around four recipes:
 
 - `just fetch-anise-assets` — SPICE/ANISE kernels into `assets/anise/`
   (`de440s.bsp`, `earth_latest_high_prec.bpc`, `pck11.pca`).
@@ -45,6 +48,24 @@ This is a convenience wrapper around three recipes:
   `assets/gravity/GGM03S.txt`.
 - `just fetch-albedo` — Basilisk's albedo lookup tables (Earth CERES 2018
   all-sky and clear-sky, Mars TES; 1x1, 5x5 and 10x10 deg) into `assets/albedo/`.
+- `just fetch-environment-data` — upstream's Denton GEO plasma flux tables and
+  tabulated atmospheres into `assets/denton/` and `assets/atmosphere/`.
+
+Some example scenarios read more of upstream's `supportData` and
+`dataForExamples`. Each run recipe's comment in the `justfile` names the
+recipes it needs:
+
+- `just fetch-spice-kernels` — the CSPICE text kernels, the Hubble SPK and
+  DE430 (114 MB) into `assets/spice/`, for the `spice` feature.
+- `just fetch-orbit-scenario-data` — the J2-only Earth and Mars fields, the
+  GGM2B Mars field and the New Horizons SPK.
+- `just fetch-small-body-data` — the Vesta field and the Eros shape model.
+- `just fetch-misc-scenario-data` — the custom spacecraft SPK and the state
+  files of `scenarioDataToViz`.
+- `just fetch-opencv-assets` — the image-processing test images and the
+  `centerRadiusCNN` network (`CAD.onnx`, 26 MB), for the `opencv` feature.
+- `just fetch-mujoco-scenario-data` — the Itokawa mesh of
+  `scenario_asteroid_landing`.
 
 The recipes only run `curl`, so if you don't have [`just`](https://github.com/casey/just)
 installed you can fetch each file by hand instead:
@@ -73,72 +94,91 @@ curl --fail --location --progress-bar --output assets/albedo/Earth_ALB_2018_CERE
 If the `pck11.pca` download fails on a TLS certificate error, retry that one
 command with `--insecure` (the `just` recipe falls back to this automatically).
 
-### Optional: the CSPICE interface
+## Optional features
 
-`environment::spice_interface`, the port of upstream's `spiceInterface` on the
-NAIF CSPICE toolkit, is behind the `spice` cargo feature. Building it downloads
-the CSPICE package from
-`https://naif.jpl.nasa.gov/pub/naif/toolkit//C/PC_Linux_GCC_64bit/packages/cspice.tar.Z`
-(or uses the install `CSPICE_DIR` points at) and needs libclang. Its kernels
-are fetched by `just fetch-spice-kernels` into `assets/spice/`:
+The modules that link native libraries are behind cargo features, so a
+default build needs only Rust:
+
+| Feature | Enables | Needs |
+|---|---|---|
+| `spice` | `environment::spice_interface`, upstream's `spiceInterface` on NAIF CSPICE | libclang; the build downloads the CSPICE package from naif.jpl.nasa.gov unless `CSPICE_DIR` points at an install; kernels from `just fetch-spice-kernels` |
+| `mujoco` | `mujoco_dynamics`, upstream's `MJScene` and the models that run in it | nothing system-wide: the first build downloads MuJoCo 3.17.0 (upstream's version), checks its SHA-256 and unpacks it into `assets/mujoco/` (`MUJOCO_DOWNLOAD_DIR` in `.cargo/config.toml`) |
+| `vizard` | `vizard::VizInterface` and `vizard::DataFileToViz` | `protoc` for the protobuf messages and libzmq for live streaming |
+| `opencv` | the image-processing modules (`hough_circles`, `limb_finding`, `center_radius_cnn`) and `sensors::camera` | the system OpenCV 4 or 5 (found through pkg-config) and libclang; test images from `just fetch-opencv-assets` |
 
 ```bash
 just fetch-anise-assets fetch-spice-kernels
 cargo test --features spice
-```
-
-### Optional: MuJoCo multibody dynamics
-
-`mujoco_dynamics`, the port of upstream's `simulation/mujocoDynamics`
-(`MJScene` and the models that run in it), is behind the `mujoco` cargo
-feature. It links the MuJoCo 3.17.0 shared library (the version upstream
-builds against) through the [`mujoco-rs`](https://crates.io/crates/mujoco-rs)
-crate. Nothing is installed system-wide: the first build downloads the
-official release,
-`https://github.com/google-deepmind/mujoco/releases/download/3.17.0/mujoco-3.17.0-linux-x86_64.tar.gz`,
-checks its SHA-256 and unpacks it into `assets/mujoco/` (set by
-`MUJOCO_DOWNLOAD_DIR` in `.cargo/config.toml`). The test and example
-binaries find the library there through their runtime search path. To use
-a MuJoCo 3.17.0 you already have instead, point `MUJOCO_DYNAMIC_LINK_DIR` at
-its `lib/` directory (an absolute path) and put that directory on
-`LD_LIBRARY_PATH` when running.
-
-```bash
 just fetch-gravity   # GGM03S, for the spherical-harmonics gravity test
 cargo test --features mujoco mujoco_dynamics
 ```
 
-## Basic orbit scenario
+The test and example binaries find the downloaded MuJoCo library through
+their runtime search path. To use a MuJoCo 3.17.0 you already have instead, point `MUJOCO_DYNAMIC_LINK_DIR` at
+its `lib/` directory (an absolute path) and put that directory on
+`LD_LIBRARY_PATH` when running. Examples that need a feature declare it as
+`required-features` in `Cargo.toml`, so a default `cargo build --examples`
+skips them.
 
-Run the simulation:
+## Example scenarios
 
-```bash
-just run-basic-orbit
-# equivalently:
-cargo run --release --example scenario_basic_orbit
-```
-
-Any example can also be run by name with the generic `run` recipe, which
-forwards extra arguments to the binary after `--`. The name is the file stem of
-a `.rs` file in `examples/` (e.g. `scenario_basic_orbit` for
-`examples/scenario_basic_orbit.rs`); Cargo builds each such file with a `main()`
-as its own example target.
+`examples/` holds the ports of upstream's example scenarios. Each one writes
+its recorded histories as CSV to `examples/output/scenarios/`, under the
+upstream scenario's name, and most have a `plot_<name>.py` script that draws
+upstream's figures from that CSV. Run one by its file stem, forwarding
+arguments after `--`:
 
 ```bash
 just run scenario_basic_orbit
 # equivalently:
 cargo run --release --example scenario_basic_orbit
-```
-
-The scenario writes `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv` by default.
-
-Open the same three figures as Basilisk's point-mass LEO example:
-
-```bash
+cargo run --release --example scenario_basic_orbit -- --help   # its parametrizations
 python3 examples/plot_scenario_basic_orbit.py
 ```
 
-The plotting script reads only the generated CSV and opens the figures on screen.
+The scenario writes `examples/output/scenarios/scenarioBasicOrbitLEO0Earth.csv`
+by default, and the plot opens the same three figures as Basilisk's point-mass
+LEO example.
+
+Scenarios run by group, each in every parametrization upstream's
+`test_scenario*.py` exercises, and their figures render from the CSV files
+alone:
+
+```bash
+just run-orbit-scenarios
+just plot-orbit-scenarios
+just run-all-scenarios   # every group; needs all four features and every fetch recipe
+```
+
+| Group | Scenarios |
+|---|---|
+| `orbit` | orbits and gravity fields |
+| `traj` | trajectories, integrators and drag |
+| `formation` | formation flying, rendezvous, small bodies and attitude guidance |
+| `ground` | ground access, onboard data, power and multiple spacecraft |
+| `multibody-a` | hinged, flexible, slosh, spinning-body, prescribed-motion and branching bodies |
+| `multibody-b` | constrained dynamics, prescribed motion and robotic arms |
+| `misc` | SPICE, Vizard, Monte Carlo, logging, constrained attitude and benchmarks |
+| `bsksim` | upstream's BskSim framework |
+| `multisat` | upstream's MultiSatBskSim framework |
+| `montecarlo` | upstream's `MonteCarloExamples` |
+| `opnav` | upstream's `OpNavScenarios` (`opencv`) |
+| `dyncomp` | upstream's `dynamicsComparison` series (`mujoco` for the MuJoCo side) |
+| `mujoco` | upstream's `examples/mujoco` (`mujoco`) |
+
+`run-<group>-scenarios` runs a group and `plot-<group>-scenarios` renders it;
+the attitude, sensor and momentum-management scenarios are in
+`run-all-scenarios` itself. A recipe's comment lists the features and assets
+its group needs.
+
+Each example also carries upstream's `test_scenario*.py` checks, with the
+same truth values and tolerances, as tests:
+
+```bash
+cargo test --release --examples                       # every default-feature example
+cargo test --release --examples --features mujoco     # plus the MuJoCo ones
+cargo test --release --example scenario_basic_orbit   # one example
+```
 
 ## Regression comparison
 

@@ -13,6 +13,8 @@
 //! `tests` ports upstream's `orbit-step` reduced sweep check (orders within
 //! 3 % of 4) and `test_orbit_sweep_rejects_incomplete_engine_history`.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -25,11 +27,10 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     Series, aligned_horizon, max_of, recorder_sample_interval, seconds, validate_history,
     validate_matching_histories, vector_differences, write_json,
@@ -38,7 +39,6 @@ use dyncomp_orbit::{MASS_KG, initial_orbit_state, kepler_truth, run_bsm, run_muj
 use grav_factory::Body;
 use nalgebra::Vector3;
 use orbit_tools::orbit_period_s;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepOrbitDt";
@@ -219,9 +219,9 @@ const USAGE: &str = "\
 sweep_orbit_dt [--dts 40,20,10,5,2.5] [--duration S] [--record-dt S]";
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let mut config = Config::default();
-    let dts: String = args.value("--dts", String::new());
+    let dts: String = args.value("dts", String::new());
     if !dts.is_empty() {
         config.dts = dts
             .split(',')
@@ -232,11 +232,11 @@ fn main() {
             })
             .collect();
     }
-    let duration: f64 = args.value("--duration", 0.0);
+    let duration: f64 = args.value("duration", 0.0);
     if duration > 0.0 {
         config.sim_duration_s = Some(duration);
     }
-    config.record_dt_s = args.value("--record-dt", config.record_dt_s);
+    config.record_dt_s = args.value("record-dt", config.record_dt_s);
     run(&config);
 }
 

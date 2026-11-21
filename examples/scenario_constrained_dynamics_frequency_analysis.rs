@@ -34,18 +34,18 @@
 //! stiffer the constraint, the closer the docked pair's panel follows the
 //! rigid truth model.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/constrained.rs"]
 mod constrained;
-#[path = "support/hub_init.rs"]
-mod hub_init;
-#[path = "support/probed_effector.rs"]
-mod probed_effector;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/servicing.rs"]
 mod servicing;
 #[path = "support/table_csv.rs"]
@@ -57,11 +57,12 @@ use basilisk_rs::messages::{HingedRigidBodyMsg, SpacecraftStateMsg};
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use constrained::{ScModel, Violations, gain_label, hub_pose_columns};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 use servicing::{Components, ServicingConfig, servicing};
 use table_csv::write_table;
 
@@ -203,10 +204,10 @@ fn run_gain(model: ScModel, gain: f64) -> GainRun {
     let file_stem = format!("{STEM}_{}_alpha{}", model.label(), gain_label(gain));
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
-    let mut history_1 = History::<SpacecraftStateMsg>::new();
-    let mut history_2 = History::<SpacecraftStateMsg>::new();
-    let mut panel_1 = History::<HingedRigidBodyMsg>::new();
-    let mut panel_3 = History::<HingedRigidBodyMsg>::new();
+    let mut history_1 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut history_2 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut panel_1 = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut panel_3 = MessageLog::<HingedRigidBodyMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
@@ -243,7 +244,11 @@ fn run_gain(model: ScModel, gain: f64) -> GainRun {
     csv.flush().expect("flush scenario CSV");
     let runtime_s = started.elapsed().as_secs_f64();
 
-    let violations = Violations::new(&setup.geometry, history_1.samples(), history_2.samples());
+    let violations = Violations::new(
+        &setup.geometry,
+        &history_1.into_samples(),
+        &history_2.into_samples(),
+    );
     let sigma_first: Vec<f64> = violations
         .attitude_sigma_b2b1
         .iter()
@@ -255,8 +260,8 @@ fn run_gain(model: ScModel, gain: f64) -> GainRun {
         gain,
         csv_path,
         violations,
-        theta_1_rad: panel_1.messages().map(|panel| panel.theta_rad).collect(),
-        theta_3_rad: panel_3.messages().map(|panel| panel.theta_rad).collect(),
+        theta_1_rad: panel_1.values.iter().map(|panel| panel.theta_rad).collect(),
+        theta_3_rad: panel_3.values.iter().map(|panel| panel.theta_rad).collect(),
         spectrum,
         dominant_frequency_hz,
         runtime_s,
@@ -291,8 +296,8 @@ pub fn run(gains: &[f64], model: ScModel) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let gains: Vec<f64> = match args.value("--gains", String::new()).as_str() {
+    let mut args = Cli::from_env(USAGE);
+    let gains: Vec<f64> = match args.value("gains", String::new()).as_str() {
         "" => TEST_GAINS.to_vec(),
         list => list
             .split(',')
@@ -302,7 +307,7 @@ fn main() {
             })
             .collect(),
     };
-    let model_name = args.value("--model", "MEV2".to_string());
+    let model_name = args.value("model", "MEV2".to_string());
     let model = ScModel::parse(&model_name)
         .unwrap_or_else(|| args.fail(&format!("unknown model {model_name:?}")));
     let results = run(&gains, model);

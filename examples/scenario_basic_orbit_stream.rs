@@ -35,16 +35,18 @@
 //! Upstream's test only runs them; `tests` also checks the point-mass orbits
 //! against the Kepler solution and the Vizard file's frames.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -65,12 +67,13 @@ use basilisk_rs::vizard::viz_structures::{
     GravBodyInfo, ThrClusterMap, VizEventDialog, VizSetting,
 };
 use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use cli::Cli;
 use grav_factory::{Body, GGM2B, GGM03S_J2_ONLY};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{nano2sec, orbit_period_s, run_until, sec2nano};
-use recording::{History, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_basic_orbit_stream [--orbit LEO|GTO|GEO] [--planet Earth|Mars] [--spherical-harmonics]
@@ -288,7 +291,7 @@ pub fn run(config: &Config) -> Results {
     let clock = Shared::new(ClockSync::new(50.0, 10_000_000, false));
 
     let mut csv = scenario_csv(&format!("scenarioBasicOrbitStream{}", config.label()));
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     let start = Epoch::from_gregorian_utc(2012, 5, 1, 0, 28, 30, 0);
     {
         let mut simulation = Simulation::new(start, false);
@@ -436,28 +439,28 @@ pub fn run(config: &Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         test_cases()
     } else {
-        let orbit = match args.value("--orbit", "LEO".to_string()).as_str() {
+        let orbit = match args.value("orbit", "LEO".to_string()).as_str() {
             "LEO" => OrbitCase::Leo,
             "GTO" => OrbitCase::Gto,
             "GEO" => OrbitCase::Geo,
             other => args.fail(&format!("unknown orbit case {other:?}")),
         };
-        let planet = match args.value("--planet", "Earth".to_string()).as_str() {
+        let planet = match args.value("planet", "Earth".to_string()).as_str() {
             "Earth" => PlanetCase::Earth,
             "Mars" => PlanetCase::Mars,
             other => args.fail(&format!("unknown planet case {other:?}")),
         };
-        let save: String = args.value("--save", String::new());
+        let save: String = args.value("save", String::new());
         vec![Config {
-            live_stream: args.flag("--live-stream"),
-            broadcast_stream: args.flag("--broadcast-stream"),
-            step_seconds: args.value("--step", 10.0),
+            live_stream: args.switch("live-stream"),
+            broadcast_stream: args.switch("broadcast-stream"),
+            step_seconds: args.value("step", 10.0),
             orbit,
-            spherical_harmonics: args.flag("--spherical-harmonics"),
+            spherical_harmonics: args.switch("spherical-harmonics"),
             planet,
             save_file: (!save.is_empty()).then(|| PathBuf::from(save)),
         }]

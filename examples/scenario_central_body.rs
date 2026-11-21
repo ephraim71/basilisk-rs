@@ -14,16 +14,18 @@
 //! ported in `tests`: the final Earth-relative radius and speed are within 1 %
 //! of the initial ones.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use anise::constants::frames::SSB_J2000;
 use basilisk_rs::messages::{PlanetStateMsg, SpacecraftStateMsg};
@@ -33,12 +35,13 @@ use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, elements_to_state, state_to_elements,
 };
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::{Body, spk_state};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, planet_columns, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{planet_columns, sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_central_body [--use-central]
@@ -111,8 +114,8 @@ pub fn run(use_central: bool) -> Results {
     let mut sun_ephemeris = Body::Sun.ephemeris_from_ssb();
 
     let mut csv = scenario_csv(&format!("scenarioCentralBody{}", u8::from(use_central)));
-    let mut spacecraft_history = History::<SpacecraftStateMsg>::new();
-    let mut earth_history = History::<PlanetStateMsg>::new();
+    let mut spacecraft_history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut earth_history = MessageLog::<PlanetStateMsg>::default();
     {
         let mut simulation = Simulation::new(start_epoch(), false);
         connect!(&simulation,
@@ -137,8 +140,9 @@ pub fn run(use_central: bool) -> Results {
 
     // Upstream subtracts the recorded Earth state from the spacecraft's.
     let relative: Vec<(Vector3<f64>, Vector3<f64>)> = spacecraft_history
-        .messages()
-        .zip(earth_history.messages())
+        .values
+        .iter()
+        .zip(earth_history.values.iter())
         .map(|(spacecraft, earth)| {
             (
                 spacecraft.position_m - earth.position_inertial_m,
@@ -158,11 +162,11 @@ pub fn run(use_central: bool) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let cases = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let cases = if args.switch("all") {
         vec![false, true]
     } else {
-        vec![args.flag("--use-central")]
+        vec![args.switch("use-central")]
     };
     for use_central in cases {
         let results = run(use_central);

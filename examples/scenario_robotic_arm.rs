@@ -13,7 +13,7 @@
 //! The gravity is the point-mass Earth and Sun, with upstream's
 //! `createSpiceInterface` (zero base Earth, epoch 2012 MAY 1 00:28:30) as
 //! basilisk-rs's ANISE ephemeris on DE440s (`just fetch-anise-assets`).
-//! Upstream's `r_CN_NInit` is the center of mass; [`hub_init`] converts it to
+//! Upstream's `r_CN_NInit` is the center of mass; [`multibody::set_center_of_mass_initial_state`] converts it to
 //! the hub state. Upstream's Vizard setup is not ported.
 //!
 //! `scenarioRoboticArm.csv` holds at every step the hub attitude and rate
@@ -28,8 +28,10 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/prescribed.rs"]
 mod prescribed;
 #[path = "support/recording.rs"]
@@ -47,10 +49,11 @@ use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::{Matrix3, Vector3};
 use prescribed::{hub_at_rest, rotation_profiler};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 
 const STEM: &str = "scenarioRoboticArm";
 /// Upstream `dynTimeStep = macros.sec2nano(0.2)`.
@@ -199,8 +202,8 @@ pub fn run() -> Results {
 
     let mut csv = scenario_csv(STEM);
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut joint_logs: Vec<History<HingedRigidBodyMsg>> = Vec::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut joint_logs: Vec<MessageLog<HingedRigidBodyMsg>> = Vec::new();
     // Upstream `timeInitString = "2012 MAY 1 00:28:30.0"`.
     let epoch = Epoch::from_gregorian_utc(2012, 5, 1, 0, 28, 30, 0);
     {
@@ -217,7 +220,7 @@ pub fn run() -> Results {
         );
         for (index, output) in joint_out.iter().enumerate() {
             let k = index + 1;
-            let mut log = History::new();
+            let mut log = MessageLog::default();
             connect!(&simulation,
                 output => csv.add_source::<HingedRigidBodyMsg>(CsvSourceConfig::columns([
                     ("theta_rad".to_string(), format!("theta{k}_rad")),
@@ -251,7 +254,7 @@ pub fn run() -> Results {
         states: state_log.into_samples(),
         joints: joint_logs
             .iter()
-            .map(|log| log.messages().cloned().collect())
+            .map(|log| log.values.iter().cloned().collect())
             .collect(),
     }
 }

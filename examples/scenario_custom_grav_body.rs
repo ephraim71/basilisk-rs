@@ -19,6 +19,8 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -35,9 +37,10 @@ use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state}
 use basilisk_rs::{connect, schedule};
 use grav_factory::{Body, custom_point_mass};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{min2nano, nano2sec};
-use recording::{History, planet_columns, sampling_time, scenario_csv, state_columns};
+use recording::{planet_columns, sampling_time, scenario_csv, state_columns};
 
 const STEP_NANOS: u64 = 10_000_000_000;
 /// Itokawa's gravitational parameter (m^3/s^2).
@@ -127,8 +130,8 @@ pub fn run() -> Results {
 
     let sample_nanos = sampling_time(duration_nanos, STEP_NANOS, 100);
     let mut csv = scenario_csv("scenarioCustomGravBody");
-    let mut spacecraft_history = History::<SpacecraftStateMsg>::new();
-    let mut asteroid_history = History::<PlanetStateMsg>::new();
+    let mut spacecraft_history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut asteroid_history = MessageLog::<PlanetStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -152,12 +155,13 @@ pub fn run() -> Results {
     csv.flush().expect("flush scenario CSV");
 
     let relative_positions_m = spacecraft_history
-        .messages()
-        .zip(asteroid_history.messages())
+        .values
+        .iter()
+        .zip(asteroid_history.values.iter())
         .map(|(spacecraft, asteroid)| spacecraft.position_m - asteroid.position_inertial_m)
         .collect();
     Results {
-        times_nanos: spacecraft_history.times_nanos(),
+        times_nanos: spacecraft_history.times_nanos.clone(),
         relative_positions_m,
         elements,
     }

@@ -35,8 +35,10 @@
 
 #[path = "support/common.rs"]
 mod common;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/prescribed.rs"]
 mod prescribed;
 #[path = "support/recording.rs"]
@@ -58,10 +60,11 @@ use basilisk_rs::utilities::rigid_body_kinematics::prv_to_mrp;
 use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::{Matrix3, Vector3};
 use prescribed::{box_inertia_kg_m2, hub_at_rest, rotation_profiler, translation_profiler};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 
 const STEM: &str = "scenarioPrescribedMotionWithTranslationBranching";
 /// Upstream `dyn_time_step_sec = 0.01`.
@@ -210,12 +213,12 @@ pub fn run() -> Results {
 
     let mut csv = scenario_csv(STEM);
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut diagnostics_log = History::<SpacecraftDiagnosticsMsg>::new();
-    let mut translation_log = History::<PrescribedTranslationMsg>::new();
-    let mut rotation_log = History::<PrescribedRotationMsg>::new();
-    let mut angle_log = History::<HingedRigidBodyMsg>::new();
-    let mut strut_logs = [(); 3].map(|_| History::<LinearTranslationRigidBodyMsg>::new());
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut diagnostics_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
+    let mut translation_log = MessageLog::<PrescribedTranslationMsg>::default();
+    let mut rotation_log = MessageLog::<PrescribedRotationMsg>::default();
+    let mut angle_log = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut strut_logs = [(); 3].map(|_| MessageLog::<LinearTranslationRigidBodyMsg>::default());
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
@@ -300,12 +303,12 @@ pub fn run() -> Results {
     Results {
         csv_path,
         states: state_log.into_samples(),
-        diagnostics: diagnostics_log.messages().cloned().collect(),
-        platform_translation: translation_log.messages().cloned().collect(),
-        platform_rotation: rotation_log.messages().cloned().collect(),
-        platform_angle: angle_log.messages().cloned().collect(),
+        diagnostics: diagnostics_log.values.iter().cloned().collect(),
+        platform_translation: translation_log.values.iter().cloned().collect(),
+        platform_rotation: rotation_log.values.iter().cloned().collect(),
+        platform_angle: angle_log.values.iter().cloned().collect(),
         struts: [strut_log_1, strut_log_2, strut_log_3]
-            .map(|log| log.messages().cloned().collect::<Vec<_>>()),
+            .map(|log| log.values.iter().cloned().collect::<Vec<_>>()),
     }
 }
 

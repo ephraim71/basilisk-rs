@@ -67,6 +67,13 @@ spice = ["dep:rust-spice"]
 inherits = "release"
 debug = true
 
+# `cargo test` (debug) builds optimized: the library suite's long dynamics
+# tests run in seconds instead of minutes, for a slower clean build. Debug
+# assertions and overflow checks stay on, and no optimization level reorders
+# floating-point operations in Rust.
+[profile.test]
+opt-level = 2
+
 [[example]]
 name = "scenario_orbit_multi_body"
 required-features = ["spice"]

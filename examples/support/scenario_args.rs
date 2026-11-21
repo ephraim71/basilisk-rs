@@ -1,11 +1,13 @@
+//! Superseded by [`cli.rs`](cli.rs)'s `Cli`, which every other example uses:
+//! `flag("--name")` is `Cli::switch("name")` and `value("--name", default)`
+//! is `Cli::value("name", default)`. Kept only for `scenario_integrators`,
+//! `scenario_integrators_comparison` and
+//! `scenario_variable_time_step_integrators`; delete it once they move to
+//! `Cli`.
+//!
 //! Minimal command-line options for selecting a scenario's upstream
 //! parametrization: `--name value` options and `--flag` switches, with
 //! `--help` printing the example's usage.
-//!
-//! ```text
-//! cargo run --release --example scenario_basic_orbit -- --orbit GTO --planet Earth
-//! cargo run --release --example scenario_basic_orbit -- --all
-//! ```
 
 #![allow(dead_code)]
 

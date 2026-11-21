@@ -18,6 +18,8 @@
 //! reaction-wheel half of `test_articulated_scenarios_have_nontrivial_absolute_motion`,
 //! which bounds the BSM response itself.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -34,17 +36,15 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     DEFAULT_TIMING_REPEATS, Series, recorder_period_nanos, save_runtime_table, seconds,
     vector_headers, write_json,
 };
 use dyncomp_rw_panels::{RwPanelsCase, RwPanelsHistory, run_bsm};
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareRwPanels";
@@ -251,9 +251,9 @@ fn write_summary(metrics: &Metrics) {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(Config {
-        save_timing: args.flag("--timing"),
+        save_timing: args.switch("timing"),
     });
     println!(
         "wrote {}: {:?}",

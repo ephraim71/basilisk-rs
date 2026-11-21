@@ -15,31 +15,34 @@
 //! orbit the burn reaches: circular to within a few percent at the parking
 //! radius.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
 #[path = "support/latch.rs"]
 mod latch;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::Body;
 use hifitime::Epoch;
 use latch::Latch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{run_until, sec2nano};
-use recording::{History, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "scenario_jupiter_arrival     run the Jupiter arrival and capture burn";
 
@@ -124,7 +127,7 @@ pub fn run() -> Results {
     let sample_nanos = sampling_time(arrival_nanos, STEP_NANOS, 100).max(STEP_NANOS);
     let mut csv = scenario_csv("scenarioJupiterArrival");
     let csv_path = csv.config.output_path.clone();
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     // Upstream reads `dataRec.v_BN_N[-1]`, the last sample, which trails
     // the current state unless the run ended on a sample.
     let mut last_sample = Latch::<SpacecraftStateMsg>::default();
@@ -164,7 +167,7 @@ pub fn run() -> Results {
 }
 
 fn main() {
-    ScenarioArgs::from_env(USAGE);
+    Cli::from_env(USAGE);
     let results = run();
     println!(
         "wrote {} (periapsis after {:.0} s, burn {:.1} m/s, final radius {:.0} km)",

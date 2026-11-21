@@ -41,6 +41,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -59,8 +61,9 @@ use basilisk_rs::mujoco_dynamics::joint_pid_controller::JointPidController;
 use basilisk_rs::simulation::Simulation;
 use cli::Cli;
 use common::seconds;
+use message_log::MessageLog;
 use mj_scenarios::{epoch, load_scene, rkf45, scalar_column, trapezoid_profile, written_csv};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream `dt`.
@@ -177,12 +180,12 @@ fn run(write_csv: bool) -> Results {
         latches.push(lock_joint(&mut scene, panel, PI));
     }
 
-    let mut desired_logs: Vec<History<ScalarJointStateMsg>> =
-        taps.iter().map(|_| History::new()).collect();
-    let mut measured_logs: Vec<History<ScalarJointStateMsg>> =
-        taps.iter().map(|_| History::new()).collect();
-    let mut torque_logs: Vec<History<SingleActuatorMsg>> =
-        taps.iter().map(|_| History::new()).collect();
+    let mut desired_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        taps.iter().map(|_| MessageLog::default()).collect();
+    let mut measured_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        taps.iter().map(|_| MessageLog::default()).collect();
+    let mut torque_logs: Vec<MessageLog<SingleActuatorMsg>> =
+        taps.iter().map(|_| MessageLog::default()).collect();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let scene = Shared::new(scene);
     let mut scene_task = scene.handle();

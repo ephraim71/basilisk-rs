@@ -18,28 +18,31 @@
 //! non-rotating eccentricity excursion exceeds the rotating one by more than
 //! a factor of three.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::utilities::orbital_motion::state_to_elements;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::{Body, GGM03S};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{nano2sec, sec2nano};
-use recording::{History, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_orbit_consistency_verification [--days 30] [--degree 20] [--step 10]";
@@ -106,7 +109,7 @@ pub fn propagate(use_earth_rotation: bool, config: Config) -> ElementHistory {
         "NonRotating"
     };
     let mut csv = scenario_csv(&format!("scenarioOrbitConsistencyVerification{suffix}"));
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation = Simulation::new(start_epoch(), false);
         if use_earth_rotation {
@@ -133,7 +136,7 @@ pub fn propagate(use_earth_rotation: bool, config: Config) -> ElementHistory {
     csv.flush().expect("flush scenario CSV");
 
     let mut elements = ElementHistory::default();
-    for (time, state) in history.samples() {
+    for (time, state) in history.times_nanos.iter().zip(&history.values) {
         let oe = state_to_elements(mu, state.position_m, state.velocity_mps);
         elements.days.push(nano2sec(*time) / 86_400.0);
         elements.semi_major_axis_m.push(oe.semi_major_axis);
@@ -194,11 +197,11 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(Config {
-        sim_days: args.value("--days", 30.0),
-        grav_degree: args.value("--degree", 20),
-        step_seconds: args.value("--step", 10.0),
+        sim_days: args.value("days", 30.0),
+        grav_degree: args.value("degree", 20),
+        step_seconds: args.value("step", 10.0),
     });
     println!("drift ratio {:.2}", results.drift_ratio);
 }

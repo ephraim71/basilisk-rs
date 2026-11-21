@@ -25,12 +25,13 @@ use basilisk_rs::fsw_algorithms::att_guidance::hill_point::{HillPoint, HillPoint
 use basilisk_rs::fsw_algorithms::att_guidance::inertial_3d::{Inertial3D, Inertial3DConfig};
 use basilisk_rs::messages::VehicleConfigMsg;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
-use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig};
-use std::path::PathBuf;
 
 use nalgebra::{Matrix3, Vector3};
 
-use super::common::{MU_EARTH_M3PS2, elem2rv, scenario_output_path, seconds};
+use super::common::{MU_EARTH_M3PS2, elem2rv, seconds};
+
+#[allow(unused_imports)]
+pub use super::common::scenario_recorder;
 
 /// Upstream `simulationTimeStep = macros.sec2nano(.1)`: the dynamics task.
 pub const DYNAMICS_PERIOD_NANOS: u64 = 100_000_000;
@@ -227,20 +228,6 @@ pub fn mrp_feedback(k: f64, ki: f64, p: f64, known_torque_body_nm: Vector3<f64>)
         known_torque_body_nm,
         control_law_type: 0,
     })
-}
-
-/// A scenario-format CSV recorder for
-/// `examples/output/scenarios/<stem>.csv`, with that path when `write_csv`.
-/// The file is only replaced (and created) when `write_csv`; the caller
-/// schedules the recorder only then.
-pub fn scenario_recorder(stem: &str, write_csv: bool) -> (CsvRecorder, Option<PathBuf>) {
-    let output_path = write_csv.then(|| scenario_output_path(&format!("{stem}.csv")));
-    let recorder = CsvRecorder::new(CsvRecorderConfig {
-        topic: stem.to_string(),
-        output_path: output_path.clone().unwrap_or_default(),
-    })
-    .with_format(CsvFormat::Scenario);
-    (recorder, output_path)
 }
 
 /// `0` or `1`, as upstream's `str(int(flag))` figure-name suffixes.

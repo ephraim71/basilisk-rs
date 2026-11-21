@@ -8,6 +8,8 @@
 //! `tests` ports upstream's `slosh-displacement` reduced check (0.1 s):
 //! finite, and larger in orbit than in deep space.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -24,17 +26,15 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/thruster_factory.rs"]
 mod thruster_factory;
 
+use cli::Cli;
 use dyncomp::{
     Series, seconds, validate_history, validate_matching_histories, validate_task_horizon,
     write_json,
 };
 use dyncomp_variable_mass::{VariableMassCase, run_bsm, run_mujoco, time_step};
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepSloshDisplacement";
@@ -120,8 +120,8 @@ pub fn run(configurations: &[bool], tf_s: f64) -> Vec<(&'static str, f64)> {
 const USAGE: &str = "sweep_slosh_displacement [--duration S]";
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    run(&[false, true], args.value("--duration", 900.0));
+    let mut args = Cli::from_env(USAGE);
+    run(&[false, true], args.value("duration", 900.0));
 }
 
 #[cfg(test)]

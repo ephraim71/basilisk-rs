@@ -11,6 +11,8 @@
 //! `tests` ports upstream's `reaction-wheel-mass` reduced sweep check: the
 //! floor falls one decade per decade of mass (within 0.02 decades).
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -27,17 +29,15 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     Series, max_of, recorder_period_nanos, recorder_sample_interval, relative_principal_angles,
     seconds, validate_history, validate_matching_histories, validate_task_horizon, write_json,
 };
 use dyncomp_rw_panels::{RwPanelsCase, run_bsm, run_mujoco};
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepRwBookkeepingMass";
@@ -157,9 +157,9 @@ const USAGE: &str = "\
 sweep_rw_bookkeeping_mass [--masses 1e-6,1e-8,1e-10] [--dt S] [--duration S] [--record-dt S]";
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let mut config = Config::default();
-    let masses: String = args.value("--masses", String::new());
+    let masses: String = args.value("masses", String::new());
     if !masses.is_empty() {
         config.rw_masses = masses
             .split(',')
@@ -170,9 +170,9 @@ fn main() {
             })
             .collect();
     }
-    config.dt_s = args.value("--dt", config.dt_s);
-    config.tf_s = args.value("--duration", config.tf_s);
-    config.record_dt_s = args.value("--record-dt", config.record_dt_s);
+    config.dt_s = args.value("dt", config.dt_s);
+    config.tf_s = args.value("duration", config.tf_s);
+    config.record_dt_s = args.value("record-dt", config.record_dt_s);
     run(&config);
 }
 

@@ -24,6 +24,8 @@
 //! `tests` ports `_assert_pareto_metrics` on the reduced profile and
 //! `test_pareto_flex_requires_common_comparison_horizon`.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -40,18 +42,16 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{IntegratorChoice, IntegratorName, write_json};
 use dyncomp_flex_panels::{BsmChain, Chain, HubHistory};
 use dyncomp_pareto::{
     Engine, FinalState, ParetoRow, SweepConfig, add_interleaved_timings, parse_configs,
     sweep_engine,
 };
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareParetoFlexPanels";
@@ -251,17 +251,17 @@ scenario_compare_pareto_flex_panels [--reduced] [--configs LIST] [--duration S]
   --duration   propagation horizon [s] (default 10)";
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let mut config = if args.flag("--reduced") {
+    let mut args = Cli::from_env(USAGE);
+    let mut config = if args.switch("reduced") {
         Config::reduced()
     } else {
         Config::full()
     };
-    let configs: String = args.value("--configs", String::new());
+    let configs: String = args.value("configs", String::new());
     if !configs.is_empty() {
         config.sweep = parse_configs(&configs).unwrap_or_else(|error| args.fail(&error));
     }
-    config.sim_duration_s = args.value("--duration", config.sim_duration_s);
+    config.sim_duration_s = args.value("duration", config.sim_duration_s);
     let results = run(&config);
     for (engine, results) in [
         ("BSM", Some(&results.bsm)),

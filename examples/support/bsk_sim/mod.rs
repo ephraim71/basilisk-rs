@@ -84,15 +84,16 @@ pub mod formation_dynamics;
 pub mod formation_fsw;
 pub mod fsw;
 
-use std::path::PathBuf;
-
 use basilisk_rs::overrides::Registry;
 use basilisk_rs::simulation::Simulation;
-use basilisk_rs::telemetry::{CsvFormat, CsvRecorder, CsvRecorderConfig, CsvSourceConfig};
+use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use nalgebra::Vector3;
 
-use common::{array_columns, scenario_output_path, vector_columns};
+use common::{array_columns, vector_columns};
+
+#[allow(unused_imports)]
+pub use common::scenario_recorder;
 use events::{Events, Runner};
 
 /// The [`events::Events`] module: first in every tick.
@@ -262,18 +263,6 @@ pub fn elements(
 pub const SIGMA_BN_INIT: [f64; 3] = [0.1, 0.2, -0.3];
 /// The initial rate most BskSim scenarios use \[rad/s\].
 pub const OMEGA_BN_B_INIT: [f64; 3] = [0.001, -0.01, 0.03];
-
-/// A scenario-format CSV recorder for `examples/output/scenarios/<stem>.csv`,
-/// and the path, when `write_csv`; schedule it only then.
-pub fn scenario_recorder(stem: &str, write_csv: bool) -> (CsvRecorder, Option<PathBuf>) {
-    let output_path = write_csv.then(|| scenario_output_path(&format!("{stem}.csv")));
-    let recorder = CsvRecorder::new(CsvRecorderConfig {
-        topic: stem.to_string(),
-        output_path: output_path.clone().unwrap_or_default(),
-    })
-    .with_format(CsvFormat::Scenario);
-    (recorder, output_path)
-}
 
 /// Upstream `attGuidMsg` recorder fields: `sigma_BR_i`,
 /// `omega_BR_B_rad_per_s_i`, prefixed with `prefix` when nonempty.

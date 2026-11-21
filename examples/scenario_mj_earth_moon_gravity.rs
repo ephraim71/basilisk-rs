@@ -38,6 +38,8 @@ mod cli;
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/orbit_tools.rs"]
@@ -63,11 +65,12 @@ use cli::Cli;
 use common::{seconds, vector_columns};
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use mj_scenarios::{
     GravitySourceSpec, add_gravity_to_all_bodies, load_scene, rkf45, site_state_columns,
     written_csv,
 };
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 const USAGE: &str = "\
@@ -223,9 +226,9 @@ fn run(config: Config, write_csv: bool) -> Results {
     let (position_m, velocity_mps) = elements_to_state(Body::Earth.mu_m3ps2(), &elements);
 
     let hub_state = scene.body("hub").center_of_mass().state_out_msg.clone();
-    let mut hub_log = History::<SpacecraftStateMsg>::new();
-    let mut earth_log = History::<PlanetStateMsg>::new();
-    let mut moon_log = History::<PlanetStateMsg>::new();
+    let mut hub_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut earth_log = MessageLog::<PlanetStateMsg>::default();
+    let mut moon_log = MessageLog::<PlanetStateMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(config.file_stem()));
     let scene = Shared::new(scene);
     let mut scene_task = scene.handle();

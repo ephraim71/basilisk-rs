@@ -1,6 +1,9 @@
 //! In-memory message history: the Rust counterpart of upstream's
 //! `msg.recorder(samplingTime)`, for the values a scenario returns to its
-//! caller (and its tests) rather than writes to CSV.
+//! caller (and its tests) rather than writes to CSV, which
+//! [`basilisk_rs::telemetry::CsvRecorder`] does. Schedule it at the sampling
+//! period, after the module that writes the message, as upstream adds a
+//! recorder to the task after the modules it records.
 
 #![allow(dead_code)]
 
@@ -29,6 +32,17 @@ impl<T> Default for MessageLog<T> {
 }
 
 impl<T> MessageLog<T> {
+    /// An empty log; connect [`input`](Self::input) and schedule it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `(time_ns, message)` pairs in recording order: upstream `times()`
+    /// and the recorded payloads.
+    pub fn into_samples(self) -> Vec<(u64, T)> {
+        self.times_nanos.into_iter().zip(self.values).collect()
+    }
+
     /// Sample times \[s\].
     pub fn times_s(&self) -> Vec<f64> {
         self.times_nanos

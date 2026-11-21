@@ -24,6 +24,8 @@
 //! flexible-panel half of
 //! `test_articulated_scenarios_have_nontrivial_absolute_motion`.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -38,17 +40,15 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     IntegratorChoice, Propagation, Series, TimingStats, interleaved_propagation_stats, max_of,
     relative_principal_angles, seconds, validate_history, validate_matching_histories, write_json,
 };
 use dyncomp_flex_panels::{BsmChain, Chain, run_bsm};
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareFlexPanels";
@@ -302,8 +302,8 @@ pub fn run(config: &Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let segments: String = args.value("--segments", String::new());
+    let mut args = Cli::from_env(USAGE);
+    let segments: String = args.value("segments", String::new());
     let n_segments = if segments.is_empty() {
         DEFAULT_SEGMENTS.to_vec()
     } else {

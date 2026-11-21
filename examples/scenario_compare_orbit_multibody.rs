@@ -30,6 +30,8 @@
 //! `test_orbit_multibody_compares_total_center_of_mass`; without the `mujoco`
 //! feature only the BSM-versus-Kepler bounds run.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -46,11 +48,10 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     DEFAULT_TIMING_REPEATS, IntegratorChoice, Series, max_of, recorder_period_nanos,
     save_runtime_table, seconds, validate_history, vector_differences, write_json,
@@ -63,7 +64,6 @@ use dyncomp_rw_panels::{
 use grav_factory::Body;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::orbit_period_s;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareOrbitMultibody";
@@ -327,9 +327,9 @@ fn write_summary(metrics: &Metrics) {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(Config {
-        save_timing: args.flag("--timing"),
+        save_timing: args.switch("timing"),
     });
     println!(
         "wrote {}: {:#?}",

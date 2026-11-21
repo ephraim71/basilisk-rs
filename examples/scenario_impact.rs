@@ -30,16 +30,18 @@
 //! and the hub starts to rotate after it, and the broken hinges keep
 //! oscillating while the damped ones settle.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::any::Any;
 use std::sync::{Arc, Mutex};
@@ -58,13 +60,14 @@ use basilisk_rs::spacecraft::{
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{run_until, sec2nano};
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 
 const USAGE: &str = "scenario_impact     run the debris impact on the flexible array";
 
@@ -271,9 +274,9 @@ pub fn run() -> Results {
     let edits = PanelEdits::default();
     let mut csv = scenario_csv("scenarioImpact");
     let csv_path = csv.config.output_path.clone();
-    let mut joint1_log = History::<HingedRigidBodyMsg>::new();
-    let mut joint2_log = History::<HingedRigidBodyMsg>::new();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
+    let mut joint1_log = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut joint2_log = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
     // Upstream `timeInitString = "2012 MAY 1 00:28:30.0"`.
     let epoch = Epoch::from_gregorian_utc(2012, 5, 1, 0, 28, 30, 0);
     {
@@ -349,7 +352,7 @@ pub fn run() -> Results {
 }
 
 fn main() {
-    ScenarioArgs::from_env(USAGE);
+    Cli::from_env(USAGE);
     let results = run();
     let peak = |log: &[(u64, HingedRigidBodyMsg)]| {
         log.iter()

@@ -34,6 +34,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -48,8 +50,9 @@ use basilisk_rs::mujoco_dynamics::interpolators::{
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
+use message_log::MessageLog;
 use mj_scenarios::{epoch, load_scene, rkf45, scalar_column, site_state_columns, written_csv};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream `dt` \[ns\].
@@ -189,9 +192,9 @@ fn run(write_csv: bool) -> Results {
         .into_iter()
         .map(|(joint, _, _)| (joint, scene.scalar_joint(joint).state_out_msg.clone()))
         .collect();
-    let mut hub_log = History::<SpacecraftStateMsg>::new();
-    let mut joint_logs: Vec<History<ScalarJointStateMsg>> =
-        joint_states.iter().map(|_| History::new()).collect();
+    let mut hub_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut joint_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        joint_states.iter().map(|_| MessageLog::default()).collect();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
 
     let scene = Shared::new(scene);
@@ -242,7 +245,7 @@ fn run(write_csv: bool) -> Results {
         joints: joint_states
             .iter()
             .map(|(joint, _)| *joint)
-            .zip(joint_logs.into_iter().map(History::into_samples))
+            .zip(joint_logs.into_iter().map(MessageLog::into_samples))
             .collect(),
     }
 }

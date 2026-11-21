@@ -26,6 +26,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -38,11 +40,12 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
 use common::seconds;
+use message_log::MessageLog;
 use mj_scenarios::{
     RKF45_DEFAULT_ATOL, RKF45_DEFAULT_RTOL, epoch, load_scene, rkf45, scalar_column,
     site_state_columns, written_csv,
 };
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 
 /// Upstream `dt`.
 const STEP_NANOS: u64 = seconds(1);
@@ -91,9 +94,9 @@ fn run(write_csv: bool) -> Results {
     }
     let hub_state = scene.body("hub").origin().state_out_msg.clone();
 
-    let mut mass_logs: Vec<History<SpacecraftMassPropsMsg>> =
-        (0..4).map(|_| History::new()).collect();
-    let mut hub_log = History::<SpacecraftStateMsg>::new();
+    let mut mass_logs: Vec<MessageLog<SpacecraftMassPropsMsg>> =
+        (0..4).map(|_| MessageLog::default()).collect();
+    let mut hub_log = MessageLog::<SpacecraftStateMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     {
         let mut simulation = Simulation::new(epoch(), false);
@@ -129,7 +132,10 @@ fn run(write_csv: bool) -> Results {
     }
     drop(messages);
     Results {
-        tank_masses: mass_logs.into_iter().map(History::into_samples).collect(),
+        tank_masses: mass_logs
+            .into_iter()
+            .map(MessageLog::into_samples)
+            .collect(),
         hub: hub_log.into_samples(),
     }
 }

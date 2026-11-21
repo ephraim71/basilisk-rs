@@ -14,7 +14,7 @@
 //! spins at `[0.01, 0.01, 0.01]` rad/s about its joint center of mass. The
 //! constraint is tuned with `alpha = 1e2`, `beta = 1e3`; both spacecraft are
 //! integrated together with RKF45 at 0.1 s for one minute. Upstream's
-//! `r_CN_NInit` are the centers of mass; [`hub_init`] converts them to the
+//! `r_CN_NInit` are the centers of mass; [`multibody::set_center_of_mass_initial_state`] converts them to the
 //! hub states as upstream's `Spacecraft::initializeDynamics` does.
 //!
 //! The CSV holds both hub states at every step (`r_B1N_N_m_i`,
@@ -27,29 +27,32 @@
 //! below a millimetre and the attitude violation below a hundredth of a
 //! degree, and the pair keeps tumbling together.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/constrained.rs"]
 mod constrained;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::SpacecraftGroup;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use constrained::{
     ConstraintGeometry, Violations, earth_point_mass, hub, hub_columns, leo_state, upstream_rkf45,
 };
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 
 const USAGE: &str = "\
 scenario_constrained_dynamics [--env Gravity|NoGravity]
@@ -141,8 +144,8 @@ pub fn run(environment: Environment) -> Results {
     let file_stem = format!("scenarioConstrainedDynamics{}", environment.label());
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
-    let mut history_1 = History::<SpacecraftStateMsg>::new();
-    let mut history_2 = History::<SpacecraftStateMsg>::new();
+    let mut history_1 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut history_2 = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2024, 5, 14), false);
@@ -175,11 +178,11 @@ pub fn run(environment: Environment) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let environments = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let environments = if args.switch("all") {
         ALL.to_vec()
     } else {
-        match args.value("--env", "Gravity".to_string()).as_str() {
+        match args.value("env", "Gravity".to_string()).as_str() {
             "Gravity" => vec![Environment::Gravity],
             "NoGravity" => vec![Environment::NoGravity],
             other => args.fail(&format!("unknown env {other:?}")),

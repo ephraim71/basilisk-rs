@@ -37,6 +37,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -55,9 +57,10 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::utilities::rigid_body_kinematics::mrp_to_dcm;
 use basilisk_rs::{Module, SimulationContext, connect};
 use cli::Cli;
+use message_log::MessageLog;
 use mj_scenarios::{epoch, load_scene, rkf45, scalar_column, site_state_columns, written_csv};
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 const USAGE: &str = "\
@@ -216,9 +219,9 @@ fn run(config: Config, write_csv: bool) -> Results {
     let times = Arc::new(task_times());
     let mut force_logs: Vec<_> = forces
         .iter()
-        .map(|_| OnSchedule::new(History::<SingleActuatorMsg>::new(), &times))
+        .map(|_| OnSchedule::new(MessageLog::<SingleActuatorMsg>::default(), &times))
         .collect();
-    let mut hub_log = OnSchedule::new(History::<SpacecraftStateMsg>::new(), &times);
+    let mut hub_log = OnSchedule::new(MessageLog::<SpacecraftStateMsg>::default(), &times);
     let mut csv = write_csv.then(|| OnSchedule::new(scenario_csv(config.file_stem()), &times));
     let scene = Shared::new(scene);
     let mut scene_task = OnSchedule::new(scene.handle(), &times);

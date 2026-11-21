@@ -24,14 +24,16 @@
 //! capture its figures show: the hyperbolic arrival ends on a bound orbit
 //! without reaching the surface.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::dynamics::drag_dynamic_effector::{
     DragDynamicEffector, DragDynamicEffectorConfig,
@@ -45,11 +47,12 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_aerocapture [--planet Earth|Mars]
@@ -189,8 +192,8 @@ pub fn run(planet: PlanetCase) -> Results {
 
     let mut csv = scenario_csv(&format!("scenarioAerocapture{}", planet.label()));
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut atmosphere_log = History::<AtmosphereMsg>::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut atmosphere_log = MessageLog::<AtmosphereMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -234,11 +237,11 @@ pub fn energy(mu: f64, state: &SpacecraftStateMsg) -> f64 {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let planets = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let planets = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
-        match args.value("--planet", "Mars".to_string()).as_str() {
+        match args.value("planet", "Mars".to_string()).as_str() {
             "Earth" => vec![PlanetCase::Earth],
             "Mars" => vec![PlanetCase::Mars],
             other => args.fail(&format!("unknown planet case {other:?}")),

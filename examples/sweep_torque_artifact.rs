@@ -19,6 +19,8 @@
 //! `tests` ports upstream's `torque-artifact` reduced check and
 //! `test_torque_sweep_rejects_unreachable_requested_horizon`.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -33,11 +35,10 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     Series, max_of, recorder_sample_interval, relative_principal_angles, seconds, validate_history,
     validate_matching_histories, validate_task_horizon, write_json,
@@ -45,7 +46,6 @@ use dyncomp::{
 use dyncomp_torque::{AttitudeHistory, OMEGA0_B, TORQUE_B, TorqueCase, run_bsm, run_mujoco};
 use grav_factory::Body;
 use nalgebra::Vector3;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepTorqueArtifact";
@@ -316,7 +316,7 @@ const USAGE: &str = "\
 sweep_torque_artifact [--speeds 0,750,2500,7500] [--dts 0.4,0.2,...] [--duration S]
                       [--record-dt S] [--velocity-dt S]";
 
-fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
+fn list(args: &mut Cli, name: &str, default: Vec<f64>) -> Vec<f64> {
     let text: String = args.value(name, String::new());
     if text.is_empty() {
         return default;
@@ -325,20 +325,20 @@ fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
         .map(|v| {
             v.trim()
                 .parse()
-                .unwrap_or_else(|_| args.fail(&format!("invalid {name} {v:?}")))
+                .unwrap_or_else(|_| args.fail(&format!("invalid --{name} {v:?}")))
         })
         .collect()
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let defaults = Config::default();
     let config = Config {
-        speeds: list(&args, "--speeds", defaults.speeds),
-        dts: list(&args, "--dts", defaults.dts),
-        tf_s: args.value("--duration", defaults.tf_s),
-        record_dt_s: args.value("--record-dt", defaults.record_dt_s),
-        velocity_sweep_dt_s: args.value("--velocity-dt", defaults.velocity_sweep_dt_s),
+        speeds: list(&mut args, "speeds", defaults.speeds),
+        dts: list(&mut args, "dts", defaults.dts),
+        tf_s: args.value("duration", defaults.tf_s),
+        record_dt_s: args.value("record-dt", defaults.record_dt_s),
+        velocity_sweep_dt_s: args.value("velocity-dt", defaults.velocity_sweep_dt_s),
     };
     run(&config);
 }

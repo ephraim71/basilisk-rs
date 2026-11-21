@@ -29,8 +29,10 @@
 
 #[path = "support/common.rs"]
 mod common;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/prescribed.rs"]
 mod prescribed;
 #[path = "support/recording.rs"]
@@ -48,10 +50,11 @@ use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::{Matrix3, Vector3};
 use prescribed::{box_inertia_kg_m2, hub_at_rest, rotation_profiler};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 
 const STEM: &str = "scenarioPrescribedScrewMotion";
 /// Upstream `dyn_time_step_sec = 0.01`.
@@ -158,11 +161,11 @@ pub fn run() -> Results {
 
     let mut csv = scenario_csv(STEM);
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut diagnostics_log = History::<SpacecraftDiagnosticsMsg>::new();
-    let mut translation_logs = [(); 2].map(|_| History::<PrescribedTranslationMsg>::new());
-    let mut rotation_logs = [(); 2].map(|_| History::<PrescribedRotationMsg>::new());
-    let mut angle_logs = [(); 2].map(|_| History::<HingedRigidBodyMsg>::new());
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut diagnostics_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
+    let mut translation_logs = [(); 2].map(|_| MessageLog::<PrescribedTranslationMsg>::default());
+    let mut rotation_logs = [(); 2].map(|_| MessageLog::<PrescribedRotationMsg>::default());
+    let mut angle_logs = [(); 2].map(|_| MessageLog::<HingedRigidBodyMsg>::default());
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
@@ -239,12 +242,13 @@ pub fn run() -> Results {
     Results {
         csv_path,
         states: state_log.into_samples(),
-        diagnostics: diagnostics_log.messages().cloned().collect(),
+        diagnostics: diagnostics_log.values.iter().cloned().collect(),
         translations: [translation_log_1, translation_log_2]
-            .map(|log| log.messages().cloned().collect::<Vec<_>>()),
+            .map(|log| log.values.iter().cloned().collect::<Vec<_>>()),
         rotations: [rotation_log_1, rotation_log_2]
-            .map(|log| log.messages().cloned().collect::<Vec<_>>()),
-        angles: [angle_log_1, angle_log_2].map(|log| log.messages().cloned().collect::<Vec<_>>()),
+            .map(|log| log.values.iter().cloned().collect::<Vec<_>>()),
+        angles: [angle_log_1, angle_log_2]
+            .map(|log| log.values.iter().cloned().collect::<Vec<_>>()),
         axes,
     }
 }

@@ -1,6 +1,7 @@
 //! Setup shared by the ports of upstream's multibody example scenarios
 //! (`scenarioHingedRigidBody`, `scenarioDeployingPanel`, `scenarioFuelSlosh`,
-//! `scenarioSpinningBodiesTwoDOF`, ...).
+//! `scenarioSpinningBodiesTwoDOF`, the constrained-dynamics, prescribed-motion
+//! and robotic-arm scenarios, ...).
 //!
 //! * [`set_center_of_mass_initial_state`]: upstream `hub.r_CN_NInit` and
 //!   `hub.v_CN_NInit`, the initial state of the spacecraft's center of mass,
@@ -10,7 +11,9 @@
 //!   staged between runs ([`EffectorEdits`], upstream's setters called
 //!   between `ExecuteSimulation`s) and observers of its committed state
 //!   (upstream `dynManager.getStateObject(...)` read by a
-//!   `pythonVariableLogger`).
+//!   `pythonVariableLogger`): the spacecraft owns its effectors, and a
+//!   running `Simulation` holds the spacecraft, so an observer writes what a
+//!   scenario logs to an `Output` or a [`SharedLog`] the scenario holds.
 //!
 //! Include it next to `common.rs`:
 //!
@@ -32,14 +35,18 @@ use nalgebra::{Matrix3, Vector3};
 /// The spacecraft's center of mass `c_B` and its inertial-frame rate
 /// `cDot_B = c'_B + ω × c_B` (body components) at the initial state of its
 /// hub and effectors: upstream `Spacecraft::updateSCMassProps` at time zero.
-pub fn initial_center_of_mass(spacecraft: &Spacecraft) -> (Vector3<f64>, Vector3<f64>) {
+/// Each state effector first loads its initial state, as upstream's
+/// effectors hold theirs before `initializeDynamics`.
+pub fn initial_center_of_mass(spacecraft: &mut Spacecraft) -> (Vector3<f64>, Vector3<f64>) {
     let hub_mass = spacecraft.config.mass_kg;
     let mut mass = hub_mass;
     let mut mass_rate = 0.0;
     let mut first_moment = hub_mass * spacecraft.config.hub_center_of_mass_body_m;
     let mut first_moment_rate = Vector3::zeros();
-    for effector in &spacecraft.state_effectors {
-        let props = effector.mass_properties(&effector.initial_state());
+    for effector in &mut spacecraft.state_effectors {
+        let state = effector.initial_state();
+        effector.load_state(&state);
+        let props = effector.mass_properties(&state);
         mass += props.mass_kg;
         mass_rate += props.mass_dot_kgps;
         first_moment += props.mass_kg * props.center_of_mass_body_m;
@@ -54,9 +61,17 @@ pub fn initial_center_of_mass(spacecraft: &Spacecraft) -> (Vector3<f64>, Vector3
 
 /// Upstream `hub.r_CN_NInit = r_CN_N`, `hub.v_CN_NInit = v_CN_N`: places the
 /// spacecraft so that its center of mass starts at `r_cn_n_m` with velocity
-/// `v_cn_n_mps`. Upstream's `initializeDynamics` subtracts `[NB] c_B` and
-/// `[NB] cDot_B` from them to get the hub states `r_BN_N`, `v_BN_N`; this
-/// does the same with the effectors already added (call it after
+/// `v_cn_n_mps`. basilisk-rs's `SpacecraftConfig::initial_position_m` and
+/// `initial_velocity_mps` are the hub states `r_BN_N` and `v_BN_N`, which
+/// upstream's `initializeDynamics` gets as
+///
+/// ```text
+/// r_BN_N = r_CN_NInit - [NB] c_B
+/// v_BN_N = v_CN_NInit - [NB] (c'_B + ω_BN_B × c_B)
+/// ```
+///
+/// with the mass properties at the initial effector states; this does the
+/// same with the effectors already added (call it after
 /// `add_state_effector`, with the initial attitude and rate set).
 pub fn set_center_of_mass_initial_state(
     spacecraft: &mut Spacecraft,

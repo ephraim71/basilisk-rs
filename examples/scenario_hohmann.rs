@@ -37,16 +37,18 @@
 //! runs the scenario, by checking the orbit it reaches and that each mode's
 //! attitude is tracked.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/task_switch.rs"]
 mod task_switch;
 
@@ -75,13 +77,14 @@ use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use common::{rpm_to_radps, vector_columns};
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, run_until, sec2nano};
-use recording::{History, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{scenario_csv, state_columns};
 use task_switch::{Switched, TaskSwitch};
 
 const USAGE: &str = "scenario_hohmann [--r-first 7000000] [--r-second 42164000]";
@@ -258,8 +261,8 @@ pub fn run(r_first_m: f64, r_second_m: f64) -> Results {
         ),
     ];
     let mut csv = scenario_csv("scenarioHohmann");
-    let mut state_history = History::<SpacecraftStateMsg>::new();
-    let mut error_history = History::<AttitudeGuidanceMsg>::new();
+    let mut state_history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut error_history = MessageLog::<AttitudeGuidanceMsg>::default();
     let mut reference_inputs = vec![tracking_error.att_ref_in_msg.clone()];
     reference_inputs.push(
         csv.add_source::<AttitudeReferenceMsg>(CsvSourceConfig::columns(vector_columns(
@@ -398,10 +401,10 @@ pub fn run(r_first_m: f64, r_second_m: f64) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(
-        args.value("--r-first", 7_000_000.0),
-        args.value("--r-second", 42_164_000.0),
+        args.value("r-first", 7_000_000.0),
+        args.value("r-second", 42_164_000.0),
     );
     let (_, last) = results.states.last().expect("samples");
     let elements = basilisk_rs::utilities::orbital_motion::state_to_elements(

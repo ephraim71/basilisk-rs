@@ -35,6 +35,8 @@
 //! the `mujoco` feature, `test_variable_mass_deep_space_numerical_agreement`
 //! and the two native pendulum-damping tests.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -51,13 +53,12 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 #[path = "support/thruster_factory.rs"]
 mod thruster_factory;
 
+use cli::Cli;
 use dyncomp::{DEFAULT_TIMING_REPEATS, Series, save_runtime_table, seconds, validate_history};
 use dyncomp_variable_mass::{
     PEND_BOB_INERTIA, SIM_DURATION_S, VariableMassCase, VariableMassHistory,
@@ -65,7 +66,6 @@ use dyncomp_variable_mass::{
     time_step,
 };
 use nalgebra::Vector3;
-use scenario_args::ScenarioArgs;
 use serde_json::{Value, json};
 
 const FILE_NAME: &str = "scenarioCompareVariableMass";
@@ -327,17 +327,17 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let mut config = Config::new(
-        !args.flag("--leak"),
-        !args.flag("--deep-space"),
-        args.value("--duration", SIM_DURATION_S),
+        !args.switch("leak"),
+        !args.switch("deep-space"),
+        args.value("duration", SIM_DURATION_S),
     );
-    config.case.near_rigid = args.flag("--near-rigid");
+    config.case.near_rigid = args.switch("near-rigid");
     if config.case.near_rigid && config.case.in_orbit {
         args.fail("--near-rigid needs --deep-space");
     }
-    config.save_timing = args.flag("--timing");
+    config.save_timing = args.switch("timing");
     let results = run(config);
     println!(
         "wrote {}: {}",

@@ -38,6 +38,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/orbit_tools.rs"]
@@ -68,13 +70,14 @@ use basilisk_rs::utilities::orbital_motion::{
 };
 use cli::Cli;
 use common::{seconds, vector_columns};
+use message_log::MessageLog;
 use mj_scenarios::{
     GravitySourceSpec, add_gravity_to_all_bodies, epoch, scalar_column, site_state_columns,
     written_csv,
 };
 use nalgebra::Vector3;
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 const USAGE: &str = "\
@@ -245,10 +248,10 @@ fn run(config: Config, write_csv: bool, committed_outputs: bool) -> Results {
 
     let ball_state = scene.body("ball").origin().state_out_msg.clone();
     let deterministic_out = atmosphere.output_atmosphere_msg.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut deterministic_log = History::<AtmosphereMsg>::new();
-    let mut density_log = History::<AtmosphereMsg>::new();
-    let mut drag_log = History::<BodyForceCommandMsg>::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut deterministic_log = MessageLog::<AtmosphereMsg>::default();
+    let mut density_log = MessageLog::<AtmosphereMsg>::default();
+    let mut drag_log = MessageLog::<BodyForceCommandMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(config.file_stem()));
     let scene = Shared::new(scene);
     let mut scene_task = scene.handle();

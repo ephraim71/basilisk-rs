@@ -48,18 +48,20 @@
 //! to about 2.2 m as the arm retracts; the constraint pulls the position
 //! violation to near zero; the attitude violation stays at numerical zero.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/constrained.rs"]
 mod constrained;
-#[path = "support/hub_init.rs"]
-mod hub_init;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/prescribed.rs"]
 mod prescribed;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
@@ -78,15 +80,16 @@ use basilisk_rs::spacecraft::SpacecraftGroup;
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::rigid_body_kinematics::{mrp_to_dcm, sub_mrp};
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use constrained::{
     hub, hub_pose_columns, model_inertia_kg_m2, upstream_rkf45, violation_angles_deg,
 };
 use hifitime::Epoch;
-use hub_init::set_center_of_mass_initial_state;
+use message_log::MessageLog;
+use multibody::set_center_of_mass_initial_state;
 use nalgebra::Vector3;
 use prescribed::translation_profiler;
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 use table_csv::write_table;
 
 const USAGE: &str = "\
@@ -298,9 +301,9 @@ pub fn run(config: &Config) -> Results {
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
     let sample_nanos = nanos(SAMPLE_S);
-    let mut history_1 = History::<SpacecraftStateMsg>::new();
-    let mut history_2 = History::<SpacecraftStateMsg>::new();
-    let mut arm_log = History::<LinearTranslationRigidBodyMsg>::new();
+    let mut history_1 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut history_2 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut arm_log = MessageLog::<LinearTranslationRigidBodyMsg>::default();
     let [state_1, state_2] = [0, 1].map(|index| group.spacecraft()[index].state_out.clone());
     // Upstream `computeDockingDistance`.
     let docking_distance_m = || {
@@ -380,7 +383,7 @@ pub fn run(config: &Config) -> Results {
     // Upstream `processData`.
     let states_1 = history_1.into_samples();
     let states_2 = history_2.into_samples();
-    let rho_m: Vec<f64> = arm_log.messages().map(|arm| arm.rho_m).collect();
+    let rho_m: Vec<f64> = arm_log.values.iter().map(|arm| arm.rho_m).collect();
     let mut hub_separation_m = Vec::new();
     let mut position_violation_m = Vec::new();
     let mut attitude_violation = Vec::new();
@@ -423,18 +426,18 @@ impl Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let config = if args.flag("--test") {
+    let mut args = Cli::from_env(USAGE);
+    let config = if args.switch("test") {
         Config::TEST
     } else {
         let defaults = Config::UPSTREAM;
         Config {
-            gain: args.value("--gain", defaults.gain),
-            dyn_rate_s: args.value("--dyn-rate", defaults.dyn_rate_s),
-            approach_gap_m: args.value("--approach-gap", defaults.approach_gap_m),
-            settle_s: args.value("--settle", defaults.settle_s),
-            berth_s: args.value("--berth", defaults.berth_s),
-            damping_scale: args.value("--damping-scale", defaults.damping_scale),
+            gain: args.value("gain", defaults.gain),
+            dyn_rate_s: args.value("dyn-rate", defaults.dyn_rate_s),
+            approach_gap_m: args.value("approach-gap", defaults.approach_gap_m),
+            settle_s: args.value("settle", defaults.settle_s),
+            berth_s: args.value("berth", defaults.berth_s),
+            damping_scale: args.value("damping-scale", defaults.damping_scale),
         }
     };
     let results = run(&config);

@@ -22,16 +22,18 @@
 //! two-body (Kepler) solution by at most 1 m (only computed, as upstream, for
 //! the point-mass cases).
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
@@ -40,12 +42,13 @@ use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, elements_to_state, state_to_elements,
 };
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::{Body, GGM2B_J2_ONLY, GGM03S_J2_ONLY};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{kepler_state, nano2sec, orbit_period_s, sec2nano};
-use recording::{History, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_basic_orbit [--orbit LEO|GTO|GEO] [--planet Earth|Mars] [--spherical-harmonics]
@@ -204,7 +207,7 @@ pub fn run(config: Config) -> Results {
     let file_stem = format!("scenarioBasicOrbit{}", config.label());
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -239,24 +242,24 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
-        let orbit = match args.value("--orbit", "LEO".to_string()).as_str() {
+        let orbit = match args.value("orbit", "LEO".to_string()).as_str() {
             "LEO" => OrbitCase::Leo,
             "GTO" => OrbitCase::Gto,
             "GEO" => OrbitCase::Geo,
             other => args.fail(&format!("unknown orbit case {other:?}")),
         };
-        let planet = match args.value("--planet", "Earth".to_string()).as_str() {
+        let planet = match args.value("planet", "Earth".to_string()).as_str() {
             "Earth" => PlanetCase::Earth,
             "Mars" => PlanetCase::Mars,
             other => args.fail(&format!("unknown planet case {other:?}")),
         };
         vec![Config {
             orbit,
-            spherical_harmonics: args.flag("--spherical-harmonics"),
+            spherical_harmonics: args.switch("spherical-harmonics"),
             planet,
         }]
     };

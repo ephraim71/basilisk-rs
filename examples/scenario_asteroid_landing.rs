@@ -28,6 +28,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -45,9 +47,10 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::utilities::rigid_body_kinematics::mrp_to_dcm;
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
+use message_log::MessageLog;
 use mj_scenarios::{epoch, model_path, rkf45, site_state_columns, written_csv};
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream `dt` \[ns\].
@@ -143,7 +146,7 @@ fn run(write_csv: bool) -> Results {
     thrust.connect_to(&mut scene.single_actuator_mut("thrust").actuator_in_msg);
 
     let hub_state = scene.body("hub").origin().state_out_msg.clone();
-    let mut hub_log = History::<SpacecraftStateMsg>::new();
+    let mut hub_log = MessageLog::<SpacecraftStateMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let scene = Shared::new(scene);
     let mut scene_task = scene.handle();

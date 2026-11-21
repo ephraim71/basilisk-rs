@@ -19,28 +19,31 @@
 //! for the Hohmann transfer, and the 8.93845 degree inclination upstream's
 //! plot marks for the two plane changes.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::SpacecraftStateMsg;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::Body;
 use hifitime::{Epoch, TimeScale};
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, run_until, sec2nano};
-use recording::{History, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_orbit_maneuver [--maneuver 0|1]   0: Hohmann transfer, 1: inclination change
@@ -115,7 +118,7 @@ pub fn run(maneuver: Maneuver) -> Results {
     let mut earth_ephemeris = Body::Earth.ephemeris(Body::Earth);
 
     let mut csv = scenario_csv(&format!("scenarioOrbitManeuver{}", maneuver as u8));
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     {
         let start = Epoch::from_gregorian(2024, 9, 21, 21, 0, 0, 0, TimeScale::TDB);
         let mut simulation = Simulation::new(start, false);
@@ -181,11 +184,11 @@ pub fn run(maneuver: Maneuver) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let cases = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let cases = if args.switch("all") {
         vec![Maneuver::Hohmann, Maneuver::Inclination]
     } else {
-        match args.value("--maneuver", 0u8) {
+        match args.value("maneuver", 0u8) {
             0 => vec![Maneuver::Hohmann],
             1 => vec![Maneuver::Inclination],
             other => args.fail(&format!("unknown maneuver case {other}")),

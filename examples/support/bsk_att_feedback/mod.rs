@@ -4,11 +4,18 @@
 //! rerun.
 //!
 //! **Marked for consolidation with `examples/support/bsk_sim`**, upstream's
-//! BskSim framework, which is being ported separately: once it lands, the
-//! Monte Carlo examples should build this run from `bsk_sim::BskDynamics`
-//! and `bsk_sim::BskFsw` with the mode `inertial3D`, and this module go.
-//! Until then it is built from the existing helpers and holds only the parts
-//! of BskSim that drive this mode.
+//! BskSim framework: the Monte Carlo examples should build this run from
+//! `bsk_sim::BskModels` in the mode `inertial3D` (with the dispersed hub mass,
+//! center of mass and inertia set on `dynamics.spacecraft` and the hub state
+//! converted with `multibody::set_center_of_mass_initial_state`), and this
+//! module go. That run is not bit-identical to this one: the translation
+//! matches exactly, but `sigma_BR` differs in the last digit from the second
+//! sample on (the first, dispersed), as BskSim's `NoisySimpleNav` composes
+//! its zero attitude noise through an MRP addition where `SimpleNavigation`
+//! passes the attitude through. The switch therefore changes the archived
+//! campaign and its CSV files (in the last digits), so it waits for the
+//! owner's decision. Until then this module is built from the existing
+//! helpers and holds only the parts of BskSim that drive this mode.
 //!
 //! # The simulation
 //!
@@ -43,10 +50,10 @@
 pub mod common;
 #[path = "../grav_factory.rs"]
 pub mod grav_factory;
-#[path = "../hub_init.rs"]
-pub mod hub_init;
 #[path = "../message_log.rs"]
 pub mod message_log;
+#[path = "../multibody.rs"]
+pub mod multibody;
 #[path = "../rw_factory.rs"]
 pub mod rw_factory;
 #[path = "../staged.rs"]
@@ -211,7 +218,7 @@ pub fn simulate(config: &AttFeedbackConfig) -> AttFeedbackHistory {
     let wheel_speed_msg = wheels.rw_speed_out_msg.clone();
     spacecraft.add_state_effector(wheels);
     // Upstream's `r_CN_NInit` and `v_CN_NInit` are the center of mass's.
-    hub_init::set_center_of_mass_initial_state(&mut spacecraft, position_m, velocity_mps);
+    multibody::set_center_of_mass_initial_state(&mut spacecraft, position_m, velocity_mps);
     let mut navigation = SimpleNavigation::new("SimpleNavigation");
 
     // `BSK_Fsw`: `SetVehicleConfiguration` (the nominal inertia), the

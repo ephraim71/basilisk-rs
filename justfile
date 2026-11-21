@@ -132,7 +132,9 @@ run-scenarios:
     cargo run --release --example scenario_mtb_momentum_management
 
 # Run every ported upstream example scenario and write its CSV files, each in
-# all the parametrizations upstream's `test_scenario*.py` runs.
+# all the parametrizations upstream's `test_scenario*.py` runs, then the
+# basilisk-rs fault-injection demo `scenario_drag_deorbit_faults`. The groups
+# below need the native features and assets their comments list.
 run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios run-dyncomp-scenarios run-mujoco-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
@@ -162,6 +164,7 @@ run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-form
     cargo run --release --example scenario_mtb_momentum_management
     cargo run --release --example scenario_mtb_momentum_management_simple
     cargo run --release --example scenario_sep_momentum_management -- --all
+    cargo run --release --example scenario_drag_deorbit_faults
 
 # Compare existing Rust outputs without rerunning the simulations.
 compare-scenarios reference_zip=reference_csv_zip generated_dir="examples/output/scenarios":
@@ -348,6 +351,7 @@ plot-multibody-a-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_branching_verification.py --generated-dir "{{generated_dir}}"
 
 # Run the constrained-dynamics, prescribed-motion and robotic-arm example
+# scenarios in every parametrization of upstream's `test_scenario*.py` and
 # write their CSV files. `scenario_robotic_arm` reads the ANISE assets of
 # `fetch-anise-assets`. `scenario_robotic_grappling` runs both upstream's
 # default (journal-paper) configuration and its test configuration.

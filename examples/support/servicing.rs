@@ -8,7 +8,7 @@
 //!
 //! As upstream sets them after `InitializeSimulation`, the panel rate and
 //! the slosh rates are perturbations: the hub states are converted from the
-//! centers of mass ([`hub_init`](super::hub_init)) with the appendages at
+//! centers of mass ([`set_center_of_mass_initial_state`]) with the appendages at
 //! rest, then the appendages start with the perturbed rates.
 
 #![allow(dead_code)]
@@ -26,8 +26,8 @@ use basilisk_rs::utilities::rigid_body_kinematics::tilde;
 use nalgebra::{Matrix3, Vector3};
 
 use super::constrained::{ConstraintGeometry, ScModel, hub, model_inertia_kg_m2, upstream_rkf45};
-use super::hub_init::set_center_of_mass_initial_state;
-use super::probed_effector::Probed;
+use super::multibody::Hosted;
+use super::multibody::set_center_of_mass_initial_state;
 
 /// Upstream `solar_panel_geometry.mass` \[kg\].
 pub const PANEL_MASS_KG: f64 = 100.0;
@@ -112,7 +112,7 @@ pub fn slosh_tank(
     offset_m: Vector3<f64>,
     rho_dots_mps: [f64; 3],
     rho_out: ParticleOutputs,
-) -> Probed<FuelTank> {
+) -> Hosted<FuelTank> {
     let xi = 0.2;
     let frequency_radps = 2.0 * 2.0 * std::f64::consts::PI;
     let model = FuelTankModel::new(
@@ -143,7 +143,7 @@ pub fn slosh_tank(
             ..LinearSpringMassDamperConfig::new(format!("{name}Particle{}", index + 1))
         }));
     }
-    Probed::new(tank, move |tank: &FuelTank, _| {
+    Hosted::new(tank).observe(move |tank: &FuelTank, _, _| {
         for (particle, output) in tank.fuel_slosh_particles().iter().zip(&rho_out) {
             let particle = particle
                 .as_any()

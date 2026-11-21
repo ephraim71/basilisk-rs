@@ -26,6 +26,8 @@
 //! `test_scenarioDynamicsComparison.py`; without the `mujoco` feature only
 //! its BSM bounds run.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -40,12 +42,11 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
 use basilisk_rs::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm, prv_to_dcm};
+use cli::Cli;
 use dyncomp::{
     DEFAULT_TIMING_REPEATS, Series, max_of, relative_principal_angles, save_runtime_table, seconds,
     validate_history, validate_matching_histories, vector_differences, vector_headers, write_json,
@@ -56,7 +57,6 @@ use dyncomp_torque::{
 };
 use grav_factory::Body;
 use nalgebra::Vector3;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareTorque";
@@ -374,9 +374,9 @@ fn write_summary(metrics: &Metrics) {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(Config {
-        save_timing: args.flag("--timing"),
+        save_timing: args.switch("timing"),
     });
     println!(
         "wrote {}: {:#?}",

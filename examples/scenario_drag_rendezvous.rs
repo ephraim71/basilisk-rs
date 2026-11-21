@@ -23,21 +23,23 @@
 //! closes to a small residual, the relative MRP saturates at 0.2 while far
 //! away, and the densities stay those of the 300 km orbit.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/drag_rendezvous.rs"]
 mod drag_rendezvous;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
+use cli::Cli;
 use drag_rendezvous::{RendezvousConfig, RendezvousResults, drag_simulator};
-use scenario_args::ScenarioArgs;
 
 const USAGE: &str = "\
 scenario_drag_rendezvous [--alt-offset-m 0] [--true-anomaly-offset-deg 0.1]
@@ -87,16 +89,16 @@ pub fn run(config: RendezvousConfig) -> RendezvousResults {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
         vec![RendezvousConfig {
-            alt_offset_m: args.value("--alt-offset-m", DEFAULT.alt_offset_m),
+            alt_offset_m: args.value("alt-offset-m", DEFAULT.alt_offset_m),
             true_anomaly_offset_deg: args
-                .value("--true-anomaly-offset-deg", DEFAULT.true_anomaly_offset_deg),
-            density_multiplier: args.value("--density-multiplier", DEFAULT.density_multiplier),
-            use_j2: args.flag("--j2"),
+                .value("true-anomaly-offset-deg", DEFAULT.true_anomaly_offset_deg),
+            density_multiplier: args.value("density-multiplier", DEFAULT.density_multiplier),
+            use_j2: args.switch("j2"),
         }]
     };
     for config in configs {

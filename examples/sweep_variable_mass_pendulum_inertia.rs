@@ -16,6 +16,8 @@
 //! `tests` ports upstream's `variable-mass-inertia` reduced check: the
 //! attitude difference grows with the bob inertia.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -32,13 +34,12 @@ mod message_log;
 mod multibody;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 #[path = "support/thruster_factory.rs"]
 mod thruster_factory;
 
+use cli::Cli;
 use dyncomp::{
     Series, max_of, relative_principal_angles, seconds, validate_history,
     validate_matching_histories, validate_task_horizon, write_json,
@@ -46,7 +47,6 @@ use dyncomp::{
 use dyncomp_variable_mass::{
     SIM_DURATION_S, VariableMassCase, VariableMassHistory, run_bsm, run_mujoco,
 };
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepVariableMassPendulumInertia";
@@ -188,7 +188,7 @@ const USAGE: &str = "\
 sweep_variable_mass_pendulum_inertia [--inertias 1e-8,1e-5,1e-4,1e-3] [--steps 0.05,0.025,0.0125]
                                      [--duration S]";
 
-fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
+fn list(args: &mut Cli, name: &str, default: Vec<f64>) -> Vec<f64> {
     let text: String = args.value(name, String::new());
     if text.is_empty() {
         return default;
@@ -197,18 +197,18 @@ fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
         .map(|v| {
             v.trim()
                 .parse()
-                .unwrap_or_else(|_| args.fail(&format!("invalid {name} {v:?}")))
+                .unwrap_or_else(|_| args.fail(&format!("invalid --{name} {v:?}")))
         })
         .collect()
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let defaults = Config::default();
     run(&Config {
-        bob_inertias: list(&args, "--inertias", defaults.bob_inertias),
-        time_steps: list(&args, "--steps", defaults.time_steps),
-        sim_duration_s: args.value("--duration", defaults.sim_duration_s),
+        bob_inertias: list(&mut args, "inertias", defaults.bob_inertias),
+        time_steps: list(&mut args, "steps", defaults.time_steps),
+        sim_duration_s: args.value("duration", defaults.sim_duration_s),
     });
 }
 

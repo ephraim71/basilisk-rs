@@ -91,7 +91,8 @@ impl Cli {
         }
     }
 
-    fn fail(&self, message: &str) -> ! {
+    /// Exits with `message` and the usage.
+    pub fn fail(&self, message: &str) -> ! {
         eprintln!("error: {message}\n\n{}", self.usage);
         std::process::exit(2);
     }

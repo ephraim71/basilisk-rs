@@ -18,16 +18,18 @@
 //! points are unstable and their spacecraft drift, but stay in the
 //! Earth-Moon system.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::messages::{PlanetStateMsg, SpacecraftStateMsg};
 use basilisk_rs::simulation::Simulation;
@@ -36,12 +38,13 @@ use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, elements_to_state, state_to_elements,
 };
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use grav_factory::{Body, spk_state};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, planet_columns, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{planet_columns, sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_lagrange_point_orbit [--point 1..5] [--orbits 1] [--step 300]
@@ -135,8 +138,8 @@ pub fn run(config: Config) -> Results {
         "scenarioLagrangePointOrbitL{}",
         config.lagrange_point
     ));
-    let mut spacecraft_history = History::<SpacecraftStateMsg>::new();
-    let mut moon_history = History::<PlanetStateMsg>::new();
+    let mut spacecraft_history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut moon_history = MessageLog::<PlanetStateMsg>::default();
     {
         let mut simulation = Simulation::new(start_epoch(), false);
         connect!(&simulation,
@@ -166,11 +169,11 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let points = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let points = if args.switch("all") {
         vec![1, 2, 3, 4, 5]
     } else {
-        vec![args.value("--point", 1u8)]
+        vec![args.value("point", 1u8)]
     };
     for lagrange_point in points {
         if !(1..=5).contains(&lagrange_point) {
@@ -178,8 +181,8 @@ fn main() {
         }
         let results = run(Config {
             lagrange_point,
-            orbits: args.value("--orbits", 1.0),
-            step_seconds: args.value("--step", 300.0),
+            orbits: args.value("orbits", 1.0),
+            step_seconds: args.value("step", 300.0),
         });
         let (_, last) = results.spacecraft.last().expect("samples");
         let (_, moon) = results.moon.last().expect("samples");

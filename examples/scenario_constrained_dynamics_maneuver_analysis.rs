@@ -45,16 +45,18 @@
 
 #[path = "support/attitude.rs"]
 mod attitude;
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/constrained.rs"]
 mod constrained;
 #[path = "support/latch.rs"]
 mod latch;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/staged.rs"]
 mod staged;
 #[path = "support/table_csv.rs"]
@@ -71,15 +73,16 @@ use basilisk_rs::sensors::navigation::SimpleNavigation;
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::SpacecraftGroup;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use constrained::{
     ConstraintGeometry, ScModel, Violations, earth_point_mass, gain_label, hub, hub_columns,
     leo_state, model_inertia_kg_m2, upstream_rkf45,
 };
 use hifitime::Epoch;
 use latch::Latch;
+use message_log::MessageLog;
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 use staged::Staged;
 use table_csv::write_table;
 
@@ -299,8 +302,8 @@ fn run_gain(config: &Config, gain: f64) -> GainRun {
     let file_stem = format!("{STEM}{}_alpha{}", config.label(), gain_label(gain));
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
-    let mut history_1 = History::<SpacecraftStateMsg>::new();
-    let mut history_2 = History::<SpacecraftStateMsg>::new();
+    let mut history_1 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut history_2 = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
@@ -395,11 +398,11 @@ pub fn run(config: &Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         test_cases()
     } else {
-        let gains: Vec<f64> = match args.value("--gains", String::new()).as_str() {
+        let gains: Vec<f64> = match args.value("gains", String::new()).as_str() {
             "" => vec![1.0e1, 1.0e2, 1.0e3],
             list => list
                 .split(',')
@@ -409,20 +412,20 @@ fn main() {
                 })
                 .collect(),
         };
-        let relpos_name = args.value("--relpos", "alongtrackahead".to_string());
+        let relpos_name = args.value("relpos", "alongtrackahead".to_string());
         let relpos = RelativePosition::parse(&relpos_name)
             .unwrap_or_else(|| args.fail(&format!("unknown relpos {relpos_name:?}")));
-        let orbit = match args.value("--orbit", "LEO".to_string()).as_str() {
+        let orbit = match args.value("orbit", "LEO".to_string()).as_str() {
             "LEO" => OrbitCase::Leo,
             "no orbit" | "noorbit" => OrbitCase::NoOrbit,
             other => args.fail(&format!("unknown orbit {other:?}")),
         };
-        let maneuver = match args.value("--maneuver", "attitude".to_string()).as_str() {
+        let maneuver = match args.value("maneuver", "attitude".to_string()).as_str() {
             "attitude" => Maneuver::Attitude,
             "orbit" => Maneuver::Orbit,
             other => args.fail(&format!("unknown maneuver {other:?}")),
         };
-        let model_name = args.value("--model", "MEV2".to_string());
+        let model_name = args.value("model", "MEV2".to_string());
         let model = ScModel::parse(&model_name)
             .unwrap_or_else(|| args.fail(&format!("unknown model {model_name:?}")));
         vec![Config {

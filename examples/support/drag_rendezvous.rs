@@ -53,8 +53,9 @@ use nalgebra::{Matrix3, Matrix3x6, Vector3};
 
 use super::common::vector_columns;
 use super::grav_factory::{Body, GGM03S_J2_ONLY};
+use super::message_log::MessageLog;
 use super::orbit_tools::sec2nano;
-use super::recording::{History, scenario_csv};
+use super::recording::scenario_csv;
 
 /// Upstream `dynTimeStep` and `fswTimeStep`.
 pub const STEP_NANOS: u64 = 60_000_000_000;
@@ -234,13 +235,13 @@ pub fn drag_simulator(config: RendezvousConfig, csv_stem: Option<&str>) -> Rende
 
     let duration_nanos = sec2nano(40.0 * 2.0 * std::f64::consts::PI / (mu / radius.powi(3)).sqrt());
     let mut csv = csv_stem.map(scenario_csv);
-    let mut chief_log = History::<SpacecraftStateMsg>::new();
-    let mut deputy_log = History::<SpacecraftStateMsg>::new();
-    let mut hill_log = History::<HillRelativeStateMsg>::new();
-    let mut chief_density_log = History::<AtmosphereMsg>::new();
-    let mut deputy_density_log = History::<AtmosphereMsg>::new();
-    let mut chief_drag_log = History::<SpacecraftDiagnosticsMsg>::new();
-    let mut deputy_drag_log = History::<SpacecraftDiagnosticsMsg>::new();
+    let mut chief_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut deputy_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut hill_log = MessageLog::<HillRelativeStateMsg>::default();
+    let mut chief_density_log = MessageLog::<AtmosphereMsg>::default();
+    let mut deputy_density_log = MessageLog::<AtmosphereMsg>::default();
+    let mut chief_drag_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
+    let mut deputy_drag_log = MessageLog::<SpacecraftDiagnosticsMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -335,24 +336,28 @@ pub fn drag_simulator(config: RendezvousConfig, csv_stem: Option<&str>) -> Rende
     }
     RendezvousResults {
         csv_path: csv.map(|csv| csv.config.output_path.clone()),
-        times_nanos: chief_log.times_nanos(),
-        chief: chief_log.messages().cloned().collect(),
-        deputy: deputy_log.messages().cloned().collect(),
-        hill: hill_log.messages().cloned().collect(),
+        times_nanos: chief_log.times_nanos.clone(),
+        chief: chief_log.values.iter().cloned().collect(),
+        deputy: deputy_log.values.iter().cloned().collect(),
+        hill: hill_log.values.iter().cloned().collect(),
         chief_density: chief_density_log
-            .messages()
+            .values
+            .iter()
             .map(|m| m.neutral_density_kgpm3)
             .collect(),
         deputy_density: deputy_density_log
-            .messages()
+            .values
+            .iter()
             .map(|m| m.neutral_density_kgpm3)
             .collect(),
         chief_drag_body_n: chief_drag_log
-            .messages()
+            .values
+            .iter()
             .map(|m| m.drag_force_body_n)
             .collect(),
         deputy_drag_body_n: deputy_drag_log
-            .messages()
+            .values
+            .iter()
             .map(|m| m.drag_force_body_n)
             .collect(),
         mu_m3ps2: mu,

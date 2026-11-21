@@ -23,16 +23,18 @@
 //! plotting helper); `tests` checks the tractor at work: the separation is
 //! drawn to the 30 m reference and the debris' semi-major axis grows.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
 #[path = "support/latch.rs"]
 mod latch;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
 use basilisk_rs::dynamics::msm_force_torque::{
@@ -52,13 +54,14 @@ use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, elements_to_state, state_to_elements,
 };
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
 use latch::Latch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 
 const USAGE: &str = "scenario_debris_reorbit_et     run the electrostatic tractor reorbit";
 
@@ -182,8 +185,8 @@ pub fn run() -> Results {
 
     let mut csv = scenario_csv("scenarioDebrisReorbitET");
     let csv_path = csv.config.output_path.clone();
-    let mut servicer_log = History::<SpacecraftStateMsg>::new();
-    let mut debris_log = History::<SpacecraftStateMsg>::new();
+    let mut servicer_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut debris_log = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -238,7 +241,7 @@ pub fn run() -> Results {
 }
 
 fn main() {
-    ScenarioArgs::from_env(USAGE);
+    Cli::from_env(USAGE);
     let results = run();
     let (_, servicer) = results.servicer.last().unwrap();
     let (_, debris) = results.debris.last().unwrap();

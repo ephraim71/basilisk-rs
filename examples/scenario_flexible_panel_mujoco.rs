@@ -33,6 +33,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -59,9 +61,10 @@ use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state}
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
 use common::{seconds, vector_columns};
+use message_log::MessageLog;
 use mj_scenarios::{epoch, scalar_column, written_csv};
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream `timeStep`: the dynamics task.
@@ -370,10 +373,12 @@ fn run(write_csv: bool) -> Results {
         })
         .collect();
     let guidance_out = tracking_error.att_guid_out_msg.clone();
-    let mut guidance_log = History::<AttitudeGuidanceMsg>::new();
-    let mut angle_logs: Vec<(History<ScalarJointStateMsg>, History<ScalarJointStateMsg>)> = (0
-        ..SEGMENTS)
-        .map(|_| (History::new(), History::new()))
+    let mut guidance_log = MessageLog::<AttitudeGuidanceMsg>::default();
+    let mut angle_logs: Vec<(
+        MessageLog<ScalarJointStateMsg>,
+        MessageLog<ScalarJointStateMsg>,
+    )> = (0..SEGMENTS)
+        .map(|_| (MessageLog::default(), MessageLog::default()))
         .collect();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let mut att_csv = write_csv.then(|| scenario_csv(&format!("{FILE_STEM}AttError")));

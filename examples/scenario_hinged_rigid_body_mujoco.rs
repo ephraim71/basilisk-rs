@@ -31,6 +31,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/orbit_tools.rs"]
@@ -52,10 +54,11 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
+use message_log::MessageLog;
 use mj_scenarios::{epoch, scalar_column, site_state_columns, written_csv};
 use nalgebra::Vector3;
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, sampling_time, scenario_csv};
+use recording::{sampling_time, scenario_csv};
 use shared::Shared;
 
 /// Upstream `timeStep` \[ns\].
@@ -243,9 +246,9 @@ fn run(write_csv: bool) -> Results {
     let hub_state = scene.body("hub").center_of_mass().state_out_msg.clone();
     let hinge_1 = scene.scalar_joint("hinge1").state_out_msg.clone();
     let hinge_2 = scene.scalar_joint("hinge2").state_out_msg.clone();
-    let mut hub_log = History::<SpacecraftStateMsg>::new();
-    let mut hinge_1_log = History::<ScalarJointStateMsg>::new();
-    let mut hinge_2_log = History::<ScalarJointStateMsg>::new();
+    let mut hub_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut hinge_1_log = MessageLog::<ScalarJointStateMsg>::default();
+    let mut hinge_2_log = MessageLog::<ScalarJointStateMsg>::default();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let scene = Shared::new(scene);
     let mut scene_task = scene.handle();

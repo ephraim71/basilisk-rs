@@ -32,6 +32,8 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -61,9 +63,10 @@ use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Matrix6, Vector3, Vector6};
 use orbit_tools::{orbit_period_s, run_until, sec2nano};
-use recording::{History, scenario_csv, state_columns};
+use recording::{scenario_csv, state_columns};
 use task_switch::{Switched, TaskSwitch};
 
 /// Upstream `simStep` and `fswStep` (s).
@@ -155,11 +158,11 @@ pub fn run() -> Results {
     );
 
     let mut truth_csv = scenario_csv("scenarioLambertSolver");
-    let mut truth = History::<SpacecraftStateMsg>::new();
+    let mut truth = MessageLog::<SpacecraftStateMsg>::default();
     // Upstream's FSW recorders sit in the FSW task, and stop with it.
     let mut fsw_csv = Switched::new(scenario_csv("scenarioLambertSolverFsw"), &fsw);
-    let mut dv_commands = Switched::new(History::<DvBurnCommandMsg>::new(), &fsw);
-    let mut validator_history = Switched::new(History::<LambertValidatorMsg>::new(), &fsw);
+    let mut dv_commands = Switched::new(MessageLog::<DvBurnCommandMsg>::default(), &fsw);
+    let mut validator_history = Switched::new(MessageLog::<LambertValidatorMsg>::default(), &fsw);
     let dv_command = validator.module.dv_burn_cmd_out_msg.clone();
     {
         let mut simulation =

@@ -48,6 +48,8 @@ mod cli;
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/mj_viz.rs"]
@@ -79,13 +81,14 @@ use cli::Cli;
 use common::seconds;
 use grav_factory::{Body, PLANETARY_SPK};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use mj_scenarios::{
     GravitySourceSpec, PidController, add_gravity_to_all_bodies, load_scene, rkf45, scalar_column,
     site_state_columns, trapezoid_profile, written_csv,
 };
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, scenario_csv};
+use recording::scenario_csv;
 use shared::Shared;
 
 /// Upstream `taskPeriodSec`.
@@ -404,11 +407,11 @@ fn run() -> Results {
         .state_out_msg
         .clone();
     let trailer_state = trailer.state_out.clone();
-    let mut primary_log = History::<SpacecraftStateMsg>::new();
-    let mut companion_log = History::<SpacecraftStateMsg>::new();
-    let mut trailer_log = History::<SpacecraftStateMsg>::new();
-    let mut panel_logs: Vec<History<ScalarJointStateMsg>> =
-        panel_angles.iter().map(|_| History::new()).collect();
+    let mut primary_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut companion_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut trailer_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut panel_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        panel_angles.iter().map(|_| MessageLog::default()).collect();
     let mut csv = scenario_csv(FILE_STEM);
     let primary = Shared::new(primary);
     let companion = Shared::new(companion);
@@ -488,7 +491,7 @@ fn run() -> Results {
         panels: panel_angles
             .into_iter()
             .map(|(joint, _)| joint)
-            .zip(panel_logs.into_iter().map(History::into_samples))
+            .zip(panel_logs.into_iter().map(MessageLog::into_samples))
             .collect(),
         vizard_spacecraft,
     }

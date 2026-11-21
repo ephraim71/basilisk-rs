@@ -48,6 +48,8 @@
 mod cli;
 #[path = "support/common.rs"]
 mod common;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/mj_scenarios.rs"]
 mod mj_scenarios;
 #[path = "support/recording.rs"]
@@ -106,9 +108,10 @@ use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state}
 use basilisk_rs::{connect, schedule};
 use cli::Cli;
 use common::{array_columns, rpm_to_radps, seconds, vector_columns};
+use message_log::MessageLog;
 use mj_scenarios::{MotorTorqueToSingleActuators, epoch, scalar_column, written_csv};
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, sampling_time, scenario_csv};
+use recording::{sampling_time, scenario_csv};
 use rw_factory::RwFactory;
 use shared::Shared;
 use staged::Staged;
@@ -461,14 +464,14 @@ fn run(write_csv: bool) -> Results {
     let delta_h_out = desaturation.module.delta_h_out_msg.clone();
     let motor_torque_out = rw_motor_torque.rw_motor_torque_out_msg.clone();
     let impulse_out = force_mapping.thr_force_cmd_out_msg.clone();
-    let mut guidance_log = History::<AttitudeGuidanceMsg>::new();
-    let mut delta_h_log = History::<BodyTorqueCommandMsg>::new();
-    let mut rate_logs: Vec<History<ScalarJointStateMsg>> =
-        (0..wheel_count).map(|_| History::new()).collect();
-    let mut on_time_logs: Vec<History<ThrusterCommandMsg>> =
-        (0..thruster_count).map(|_| History::new()).collect();
-    let mut thrust_logs: Vec<History<SingleActuatorMsg>> =
-        (0..thruster_count).map(|_| History::new()).collect();
+    let mut guidance_log = MessageLog::<AttitudeGuidanceMsg>::default();
+    let mut delta_h_log = MessageLog::<BodyTorqueCommandMsg>::default();
+    let mut rate_logs: Vec<MessageLog<ScalarJointStateMsg>> =
+        (0..wheel_count).map(|_| MessageLog::default()).collect();
+    let mut on_time_logs: Vec<MessageLog<ThrusterCommandMsg>> =
+        (0..thruster_count).map(|_| MessageLog::default()).collect();
+    let mut thrust_logs: Vec<MessageLog<SingleActuatorMsg>> =
+        (0..thruster_count).map(|_| MessageLog::default()).collect();
     let mut csv = write_csv.then(|| scenario_csv(FILE_STEM));
     let hub_state = scene.body("hub").center_of_mass().state_out_msg.clone();
 
@@ -607,12 +610,18 @@ fn run(write_csv: bool) -> Results {
     Results {
         guidance: guidance_log.into_samples(),
         delta_h: delta_h_log.into_samples(),
-        wheel_rates: rate_logs.into_iter().map(History::into_samples).collect(),
+        wheel_rates: rate_logs
+            .into_iter()
+            .map(MessageLog::into_samples)
+            .collect(),
         on_times: on_time_logs
             .into_iter()
-            .map(History::into_samples)
+            .map(MessageLog::into_samples)
             .collect(),
-        thrusts: thrust_logs.into_iter().map(History::into_samples).collect(),
+        thrusts: thrust_logs
+            .into_iter()
+            .map(MessageLog::into_samples)
+            .collect(),
         wheel_axes: rw_factory
             .wheels
             .iter()
@@ -683,7 +692,7 @@ mod tests {
             });
             command.connect_to(&mut scene.single_actuator_mut("thruster1").actuator_in_msg);
             let state = scene.body("hub").center_of_mass().state_out_msg.clone();
-            let mut log = History::<SpacecraftStateMsg>::new();
+            let mut log = MessageLog::<SpacecraftStateMsg>::default();
             {
                 let mut simulation = Simulation::new(epoch(), false);
                 connect!(&simulation, &state => &mut log.input);
@@ -693,7 +702,7 @@ mod tests {
                 }
                 simulation.run_for(seconds(1));
             }
-            let (_, last) = log.samples().last().unwrap();
+            let last = log.last();
             let expected = Vector3::new(0.0, 0.0, max_thrust * 1.0 / body_mass);
             assert!(
                 (last.velocity_mps - expected).abs().max() <= 1e-12,

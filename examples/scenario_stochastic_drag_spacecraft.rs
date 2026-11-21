@@ -34,16 +34,18 @@
 //! checks the statistics of the correction against the configured
 //! stationary process and that the orbit decays.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::any::Any;
 use std::sync::Arc;
@@ -74,13 +76,14 @@ use basilisk_rs::utilities::orbital_motion::{
     ClassicElements, elements_to_state, state_to_elements,
 };
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, sec2nano};
-use recording::{History, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_stochastic_drag_spacecraft [--igbm] [--seed N]
@@ -359,7 +362,7 @@ pub fn run(config: Config) -> Results {
 
     let mut csv = scenario_csv(config.file_stem());
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2019, 1, 1), false);
@@ -401,13 +404,13 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let seed = args.flag("--seed").then(|| args.value("--seed", 0_u64));
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let seed = args.switch("seed").then(|| args.value("seed", 0_u64));
+    let configs = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
         vec![Config {
-            igbm: args.flag("--igbm"),
+            igbm: args.switch("igbm"),
             seed,
         }]
     };

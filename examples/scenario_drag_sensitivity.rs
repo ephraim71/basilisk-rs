@@ -23,23 +23,25 @@
 //! the gap where the density is near its design value and degrades away
 //! from it.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/drag_rendezvous.rs"]
 mod drag_rendezvous;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use drag_rendezvous::{RendezvousConfig, drag_simulator};
-use scenario_args::ScenarioArgs;
 
 const USAGE: &str = "\
 scenario_drag_sensitivity [--nu-offsets 15] [--densities 20]
@@ -162,14 +164,11 @@ pub fn run(nu_offset_count: usize, density_count: usize) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let (nu_count, density_count) = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let (nu_count, density_count) = if args.switch("all") {
         (5, 10)
     } else {
-        (
-            args.value("--nu-offsets", 15),
-            args.value("--densities", 20),
-        )
+        (args.value("nu-offsets", 15), args.value("densities", 20))
     };
     let results = run(nu_count, density_count);
     let worst = results

@@ -16,6 +16,8 @@
 //!
 //! `tests` ports upstream's `torque-mechanism` reduced check.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -30,16 +32,14 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
+use cli::Cli;
 use dyncomp::{
     Series, max_of, relative_principal_angles, seconds, validate_history, validate_task_horizon,
     write_json,
 };
 use dyncomp_torque::{MASS_KG, TorqueCase, run_mujoco};
 use nalgebra::Vector3;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "sweepTorqueMechanismChecks";
@@ -205,7 +205,7 @@ const USAGE: &str = "\
 sweep_torque_mechanism_checks [--speeds 937.5,1875,3750,7500] [--masses 750,1500]
                               [--dt S] [--duration S] [--record-dt S]";
 
-fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
+fn list(args: &mut Cli, name: &str, default: Vec<f64>) -> Vec<f64> {
     let text: String = args.value(name, String::new());
     if text.is_empty() {
         return default;
@@ -214,20 +214,20 @@ fn list(args: &ScenarioArgs, name: &str, default: Vec<f64>) -> Vec<f64> {
         .map(|v| {
             v.trim()
                 .parse()
-                .unwrap_or_else(|_| args.fail(&format!("invalid {name} {v:?}")))
+                .unwrap_or_else(|_| args.fail(&format!("invalid --{name} {v:?}")))
         })
         .collect()
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let defaults = Config::default();
     run(&Config {
-        speeds: list(&args, "--speeds", defaults.speeds),
-        masses: list(&args, "--masses", defaults.masses),
-        time_step_s: args.value("--dt", defaults.time_step_s),
-        sim_duration_s: args.value("--duration", defaults.sim_duration_s),
-        record_step_s: args.value("--record-dt", defaults.record_step_s),
+        speeds: list(&mut args, "speeds", defaults.speeds),
+        masses: list(&mut args, "masses", defaults.masses),
+        time_step_s: args.value("dt", defaults.time_step_s),
+        sim_duration_s: args.value("duration", defaults.sim_duration_s),
+        record_step_s: args.value("record-dt", defaults.record_step_s),
     });
 }
 

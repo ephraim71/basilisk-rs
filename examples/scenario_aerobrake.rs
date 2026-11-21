@@ -38,14 +38,16 @@
 //! control holds the body axis `b2` on the velocity, and the panels deflect
 //! in the drag pulse and settle.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/latch.rs"]
 mod latch;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use basilisk_rs::dynamics::ext_force_torque::{ExtForceTorque, ExtForceTorqueConfig};
 use basilisk_rs::dynamics::facet_drag_dynamic_effector::{
@@ -75,12 +77,13 @@ use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::utilities::orbital_motion::{ClassicElements, elements_to_state};
 use basilisk_rs::utilities::rigid_body_kinematics::{dcm_to_mrp, mrp_to_dcm};
 use basilisk_rs::{Module, connect, schedule};
+use cli::Cli;
 use common::vector_columns;
 use hifitime::Epoch;
 use latch::Latch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 
 const USAGE: &str = "\
 scenario_aerobrake [--case legacy-ctrl|legacy-free] [--dyn-rate-s 0.2] [--orbits 2]
@@ -364,10 +367,10 @@ pub fn run(config: Config) -> Results {
 
     let mut csv = scenario_csv(&config.file_stem());
     let csv_path = csv.config.output_path.clone();
-    let mut state_log = History::<SpacecraftStateMsg>::new();
-    let mut theta1_log = History::<HingedRigidBodyMsg>::new();
-    let mut theta2_log = History::<HingedRigidBodyMsg>::new();
-    let mut density_log = History::<AtmosphereMsg>::new();
+    let mut state_log = MessageLog::<SpacecraftStateMsg>::default();
+    let mut theta1_log = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut theta2_log = MessageLog::<HingedRigidBodyMsg>::default();
+    let mut density_log = MessageLog::<AtmosphereMsg>::default();
     let period_s =
         2.0 * std::f64::consts::PI * (elements.semi_major_axis.powi(3) / MU_M3PS2).sqrt();
     {
@@ -426,10 +429,11 @@ pub fn run(config: Config) -> Results {
     Results {
         csv_path,
         states: state_log.into_samples(),
-        theta1: theta1_log.messages().map(|m| m.theta_rad).collect(),
-        theta2: theta2_log.messages().map(|m| m.theta_rad).collect(),
+        theta1: theta1_log.values.iter().map(|m| m.theta_rad).collect(),
+        theta2: theta2_log.values.iter().map(|m| m.theta_rad).collect(),
         density: density_log
-            .messages()
+            .values
+            .iter()
             .map(|m| m.neutral_density_kgpm3)
             .collect(),
         period_s,
@@ -437,19 +441,19 @@ pub fn run(config: Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         vec![TEST_CASE]
     } else {
-        let dyn_rate_s = args.value("--dyn-rate-s", 0.2);
-        let orbits = args.value("--orbits", 2.0);
+        let dyn_rate_s = args.value("dyn-rate-s", 0.2);
+        let orbits = args.value("orbits", 2.0);
         let case = |attitude_control, drag_model| Config {
             attitude_control,
             drag_model,
             dyn_rate_s,
             orbits,
         };
-        match args.value("--case", String::new()).as_str() {
+        match args.value("case", String::new()).as_str() {
             "" => vec![
                 case(true, DragModel::Legacy),
                 case(false, DragModel::Legacy),

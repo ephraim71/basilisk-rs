@@ -18,6 +18,8 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -30,9 +32,10 @@ use basilisk_rs::utilities::orbital_motion::state_to_elements;
 use basilisk_rs::{connect, schedule};
 use grav_factory::{Body, spk_state};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{day2nano, sec2nano};
-use recording::{History, planet_columns, sampling_time, scenario_csv, state_columns};
+use recording::{planet_columns, sampling_time, scenario_csv, state_columns};
 
 /// Upstream `timestep` (s).
 const STEP_SECONDS: f64 = 300.0;
@@ -103,8 +106,8 @@ pub fn run() -> Results {
     let mut earth_ephemeris = Body::Earth.ephemeris(Body::Earth);
 
     let mut csv = scenario_csv("scenarioHaloOrbit");
-    let mut spacecraft_history = History::<SpacecraftStateMsg>::new();
-    let mut moon_history = History::<PlanetStateMsg>::new();
+    let mut spacecraft_history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut moon_history = MessageLog::<PlanetStateMsg>::default();
     {
         let mut simulation = Simulation::new(start_epoch(), false);
         connect!(&simulation,

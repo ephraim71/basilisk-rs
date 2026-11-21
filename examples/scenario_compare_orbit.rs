@@ -25,6 +25,8 @@
 //! `tests` ports the orbit checks of upstream's
 //! `test_scenarioDynamicsComparison.py` (`_assert_orbit_metrics`).
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/dyncomp.rs"]
@@ -37,11 +39,10 @@ mod grav_factory;
 mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/table_csv.rs"]
 mod table_csv;
 
+use cli::Cli;
 use dyncomp::{
     DEFAULT_TIMING_REPEATS, Series, aligned_horizon, max_of, save_runtime_table, seconds,
     validate_history, vector_differences, vector_headers, write_json,
@@ -50,7 +51,6 @@ use dyncomp_orbit::{MASS_KG, initial_orbit_state, kepler_truth, run_bsm};
 use grav_factory::Body;
 use nalgebra::Vector3;
 use orbit_tools::orbit_period_s;
-use scenario_args::ScenarioArgs;
 use serde_json::json;
 
 const FILE_NAME: &str = "scenarioCompareOrbit";
@@ -255,9 +255,9 @@ fn write_summary(metrics: &Metrics) {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
+    let mut args = Cli::from_env(USAGE);
     let results = run(Config {
-        save_timing: args.flag("--timing"),
+        save_timing: args.switch("timing"),
     });
     let metrics = &results.metrics;
     println!(

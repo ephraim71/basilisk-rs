@@ -29,7 +29,7 @@
 //! basilisk-rs's fuel tank owns its slosh particles, so only the tank is
 //! added to the spacecraft (upstream adds the tank and each particle); the
 //! particle states upstream logs from the state manager are published by a
-//! [`probed_effector::Probed`] tank. Upstream's Vizard setup is not ported.
+//! [`multibody::Hosted`] tank. Upstream's Vizard setup is not ported.
 //!
 //! Upstream's `test_scenarioConstrainedDynamicsComponentAnalysis.py` runs
 //! `panels` and `slosh` with `MEV2` and checks only that they complete.
@@ -38,18 +38,18 @@
 //! between the docked pair's component and the truth model's stays much
 //! smaller than the excitation and damps out.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/constrained.rs"]
 mod constrained;
-#[path = "support/hub_init.rs"]
-mod hub_init;
-#[path = "support/probed_effector.rs"]
-mod probed_effector;
+#[path = "support/message_log.rs"]
+mod message_log;
+#[path = "support/multibody.rs"]
+mod multibody;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 #[path = "support/servicing.rs"]
 mod servicing;
 
@@ -59,11 +59,12 @@ use basilisk_rs::messages::{
 use basilisk_rs::simulation::Simulation;
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{connect, schedule};
+use cli::Cli;
 use constrained::{ScModel, Violations, hub_pose_columns};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::Vector3;
-use recording::{History, scenario_csv};
-use scenario_args::ScenarioArgs;
+use recording::scenario_csv;
 use servicing::{Components, ServicingConfig, servicing};
 
 const USAGE: &str = "\
@@ -165,10 +166,10 @@ pub fn run(config: &Config) -> Results {
     let file_stem = format!("{STEM}{}", config.label());
     let mut csv = scenario_csv(&file_stem);
     let csv_path = csv.config.output_path.clone();
-    let mut history_1 = History::<SpacecraftStateMsg>::new();
-    let mut history_2 = History::<SpacecraftStateMsg>::new();
-    let mut panel_logs: Vec<History<HingedRigidBodyMsg>> = Vec::new();
-    let mut rho_logs: Vec<History<LinearTranslationRigidBodyMsg>> = Vec::new();
+    let mut history_1 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut history_2 = MessageLog::<SpacecraftStateMsg>::default();
+    let mut panel_logs: Vec<MessageLog<HingedRigidBodyMsg>> = Vec::new();
+    let mut rho_logs: Vec<MessageLog<LinearTranslationRigidBodyMsg>> = Vec::new();
     {
         let mut simulation =
             Simulation::new(Epoch::from_gregorian_utc_at_midnight(2025, 1, 1), false);
@@ -183,7 +184,7 @@ pub fn run(config: &Config) -> Results {
         if let Some(panel_out) = &setup.panel_out {
             for (index, output) in panel_out.iter().enumerate() {
                 let panel = index + 1;
-                let mut log = History::new();
+                let mut log = MessageLog::default();
                 connect!(&simulation,
                     output => csv.add_source::<HingedRigidBodyMsg>(CsvSourceConfig::columns([
                         ("theta_rad".to_string(), format!("theta{panel}_rad")),
@@ -197,7 +198,7 @@ pub fn run(config: &Config) -> Results {
         if let (Some(rho_out), Some(rho_truth_out)) = (&setup.rho_out, &setup.rho_truth_out) {
             for (index, output) in rho_out.iter().chain(rho_truth_out).enumerate() {
                 let particle = index + 1;
-                let mut log = History::new();
+                let mut log = MessageLog::default();
                 connect!(&simulation,
                     output => csv.add_source::<LinearTranslationRigidBodyMsg>(
                         CsvSourceConfig::columns([
@@ -227,9 +228,14 @@ pub fn run(config: &Config) -> Results {
     }
     csv.flush().expect("flush scenario CSV");
 
-    let violations = Violations::new(&setup.geometry, history_1.samples(), history_2.samples());
-    let values = |log: &History<HingedRigidBodyMsg>| -> Vec<f64> {
-        log.messages().map(|panel| panel.theta_rad).collect()
+    let times_nanos = history_1.times_nanos.clone();
+    let violations = Violations::new(
+        &setup.geometry,
+        &history_1.into_samples(),
+        &history_2.into_samples(),
+    );
+    let values = |log: &MessageLog<HingedRigidBodyMsg>| -> Vec<f64> {
+        log.values.iter().map(|panel| panel.theta_rad).collect()
     };
     let panels = if panel_logs.is_empty() {
         Vec::new()
@@ -245,8 +251,8 @@ pub fn run(config: &Config) -> Results {
             },
         ]
     };
-    let displacement = |log: &History<LinearTranslationRigidBodyMsg>| -> Vec<f64> {
-        log.messages().map(|particle| particle.rho_m).collect()
+    let displacement = |log: &MessageLog<LinearTranslationRigidBodyMsg>| -> Vec<f64> {
+        log.values.iter().map(|particle| particle.rho_m).collect()
     };
     let slosh = if rho_logs.is_empty() {
         Vec::new()
@@ -260,7 +266,7 @@ pub fn run(config: &Config) -> Results {
     };
     Results {
         csv_path,
-        times_nanos: history_1.times_nanos(),
+        times_nanos,
         violations,
         panels,
         slosh,
@@ -268,12 +274,12 @@ pub fn run(config: &Config) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let configs = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let configs = if args.switch("all") {
         TEST_CASES.to_vec()
     } else {
         let mut components = Components::default();
-        for component in args.value("--components", "panels".to_string()).split(',') {
+        for component in args.value("components", "panels".to_string()).split(',') {
             match component {
                 "panels" => components.panels = true,
                 "slosh" => components.slosh = true,
@@ -281,7 +287,7 @@ fn main() {
                 other => args.fail(&format!("unknown component {other:?}")),
             }
         }
-        let model_name = args.value("--model", "MEV2".to_string());
+        let model_name = args.value("model", "MEV2".to_string());
         let model = ScModel::parse(&model_name)
             .unwrap_or_else(|| args.fail(&format!("unknown model {model_name:?}")));
         vec![Config { components, model }]

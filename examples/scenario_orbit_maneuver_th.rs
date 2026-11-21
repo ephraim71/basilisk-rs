@@ -25,6 +25,8 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -55,9 +57,10 @@ use basilisk_rs::{connect, schedule};
 use common::vector_columns;
 use grav_factory::Body;
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::{orbit_period_s, run_until, sec2nano};
-use recording::{History, sampling_time, scenario_csv, state_columns};
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const STEP_NANOS: u64 = 2_000_000_000;
 const HUB_MASS_KG: f64 = 750.0;
@@ -167,8 +170,11 @@ pub fn run() -> Results {
     });
 
     let mut csv = scenario_csv("scenarioOrbitManeuverTH");
-    let mut history = History::<SpacecraftStateMsg>::new();
-    let mut thrust_histories = [History::<ThrusterOutputMsg>::new(), History::new()];
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
+    let mut thrust_histories = [
+        MessageLog::<ThrusterOutputMsg>::default(),
+        MessageLog::default(),
+    ];
     let mut burns_s = [0.0; 2];
     let mut burn_starts_nanos = [0; 2];
     {

@@ -42,6 +42,8 @@
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
@@ -57,9 +59,10 @@ use basilisk_rs::utilities::orbital_motion::{
 use basilisk_rs::{Module, SimulationContext, connect, schedule};
 use grav_factory::Body;
 use hifitime::{Duration, Epoch};
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::sec2nano;
-use recording::{History, sampling_time, scenario_csv, state_columns};
+use recording::{sampling_time, scenario_csv, state_columns};
 
 /// Upstream `rEarth` and `rJupiter` (m).
 const R_EARTH_ORBIT_M: f64 = 149_598_023.0 * 1000.0;
@@ -165,7 +168,7 @@ fn fly_leg(
             .expect("unique gravity bodies");
     }
     let hub = spacecraft.hub_state_handle();
-    let mut history = History::<SpacecraftStateMsg>::new();
+    let mut history = MessageLog::<SpacecraftStateMsg>::default();
     {
         let epoch = start_epoch() + Duration::from_total_nanoseconds(start_nanos as i128);
         let mut simulation = Simulation::new(epoch, false);

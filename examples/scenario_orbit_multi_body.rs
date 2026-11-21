@@ -27,16 +27,18 @@
 //! `tests` ports the upstream check: after 2000 s the simulated position is
 //! within 300 m of the SPICE position.
 
+#[path = "support/cli.rs"]
+mod cli;
 #[path = "support/common.rs"]
 mod common;
 #[path = "support/grav_factory.rs"]
 mod grav_factory;
+#[path = "support/message_log.rs"]
+mod message_log;
 #[path = "support/orbit_tools.rs"]
 mod orbit_tools;
 #[path = "support/recording.rs"]
 mod recording;
-#[path = "support/scenario_args.rs"]
-mod scenario_args;
 
 use std::path::PathBuf;
 
@@ -46,13 +48,14 @@ use basilisk_rs::simulation::Simulation;
 use basilisk_rs::spacecraft::{Spacecraft, SpacecraftConfig};
 use basilisk_rs::telemetry::CsvSourceConfig;
 use basilisk_rs::{Module, SimulationContext, connect, schedule};
+use cli::Cli;
 use common::vector_columns;
 use grav_factory::{Body, GGM03S};
 use hifitime::Epoch;
+use message_log::MessageLog;
 use nalgebra::{Matrix3, Vector3};
 use orbit_tools::sec2nano;
-use recording::{History, sampling_time, scenario_csv, state_columns};
-use scenario_args::ScenarioArgs;
+use recording::{sampling_time, scenario_csv, state_columns};
 
 const USAGE: &str = "\
 scenario_orbit_multi_body [--spacecraft Hubble|NewHorizons]
@@ -178,8 +181,8 @@ pub fn run(case: SpacecraftCase) -> Results {
     }
 
     let mut csv = scenario_csv(&format!("scenarioOrbitMultiBody{}", case.label()));
-    let mut simulated = History::<SpacecraftStateMsg>::new();
-    let mut spice_history = History::<SpacecraftStateMsg>::new();
+    let mut simulated = MessageLog::<SpacecraftStateMsg>::default();
+    let mut spice_history = MessageLog::<SpacecraftStateMsg>::default();
     {
         let mut simulation = Simulation::new(start_epoch(), false);
         for (body, planet_msg) in BODIES.iter().zip(&spice.planet_state_out_msgs) {
@@ -226,11 +229,11 @@ pub fn run(case: SpacecraftCase) -> Results {
 }
 
 fn main() {
-    let args = ScenarioArgs::from_env(USAGE);
-    let cases = if args.flag("--all") {
+    let mut args = Cli::from_env(USAGE);
+    let cases = if args.switch("all") {
         vec![SpacecraftCase::Hubble, SpacecraftCase::NewHorizons]
     } else {
-        match args.value("--spacecraft", "Hubble".to_string()).as_str() {
+        match args.value("spacecraft", "Hubble".to_string()).as_str() {
             "Hubble" => vec![SpacecraftCase::Hubble],
             "NewHorizons" => vec![SpacecraftCase::NewHorizons],
             other => args.fail(&format!("unknown spacecraft {other:?}")),

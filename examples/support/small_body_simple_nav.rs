@@ -98,6 +98,9 @@ pub struct NoisySimpleNav {
     pub cross_trans: bool,
     /// Upstream `crossAtt`.
     pub cross_att: bool,
+    /// Upstream `RNGSeed`: seeds the error stream at every reset; by default
+    /// a hash of the name.
+    pub seed: u64,
     error_model: GaussMarkov<SIMPLE_NAV_STATES>,
     rng: StdRng,
     prev_time_nanos: u64,
@@ -110,8 +113,10 @@ impl NoisySimpleNav {
         walk_bounds: SimpleNavVector,
     ) -> Self {
         let name = name.into();
+        let seed = seed_from_name(&name);
         Self {
-            rng: StdRng::seed_from_u64(seed_from_name(&name)),
+            rng: StdRng::seed_from_u64(seed),
+            seed,
             name,
             spacecraft_state_in_msg: Input::default(),
             sun_state_in_msg: Input::default(),
@@ -157,7 +162,7 @@ impl Module for NoisySimpleNav {
             log::error!("{}.spacecraft_state_in_msg was not linked", self.name);
         }
         self.error_model.reset();
-        self.rng = StdRng::seed_from_u64(seed_from_name(&self.name));
+        self.rng = StdRng::seed_from_u64(self.seed);
         self.prev_time_nanos = 0;
         self.attitude_out_msg
             .write(NavigationAttitudeMsg::default());

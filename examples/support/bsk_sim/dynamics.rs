@@ -168,7 +168,7 @@ pub const CSS_NORMALS_B: [[f64; 3]; CSS_COUNT] = [
 ];
 
 /// Upstream ACS thruster locations \[m\] and directions.
-const THRUSTER_POSITION_M: [[f64; 3]; 8] = [
+pub const THRUSTER_POSITION_M: [[f64; 3]; 8] = [
     [0.8255, 0.8803, 1.7653],
     [0.8255, 0.8803, 0.2604],
     [0.8803, 0.8255, 1.7653],
@@ -178,7 +178,7 @@ const THRUSTER_POSITION_M: [[f64; 3]; 8] = [
     [-0.8803, -0.8255, 1.7653],
     [-0.8803, -0.8255, 0.2604],
 ];
-const THRUSTER_DIRECTION: [[f64; 3]; 8] = [
+pub const THRUSTER_DIRECTION: [[f64; 3]; 8] = [
     [0.0, -1.0, 0.0],
     [0.0, -1.0, 0.0],
     [-1.0, 0.0, 0.0],
@@ -217,7 +217,7 @@ impl Module for CssConstellation {
 /// Upstream `setupCSS`: `fov = 80 deg`, `scaleFactor = 2`, normal `n_hat_b`,
 /// and the `CoarseSunSensor` defaults (no Kelly factor, noise or bias,
 /// outputs in `[0, 1e6]`).
-fn css(name: &str, n_hat_b: Vector3<f64>) -> CoarseSunSensor {
+pub fn css(name: &str, n_hat_b: Vector3<f64>) -> CoarseSunSensor {
     let normal = n_hat_b.normalize();
     let body_to_sensor_quaternion = UnitQuaternion::rotation_between(&normal, &Vector3::z())
         .unwrap_or_else(|| {

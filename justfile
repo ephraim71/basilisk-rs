@@ -127,7 +127,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -472,3 +472,39 @@ run-montecarlo-scenarios:
 plot-montecarlo-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_bsk_sim_att_feedback_mc.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_visualize_monte_carlo.py --generated-dir "{{generated_dir}}"
+# Run the OpNavScenarios examples (built on `examples/support/opnav`, their
+# camera images from the synthetic renderer that stands in for Vizard) at
+# upstream's full lengths, the Monte Carlo campaigns of `OpNavMC` and the
+# CNN training-image campaign of `CNN_ImageGen`, and write their CSV files
+# (the campaigns' archives and images go to `examples/output/montecarlo`).
+# Needs the `opencv` feature (system OpenCV, libclang) and the assets of
+# `fetch-anise-assets`, `fetch-orbit-scenario-data` (`GGM2BData.txt`) and
+# `fetch-opencv-assets` (the CNN's `CAD.onnx`).
+run-opnav-scenarios:
+    cargo run --release --features opencv --example scenario_op_nav_point -- --all
+    cargo run --release --features opencv --example scenario_op_nav_point_limb -- --all
+    cargo run --release --features opencv --example scenario_op_nav_heading -- --all
+    cargo run --release --features opencv --example scenario_op_nav_od -- --all
+    cargo run --release --features opencv --example scenario_op_nav_od_limb -- --all
+    cargo run --release --features opencv --example scenario_op_nav_att_od -- --all
+    cargo run --release --features opencv --example scenario_op_nav_att_od_limb -- --all
+    cargo run --release --features opencv --example scenario_cnn_att_od -- --all
+    cargo run --release --features opencv --example scenario_fault_det_op_nav -- --all
+    cargo run --release --features opencv --example scenario_op_nav_att_od_mc -- --all
+    cargo run --release --features opencv --example scenario_limb_att_od -- --all
+    cargo run --release --features opencv --example scenario_limb_att_od -- --single
+    cargo run --release --features opencv --example scenario_cnn_images -- --all
+# Render the OpNav scenarios' figures from their CSV files.
+plot-opnav-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_op_nav_point.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_point_limb.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_heading.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_od.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_od_limb.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_att_od.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_att_od_limb.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_cnn_att_od.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_fault_det_op_nav.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_att_od_mc.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_op_nav_att_od_mc.py --scenario scenario_LimbAttOD --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_limb_att_od.py --generated-dir "{{generated_dir}}"

@@ -98,3 +98,51 @@ required-features = ["spice"]
 [[example]]
 name = "scenario_spice_reconstruction"
 required-features = ["mujoco", "spice"]
+
+[[example]]
+name = "scenario_op_nav_att_od"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_point"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_point_limb"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_heading"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_od"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_od_limb"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_att_od_limb"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_cnn_att_od"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_fault_det_op_nav"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_op_nav_att_od_mc"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_limb_att_od"
+required-features = ["opencv"]
+
+[[example]]
+name = "scenario_cnn_images"
+required-features = ["opencv"]

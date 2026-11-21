@@ -10,3 +10,6 @@ assets/
 
 # samply profiler output
 profile.json.gz
+
+# Generated example results (JSON summaries next to the CSVs).
+examples/output/

@@ -29,6 +29,12 @@ pub use traits::*;
 pub struct Spacecraft {
     pub config: SpacecraftConfig,
     pub state_out: Output<SpacecraftStateMsg>,
+    /// Upstream `scStateOutMsg.r_CN_N` and `v_CN_N`: the inertial position
+    /// and velocity of the spacecraft's center of mass, in `position_m` and
+    /// `velocity_mps` (the convention of `MjSystemCom::com_states_out_msg`),
+    /// with the hub's attitude, rate and accumulated ΔV. Written with
+    /// [`Self::state_out`].
+    pub com_state_out: Output<SpacecraftStateMsg>,
     pub mass_props_out: Output<SpacecraftMassPropsMsg>,
     pub diagnostics_out: Output<SpacecraftDiagnosticsMsg>,
     /// Upstream `attRefInMsg` (optional): while connected, the hub attitude
@@ -86,6 +92,7 @@ impl Spacecraft {
             Duration::from_total_nanoseconds(config.integration_step_nanos as i128);
         Self {
             state_out: Output::default(),
+            com_state_out: Output::default(),
             mass_props_out: Output::default(),
             diagnostics_out: Output::default(),
             att_ref_in: Input::default(),
@@ -168,6 +175,25 @@ impl Spacecraft {
             + state.omega_radps.cross(&mass_props.center_of_mass_body_m);
         state.velocity_wrt_central_body_mps
             + body_to_inertial_dcm_from_sigma_bn(state.sigma_bn) * center_of_mass_dot_body_mps
+    }
+
+    /// [`Self::com_state_out`] for `state`, whose hub-origin message is
+    /// `state_msg`: `r_CN_N = r_BN_N + [NB] c_B`, `v_CN_N = v_BN_N + [NB]
+    /// (c'_B + ω × c_B)`.
+    fn com_state_msg(
+        &self,
+        state: &IntegratedState,
+        state_msg: &SpacecraftStateMsg,
+    ) -> SpacecraftStateMsg {
+        let mass_props = self.mass_props_for_effector_states(&state.effector_states);
+        let dcm_nb = body_to_inertial_dcm_from_sigma_bn(state.sigma_bn);
+        let center_of_mass_dot_body_mps = mass_props.center_of_mass_prime_body_mps
+            + state.omega_radps.cross(&mass_props.center_of_mass_body_m);
+        SpacecraftStateMsg {
+            position_m: state_msg.position_m + dcm_nb * mass_props.center_of_mass_body_m,
+            velocity_mps: state_msg.velocity_mps + dcm_nb * center_of_mass_dot_body_mps,
+            ..state_msg.clone()
+        }
     }
 
     /// The state message for `state` at the given inertial position and
@@ -255,6 +281,8 @@ impl Spacecraft {
             context.current_sim_nanos,
         );
         self.state_out.write(state_msg.clone());
+        self.com_state_out
+            .write(self.com_state_msg(&integrated_state, &state_msg));
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);
@@ -548,6 +576,8 @@ impl Module for Spacecraft {
         let diagnostics_msg =
             self.current_diagnostics_msg(&integrated_state, &state_msg, Vector3::zeros(), 0);
         self.state_out.write(state_msg.clone());
+        self.com_state_out
+            .write(self.com_state_msg(&integrated_state, &state_msg));
         self.write_state_effector_outputs(0, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);
@@ -726,6 +756,8 @@ impl Spacecraft {
             context.current_sim_nanos,
         );
         self.state_out.write(state_msg.clone());
+        self.com_state_out
+            .write(self.com_state_msg(&integrated_state, &state_msg));
         self.write_state_effector_outputs(context.current_sim_nanos, &state_msg);
         self.mass_props_out.write(self.current_mass_props_msg());
         self.diagnostics_out.write(diagnostics_msg);

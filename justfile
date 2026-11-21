@@ -127,7 +127,7 @@ run-scenarios:
 
 # Run every ported upstream example scenario and write its CSV files, each in
 # all the parametrizations upstream's `test_scenario*.py` runs.
-run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios
+run-all-scenarios: run-scenarios run-orbit-scenarios run-traj-scenarios run-formation-scenarios run-ground-scenarios run-multibody-b-scenarios run-misc-scenarios run-bsksim-scenarios run-multisat-scenarios run-montecarlo-scenarios run-multibody-a-scenarios run-opnav-scenarios run-dyncomp-scenarios
     cargo run --release --example scenario_attitude_feedback -- --all
     cargo run --release --example scenario_attitude_feedback_2t -- --all
     cargo run --release --example scenario_attitude_feedback_2t_th -- --all
@@ -508,3 +508,69 @@ plot-opnav-scenarios generated_dir="examples/output/scenarios":
     python3 examples/plot_scenario_op_nav_att_od_mc.py --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_op_nav_att_od_mc.py --scenario scenario_LimbAttOD --generated-dir "{{generated_dir}}"
     python3 examples/plot_scenario_limb_att_od.py --generated-dir "{{generated_dir}}"
+
+# Run the dynamics-engine comparison series (upstream
+# `examples/dynamicsComparison`: `runAllComparisons.py` and the six sweep
+# drivers) and write their CSV and JSON files to `examples/output/scenarios`.
+# The comparisons need the `mujoco` feature (without it each scenario runs
+# its Backsubstitution side only). The five accuracy scenarios also write
+# their runtime tables (`--timing`, as `runAllComparisons.py`), the
+# variable-mass scenario also flies the deep-space burn and its near-rigid
+# control, and the flexible-panel and Pareto studies run upstream's full
+# default sweeps, the slowest part.
+run-dyncomp-scenarios:
+    cargo run --release --features mujoco --example scenario_compare_orbit -- --timing
+    cargo run --release --features mujoco --example scenario_compare_torque -- --timing
+    cargo run --release --features mujoco --example scenario_compare_rw_panels -- --timing
+    cargo run --release --features mujoco --example scenario_compare_orbit_multibody -- --timing
+    cargo run --release --features mujoco --example scenario_compare_variable_mass -- --timing
+    cargo run --release --features mujoco --example scenario_compare_variable_mass -- --deep-space
+    cargo run --release --features mujoco --example scenario_compare_variable_mass -- --deep-space --near-rigid --duration 120
+    cargo run --release --features mujoco --example scenario_compare_flex_panels
+    cargo run --release --features mujoco --example scenario_compare_pareto_rw_panels
+    cargo run --release --features mujoco --example scenario_compare_pareto_flex_panels
+    cargo run --release --features mujoco --example sweep_orbit_dt
+    cargo run --release --features mujoco --example sweep_torque_artifact
+    cargo run --release --features mujoco --example sweep_torque_mechanism_checks
+    cargo run --release --features mujoco --example sweep_rw_bookkeeping_mass
+    cargo run --release --features mujoco --example sweep_slosh_displacement
+    cargo run --release --features mujoco --example sweep_variable_mass_pendulum_inertia
+
+# Render the dynamics-comparison figures from their CSV files, the runtime
+# tables (`dyncompRuntime.md`, `.png`) and the paper's print PDFs (`paper/`).
+plot-dyncomp-scenarios generated_dir="examples/output/scenarios":
+    python3 examples/plot_scenario_compare_orbit.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_torque.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_rw_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_flex_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_orbit_multibody.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_variable_mass.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_pareto_rw_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_scenario_compare_pareto_flex_panels.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_sweep_variable_mass_pendulum_inertia.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_dyncomp_runtime.py --generated-dir "{{generated_dir}}"
+    python3 examples/plot_dyncomp_paper_figures.py --generated-dir "{{generated_dir}}"
+
+# Upstream's `runAllComparisons.py --timing-only` (`make -C docs
+# comparison-runtime-tables`): time both engines in the five accuracy
+# scenarios, then collect the tables. Use a quiet machine; the times
+# describe this host and build only.
+dyncomp-runtime-tables generated_dir="examples/output/scenarios":
+    cargo run --release --features mujoco --example scenario_compare_orbit -- --timing
+    cargo run --release --features mujoco --example scenario_compare_torque -- --timing
+    cargo run --release --features mujoco --example scenario_compare_rw_panels -- --timing
+    cargo run --release --features mujoco --example scenario_compare_orbit_multibody -- --timing
+    cargo run --release --features mujoco --example scenario_compare_variable_mass -- --timing
+    python3 examples/plot_dyncomp_runtime.py --generated-dir "{{generated_dir}}"
+
+# Upstream's `paperFigures.py --update-provenance`: regenerate every input of
+# the paper's figures and render the print PDFs and their hash manifest into
+# `<generated_dir>/paper` (`plot_dyncomp_paper_figures.py --verify` checks
+# them later).
+dyncomp-paper-figures generated_dir="examples/output/scenarios":
+    cargo run --release --features mujoco --example scenario_compare_pareto_rw_panels
+    cargo run --release --features mujoco --example scenario_compare_pareto_flex_panels
+    cargo run --release --features mujoco --example scenario_compare_flex_panels
+    cargo run --release --features mujoco --example sweep_orbit_dt
+    cargo run --release --features mujoco --example sweep_torque_artifact
+    python3 examples/plot_dyncomp_paper_figures.py --generated-dir "{{generated_dir}}"

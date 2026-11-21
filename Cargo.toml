@@ -146,3 +146,27 @@ required-features = ["opencv"]
 [[example]]
 name = "scenario_cnn_images"
 required-features = ["opencv"]
+
+[[example]]
+name = "sweep_orbit_dt"
+required-features = ["mujoco"]
+
+[[example]]
+name = "sweep_rw_bookkeeping_mass"
+required-features = ["mujoco"]
+
+[[example]]
+name = "sweep_slosh_displacement"
+required-features = ["mujoco"]
+
+[[example]]
+name = "sweep_torque_artifact"
+required-features = ["mujoco"]
+
+[[example]]
+name = "sweep_torque_mechanism_checks"
+required-features = ["mujoco"]
+
+[[example]]
+name = "sweep_variable_mass_pendulum_inertia"
+required-features = ["mujoco"]

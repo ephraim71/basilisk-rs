@@ -2428,3 +2428,53 @@ fn translation_reference_prescribes_the_hub_position_and_velocity() {
     assert!((state.sigma_bn - free_state.read().sigma_bn).norm() < 1e-12);
     assert!((state.omega_radps - free_state.read().omega_radps).norm() < 1e-12);
 }
+
+/// `com_state_out` is the center of mass of a free-floating spacecraft: with
+/// no external force it moves in a straight line at constant velocity, while
+/// the hub origin swings about it, and at the start it sits at
+/// `r_BN_N + [NB] c_B`.
+#[test]
+fn center_of_mass_output_of_a_free_spacecraft_moves_uniformly() {
+    let mut spacecraft = Spacecraft::new(SpacecraftConfig {
+        mass_kg: 600.0,
+        hub_center_of_mass_body_m: Vector3::new(0.1, 0.0, 0.0),
+        inertia_kg_m2: Matrix3::from_diagonal(&Vector3::new(400.0, 380.0, 360.0)),
+        integration_step_nanos: STEP_NANOS,
+        initial_position_m: Vector3::new(10.0, -5.0, 2.0),
+        initial_velocity_mps: Vector3::new(0.3, 0.1, -0.2),
+        initial_sigma_bn: Vector3::new(0.1, -0.2, 0.05),
+        initial_omega_radps: Vector3::new(0.01, -0.02, 0.015),
+        integrator: None,
+    });
+    let mut config = HingedRigidBodyConfig::new("panel");
+    config.mass_kg = 50.0;
+    config.inertia_about_panel_com_panel_kg_m2 =
+        Matrix3::from_diagonal(&Vector3::new(30.0, 20.0, 12.0));
+    config.center_of_mass_offset_m = 1.2;
+    config.spring_constant_nm_per_rad = 150.0;
+    config.damping_nm_s_per_rad = 8.0;
+    config.hinge_position_body_m = Vector3::new(0.8, 0.0, 0.0);
+    config.theta_init_rad = 0.2;
+    spacecraft.add_state_effector(HingedRigidBodyStateEffector::new(config));
+
+    let hub = spacecraft.state_out.clone();
+    let com = spacecraft.com_state_out.clone();
+    let mass_props = spacecraft.mass_props_out.clone();
+    let mut sim = Simulation::new(start_epoch(), false);
+    sim.add_module("spacecraft", &mut spacecraft, STEP_NANOS, 0);
+    sim.run_for(0);
+    let (hub0, com0) = (hub.read(), com.read());
+    let dcm_nb = body_to_inertial_dcm_from_sigma_bn(hub0.sigma_bn);
+    let expected = hub0.position_m + dcm_nb * mass_props.read().center_of_mass_body_m;
+    assert!((com0.position_m - expected).norm() < 1e-12);
+    assert_eq!(com0.sigma_bn, hub0.sigma_bn);
+
+    let duration_s = 10.0;
+    sim.run_for(10_000_000_000);
+    let (hub1, com1) = (hub.read(), com.read());
+    assert!((com1.velocity_mps - com0.velocity_mps).norm() < 1e-9);
+    let drift = com0.position_m + com0.velocity_mps * duration_s;
+    assert!((com1.position_m - drift).norm() < 1e-8);
+    // The hub origin itself does not move uniformly.
+    assert!((hub1.velocity_mps - hub0.velocity_mps).norm() > 1e-4);
+}
